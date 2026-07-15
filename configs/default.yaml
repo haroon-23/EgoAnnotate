@@ -1,0 +1,50 @@
+# EgoAnnotatePipeline Configuration file
+
+pipeline:
+  target_fps: 30
+  image_size: [224, 224]
+  frames_dir: "./data/frames"
+  output_dir: "./data/output"
+
+hand_tracking:
+  running_mode: "VIDEO"
+  num_hands: 2
+  min_detection_confidence: 0.3
+  min_tracking_confidence: 0.5
+  smoothing_window: 5
+
+object_detection:
+  keyframes_per_video: 3
+  prompt: |
+    Analyze this egocentric video frame. List ALL objects that the person's hands are interacting with or could interact with. For each object, provide name, location in frame, and whether touched. Format as JSON list.
+
+contact_detection:
+  proximity_threshold_px: 25
+  fingertip_indices: [4, 8, 12, 16, 20]
+
+grasp_classification:
+  pinch_threshold: 0.05
+  wrap_threshold: 0.15
+
+action_computation:
+  compute_wrist_delta: true
+  compute_finger_angles: true
+  compute_gripper_state: true
+  normalize_actions: true
+
+action_segmentation:
+  prompt: |
+    Analyze this egocentric video. Segment into manipulation primitives with timestamps: approach, contact, grasp, manipulate, release, retreat, idle. For each: action name, start time, end time, object, hand. Format as JSON.
+
+language_annotation:
+  episode_prompt: "Describe the physical task in this video in one sentence. Be specific. Return ONLY the sentence."
+  segment_prompt: "Describe what is happening in this video segment. Focus on hand, object, grasp type, motion."
+
+gemini:
+  model: "gemini-1.5-flash"
+  api_key: null  # Set via GEMINI_API_KEY env var
+
+output:
+  format: "json"
+  include_image_bytes: false
+  save_viz_video: true

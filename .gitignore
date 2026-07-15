@@ -1,0 +1,51 @@
+# Data directories
+data/
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Video and large binary files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.npz
+*.h5
+*.hdf5
+
+# API keys and secrets
+.env
+*.key
+*api_key*
+*secret*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MediaPipe model assets (downloaded at runtime)
+*.task
+
+# Logs
+*.log
+
+# Project-specific caches and reports
+.gemini_cache.json
+progress.json
+batch_report.json
+hand_landmarker.task
+.venv/
+.pytest_cache/
