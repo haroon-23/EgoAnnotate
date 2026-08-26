@@ -18,6 +18,21 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# Auto-load GEMINI_API_KEY from .env if not present in environment
+if not os.environ.get("GEMINI_API_KEY"):
+    for env_path in [project_root / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("GEMINI_API_KEY="):
+                        val = line.split("=", 1)[1].strip("'\"")
+                        if val:
+                            os.environ["GEMINI_API_KEY"] = val
+                            break
+            if os.environ.get("GEMINI_API_KEY"):
+                break
+
 from src.pipeline import EgoAnnotatePipeline
 
 # Apply monkey patch to avoid Discovery API key checks
@@ -115,6 +130,8 @@ def main() -> None:
     parser.add_argument(
         "--video",
         "-v",
+        "--input",
+        "-i",
         help="Path to a single video file to process.",
     )
 
@@ -137,6 +154,12 @@ def main() -> None:
         nargs="?",
         const="",
         help="Export annotated dataset to LeRobot v2.1 format. Optionally specify a single episode_id; otherwise, scans and exports all.",
+    )
+
+    parser.add_argument(
+        "--export-overlay",
+        action="store_true",
+        help="Export burned-in overlay video with all annotations (contact bboxes, segments, grasps).",
     )
 
     args = parser.parse_args()
@@ -239,6 +262,22 @@ def main() -> None:
                             print(f"    Saved: {lerobot_path.relative_to(output_dir)}")
                         except Exception as e:
                             print(f"Error exporting LeRobot for '{ep.episode_id}': {e}", file=sys.stderr)
+
+            # Post-run overlay video export if requested
+            if args.export_overlay:
+                print("\nRunning post-pipeline overlay video export...")
+                from src.visualizer import render_annotated_video
+                from pathlib import Path
+                
+                for ep in successful_episodes:
+                    print(f"  - Exporting overlay for episode '{ep.episode_id}'...")
+                    try:
+                        overlay_path = Path(output_dir) / ep.episode_id / "overlay_annotated.mp4"
+                        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+                        render_annotated_video(ep.video_path, ep, overlay_path)
+                        print(f"    Saved: {overlay_path.relative_to(output_dir)}")
+                    except Exception as e:
+                        print(f"Error exporting overlay for '{ep.episode_id}': {e}", file=sys.stderr)
             
             print("=" * 60 + "\n")
         else:

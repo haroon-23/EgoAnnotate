@@ -32,6 +32,22 @@ class LanguageGeneratorConfig:
     )
 
 
+# Auto-load GEMINI_API_KEY from .env at module import if not already in environment
+if not os.environ.get("GEMINI_API_KEY"):
+    for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("GEMINI_API_KEY="):
+                        val = line.split("=", 1)[1].strip("'\"")
+                        if val:
+                            os.environ["GEMINI_API_KEY"] = val
+                            break
+            if os.environ.get("GEMINI_API_KEY"):
+                break
+
+
 class GeminiLanguageGenerator:
     """Generates natural language descriptions."""
     

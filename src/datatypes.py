@@ -143,11 +143,16 @@ class ContactState:
             (thumb, index, middle, ring, pinky).
         object_name: Name of the object in contact, or ``None``.
         in_contact: ``True`` if *any* finger is touching an object.
+        confidence: Confidence score [0, 1] based on proximity margin and
+            temporal consistency over the last N frames. MediaPipe z is relative
+            depth, not metric 3D — this is a heuristic to filter false positives
+            when a hand passes in front of an object without touching.
     """
 
     fingers: np.ndarray  # shape (5,), dtype bool
     object_name: Optional[str]
     in_contact: bool
+    confidence: float = 0.5
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -155,6 +160,7 @@ class ContactState:
             "fingers": self.fingers.tolist(),
             "object_name": self.object_name,
             "in_contact": self.in_contact,
+            "confidence": self.confidence,
         }
 
     @classmethod
@@ -164,6 +170,7 @@ class ContactState:
             fingers=np.asarray(data["fingers"], dtype=bool),
             object_name=data.get("object_name"),
             in_contact=bool(data["in_contact"]),
+            confidence=float(data.get("confidence", 0.5)),
         )
 
 
@@ -384,6 +391,33 @@ class AnnotationFrame:
 # ---------------------------------------------------------------------------
 # Temporal segment
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class CandidateSegment:
+    """A candidate temporal segment derived from signal transitions (before VLM labeling).
+    
+    Internal representation used by SignalSegmenter. Not exported to final datasets.
+    
+    Attributes:
+        start_frame: Inclusive start frame index.
+        end_frame: Exclusive end frame index.
+        start_time: Segment start in seconds.
+        end_time: Segment end in seconds.
+        transition_type: What triggered this segment boundary:
+            "contact_on", "contact_off", "grasp_change", "idle", "start", "end"
+        contact_state: "contact" or "no_contact" for this segment.
+        grasp_type: Grasp type string for this segment, or "none".
+        object_name: Primary object name, or None.
+    """
+    start_frame: int
+    end_frame: int
+    start_time: float
+    end_time: float
+    transition_type: str
+    contact_state: str
+    grasp_type: str
+    object_name: Optional[str] = None
 
 
 @dataclass

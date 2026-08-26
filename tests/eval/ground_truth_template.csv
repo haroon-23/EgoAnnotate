@@ -1,0 +1,4 @@
+video_id,frame_idx,timestamp_sec,object_name,hand,contact_true,grasp_type_true,notes
+demo_001,15,0.50,cup,right,1,precision_pinch,Thumb and index finger pinching cup rim
+demo_001,45,1.50,cup,right,1,power_wrap,Full hand wrapped around cup handle
+demo_001,90,3.00,knife,right,0,open,Hand hovering above knife before grasp

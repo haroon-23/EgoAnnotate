@@ -16,14 +16,16 @@ import cv2
 import yaml
 
 from .action_computer import ActionComputer, ActionComputerConfig
-from .action_segmenter import GeminiActionSegmenter, ActionSegmenterConfig
 from .contact_detector import ContactDetector, ContactDetectorConfig
 from .dataset_exporter import DatasetExporter, ExporterConfig
 from .datatypes import AnnotatedEpisode, AnnotationFrame
 from .grasp_classifier import GraspClassifier, GraspClassifierConfig
+from .grounding_detector import GroundingDINOConfig
 from .hand_tracker import HandTracker, HandTrackerConfig
 from .language_generator import GeminiLanguageGenerator, LanguageGeneratorConfig
 from .object_detector import GeminiObjectDetector, ObjectDetectorConfig
+from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler
+from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,8 @@ class EgoAnnotatePipeline:
 
         # 1. VideoProcessor
         # Support either "pipeline" key (new) or "video" key (old)
-        pipe_cfg = self.config.get("pipeline", {})
-        video_cfg = self.config.get("video", {})
+        pipe_cfg = self.config.get("pipeline") or {}
+        video_cfg = self.config.get("video") or {}
         target_fps = float(pipe_cfg.get("target_fps", video_cfg.get("sample_fps", 2.0)))
         image_size_list = pipe_cfg.get("image_size", [224, 224])
         image_size = (int(image_size_list[0]), int(image_size_list[1]))
@@ -53,7 +55,7 @@ class EgoAnnotatePipeline:
 
         # 2. HandTracker
         # Support "hand_tracking" (new) or "hand_tracker" (old)
-        ht_cfg = self.config.get("hand_tracking", self.config.get("hand_tracker", {}))
+        ht_cfg = self.config.get("hand_tracking") or self.config.get("hand_tracker") or {}
         ht_config = HandTrackerConfig(
             model_path=ht_cfg.get("model_path", "models/hand_landmarker.task"),
             running_mode=ht_cfg.get("running_mode", "VIDEO"),
@@ -66,22 +68,29 @@ class EgoAnnotatePipeline:
 
         # 3. GeminiObjectDetector
         # Support "object_detection" (new) or "object_detector" (old)
-        od_cfg = self.config.get("object_detection", self.config.get("object_detector", {}))
-        gemini_cfg = self.config.get("gemini", {})
+        od_cfg = self.config.get("object_detection") or self.config.get("object_detector") or {}
+        gemini_cfg = self.config.get("gemini") or {}
+        # Grounding DINO config
+        gd_cfg = self.config.get("grounding_dino") or {}
         od_prompt = od_cfg.get(
             "prompt",
             "Identify the single primary object being interacted with or manipulated by the hand in this image. Respond in JSON."
         )
         od_config = ObjectDetectorConfig(
             keyframes_per_video=int(od_cfg.get("keyframes_per_video", 3)),
+            bbox_keyframe_interval=int(od_cfg.get("bbox_keyframe_interval", 15)),
             gemini_model=gemini_cfg.get("model", od_cfg.get("gemini_model", "gemini-1.5-pro-latest")),
             prompt=od_prompt,
+            grounding_dino_model=gd_cfg.get("model_name", "IDEA-Research/grounding-dino-tiny"),
+            grounding_dino_confidence=float(gd_cfg.get("confidence_threshold", 0.3)),
+            grounding_dino_box_threshold=float(gd_cfg.get("box_threshold", 0.3)),
+            grounding_dino_text_threshold=float(gd_cfg.get("text_threshold", 0.25)),
         )
         self.object_detector = GeminiObjectDetector(od_config)
 
         # 4. ContactDetector
         # Support "contact_detection" (new) or "contact_detector" (old)
-        cd_cfg = self.config.get("contact_detection", self.config.get("contact_detector", {}))
+        cd_cfg = self.config.get("contact_detection") or self.config.get("contact_detector") or {}
         cd_config = ContactDetectorConfig(
             proximity_threshold_px=int(cd_cfg.get("proximity_threshold_px", cd_cfg.get("distance_threshold_px", 25))),
             fingertip_indices=cd_cfg.get("fingertip_indices", [4, 8, 12, 16, 20]),
@@ -90,7 +99,7 @@ class EgoAnnotatePipeline:
 
         # 5. GraspClassifier
         # Support "grasp_classification" (new) or "grasp_classifier" (old)
-        gc_cfg = self.config.get("grasp_classification", self.config.get("grasp_classifier", {}))
+        gc_cfg = self.config.get("grasp_classification") or self.config.get("grasp_classifier") or {}
         gc_config = GraspClassifierConfig(
             pinch_threshold=float(gc_cfg.get("pinch_threshold", 0.05)),
             wrap_threshold=float(gc_cfg.get("wrap_threshold", 0.15)),
@@ -99,7 +108,7 @@ class EgoAnnotatePipeline:
 
         # 6. ActionComputer
         # Support "action_computation" (new) or "action_computer" (old)
-        ac_cfg = self.config.get("action_computation", self.config.get("action_computer", {}))
+        ac_cfg = self.config.get("action_computation") or self.config.get("action_computer") or {}
         ac_config = ActionComputerConfig(
             compute_wrist_delta=ac_cfg.get("compute_wrist_delta", True),
             compute_finger_angles=ac_cfg.get("compute_finger_angles", True),
@@ -108,18 +117,25 @@ class EgoAnnotatePipeline:
         )
         self.action_computer = ActionComputer(ac_config)
 
-        # 7. GeminiActionSegmenter
-        # Support "action_segmentation" (new) or "action_segmenter" (old)
-        as_cfg = self.config.get("action_segmentation", self.config.get("action_segmenter", {}))
-        as_config = ActionSegmenterConfig(
-            gemini_model=gemini_cfg.get("model", as_cfg.get("gemini_model", "gemini-1.5-pro-latest")),
-            prompt=as_cfg.get("prompt", ActionSegmenterConfig.prompt),
+        # 7. SignalSegmenter (deterministic boundaries from contact/grasp signals)
+        ss_cfg = self.config.get("signal_segmentation") or {}
+        ss_config = SignalSegmenterConfig(
+            min_segment_duration_sec=float(ss_cfg.get("min_segment_duration_sec", 0.2)),
+            merge_gap_sec=float(ss_cfg.get("merge_gap_sec", 0.3)),
+            idle_threshold_sec=float(ss_cfg.get("idle_threshold_sec", 1.0)),
         )
-        self.action_segmenter = GeminiActionSegmenter(as_config)
+        self.signal_segmenter = SignalSegmenter(ss_config)
 
-        # 8. GeminiLanguageGenerator
+        # 8. SegmentLabeler (VLM labels for pre-computed segments)
+        sl_cfg = self.config.get("segment_labeling") or {}
+        sl_config = SegmentLabelerConfig(
+            gemini_model=gemini_cfg.get("model", sl_cfg.get("gemini_model", "gemini-1.5-flash")),
+        )
+        self.segment_labeler = create_segment_labeler(sl_config)
+
+        # 9. GeminiLanguageGenerator
         # Support "language_annotation" (new) or "language_generator" (old)
-        lg_cfg = self.config.get("language_annotation", self.config.get("language_generator", {}))
+        lg_cfg = self.config.get("language_annotation") or self.config.get("language_generator") or {}
         lg_config = LanguageGeneratorConfig(
             gemini_model=gemini_cfg.get("model", lg_cfg.get("gemini_model", "gemini-1.5-pro-latest")),
             episode_prompt=lg_cfg.get("episode_prompt", LanguageGeneratorConfig.episode_prompt),
@@ -129,13 +145,13 @@ class EgoAnnotatePipeline:
 
         # 9. DatasetExporter
         # Support "output" (new) or "exporter" (old)
-        output_cfg = self.config.get("output", {})
-        exp_cfg = self.config.get("exporter", {})
+        output_cfg = self.config.get("output") or {}
+        exp_cfg = self.config.get("exporter") or {}
         
         output_dir = pipe_cfg.get("output_dir", self.config.get("output_dir", "data/output"))
         format_val = output_cfg.get("format", exp_cfg.get("format", "json"))
         include_bytes = output_cfg.get("include_image_bytes", exp_cfg.get("include_image_bytes", False))
-        save_viz = output_cfg.get("save_viz_video", self.config.get("visualizer", {}).get("output_video", True))
+        save_viz = output_cfg.get("save_viz_video", (self.config.get("visualizer") or {}).get("output_video", True))
         
         exp_config = ExporterConfig(
             output_dir=output_dir,
@@ -193,20 +209,24 @@ class EgoAnnotatePipeline:
         # Stage 2: Hand Landmarks tracking
         hand_results = self.hand_tracker.track_frames(image_paths)
 
-        # Stage 3: Object Detection
-        objects = self.object_detector.detect_objects(video_path)
+        # Stage 3: Object Detection (Gemini + Grounding DINO with per-frame tracking)
+        per_frame_objects = self.object_detector.detect_per_frame_objects_with_bboxes(
+            video_path, image_paths
+        )
+        print(f"[Pipeline] Object bboxes populated via Grounding DINO for {len(per_frame_objects)} frames")
 
         # Stage 4-5: Contact & Grasp State per Frame
         frames = []
         for i, path in enumerate(image_paths):
             timestamp = (i * sample_every) / fps
             hands = hand_results[i]
+            frame_objs = per_frame_objects[i] if i < len(per_frame_objects) else []
 
             left_hand = hands.get("left")
             right_hand = hands.get("right")
 
-            left_contact = self.contact_detector.detect_contact(left_hand, objects)
-            right_contact = self.contact_detector.detect_contact(right_hand, objects)
+            left_contact = self.contact_detector.detect_contact(left_hand, frame_objs)
+            right_contact = self.contact_detector.detect_contact(right_hand, frame_objs)
 
             left_grasp = self.grasp_classifier.classify(left_hand)
             right_grasp = self.grasp_classifier.classify(right_hand)
@@ -217,7 +237,7 @@ class EgoAnnotatePipeline:
                 image_path=path,
                 left_hand=left_hand,
                 right_hand=right_hand,
-                objects=objects,
+                objects=frame_objs,
                 left_contact=left_contact,
                 right_contact=right_contact,
                 left_grasp=left_grasp,
@@ -225,8 +245,41 @@ class EgoAnnotatePipeline:
             )
             frames.append(frame)
 
-        # Stage 6: Action Segmentation
-        segments = self.action_segmenter.segment_video(video_path)
+        # Build signal timelines for segmentation
+        left_contact_timeline = [f.left_contact for f in frames]
+        right_contact_timeline = [f.right_contact for f in frames]
+        left_grasp_timeline = [f.left_grasp for f in frames]
+        right_grasp_timeline = [f.right_grasp for f in frames]
+        frame_timestamps = [f.timestamp for f in frames]
+
+        # Stage 6a: Signal-based segment boundary detection (deterministic)
+        candidates = self.signal_segmenter.get_candidates(
+            left_contact_timeline,
+            right_contact_timeline,
+            left_grasp_timeline,
+            right_grasp_timeline,
+            frame_timestamps,
+        )
+        print(f"[Pipeline] SignalSegmenter found {len(candidates)} candidate segments")
+
+        # Stage 6b: VLM labeling of pre-computed segments
+        if self.segment_labeler is not None:
+            segments = self.segment_labeler.label_segments(candidates, video_path)
+            print(f"[Pipeline] SegmentLabeler labeled {len(segments)} segments")
+        else:
+            # Fallback: create default segments from candidates
+            segments = []
+            for cand in candidates:
+                segments.append(ActionSegment(
+                    name=cand.transition_type if cand.transition_type != "full_video" else "idle",
+                    start_time=cand.start_time,
+                    end_time=cand.end_time,
+                    object_name=cand.object_name or "unknown",
+                    hand_used="right",
+                    description=f"auto: {cand.contact_state} {cand.grasp_type}",
+                ))
+            print(f"[Pipeline] SegmentLabeler unavailable, using {len(segments)} auto-labeled segments")
+
         # Map segment labels to frames
         for frame in frames:
             assigned = False

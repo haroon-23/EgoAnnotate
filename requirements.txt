@@ -12,6 +12,10 @@ mediapipe>=0.10.0
 # Google Gemini API for language generation
 google-generativeai>=0.7.0
 
+# Grounding DINO for zero-shot object detection
+transformers>=4.30.0
+torch>=2.0.0
+
 # Data export formats
 pandas>=2.0.0
 pyarrow>=12.0.0

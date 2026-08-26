@@ -1,0 +1,14 @@
+video_id,frame_idx,timestamp_sec,object_name,hand,contact_true,grasp_type_true,notes
+my_video,30,1.00,sewing_machine,right,1,power_wrap,Right hand guiding fabric into machine
+my_video,90,3.00,fabric,left,1,precision_pinch,Left hand pinching fabric edge
+my_video,150,5.00,sewing_machine,right,1,power_wrap,Right hand on machine handle
+my_video,300,10.00,fabric,left,1,hook,Left hand holding fabric bundle
+my_video,600,20.00,sewing_machine,right,0,open,Right hand resting near machine
+my_video,900,30.00,pants,left,1,power_wrap,Left hand manipulating pants waistband
+my_video,1200,40.00,fabric,right,1,precision_pinch,Right hand adjusting fabric alignment
+my_video,1800,60.00,sewing_machine,right,1,power_wrap,Continuous sewing motion
+my_video,2700,90.00,pants,left,1,hook,Left hand feeding pants through
+my_video,3600,120.00,fabric,right,0,open,Right hand pausing between seams
+my_video,4500,150.00,sewing_machine,right,1,power_wrap,Final stitching run
+my_video,5100,170.00,scissors,right,1,precision_pinch,Cutting thread at end
+my_video,5300,176.67,fabric,left,0,open,"Task complete; hands resting"

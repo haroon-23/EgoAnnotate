@@ -15,6 +15,7 @@ hand_tracking:
 
 object_detection:
   keyframes_per_video: 3
+  bbox_keyframe_interval: 15
   prompt: |
     Analyze this egocentric video frame. List ALL objects that the person's hands are interacting with or could interact with. For each object, provide name, location in frame, and whether touched. Format as JSON list.
 
@@ -32,9 +33,15 @@ action_computation:
   compute_gripper_state: true
   normalize_actions: true
 
-action_segmentation:
-  prompt: |
-    Analyze this egocentric video. Segment into manipulation primitives with timestamps: approach, contact, grasp, manipulate, release, retreat, idle. For each: action name, start time, end time, object, hand. Format as JSON.
+# Signal-based temporal segmentation (deterministic, no VLM)
+signal_segmentation:
+  min_segment_duration_sec: 0.2
+  merge_gap_sec: 0.3
+  idle_threshold_sec: 1.0
+
+# VLM-based segment labeling (Gemini)
+segment_labeling:
+  # Uses gemini.model from above
 
 language_annotation:
   episode_prompt: "Describe the physical task in this video in one sentence. Be specific. Return ONLY the sentence."
@@ -43,6 +50,12 @@ language_annotation:
 gemini:
   model: "gemini-1.5-flash"
   api_key: null  # Set via GEMINI_API_KEY env var
+
+grounding_dino:
+  model_name: "IDEA-Research/grounding-dino-tiny"
+  confidence_threshold: 0.3
+  box_threshold: 0.3
+  text_threshold: 0.25
 
 output:
   format: "json"

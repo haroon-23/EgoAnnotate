@@ -17,6 +17,7 @@ from src.datatypes import (
     HandLandmarks,
     ObjectAnnotation,
     ActionSegment,
+    CandidateSegment,
     ContactState,
     GraspType
 )
@@ -148,12 +149,27 @@ class TestPipelineIntegration(unittest.TestCase):
         ]
         pipeline.object_detector.detect_objects = MagicMock(return_value=mock_objects)
 
-        # Mock Action Segmenter
-        mock_segments = [
-            ActionSegment(name="approach", start_time=0.0, end_time=1.0, object_name="red_circle", hand_used="right", description="approaching"),
-            ActionSegment(name="contact", start_time=1.0, end_time=2.0, object_name="red_circle", hand_used="right", description="touching")
+        # Mock SignalSegmenter + SegmentLabeler (replaces old action_segmenter)
+        mock_candidates = [
+            CandidateSegment(
+                start_frame=0, end_frame=30, start_time=0.0, end_time=1.0,
+                transition_type="contact_on", contact_state="no_contact", grasp_type="none",
+                object_name=None
+            ),
+            CandidateSegment(
+                start_frame=30, end_frame=60, start_time=1.0, end_time=2.0,
+                transition_type="grasp_change", contact_state="contact", grasp_type="precision_pinch",
+                object_name="red_circle"
+            ),
         ]
-        pipeline.action_segmenter.segment_video = MagicMock(return_value=mock_segments)
+        mock_labeled_segments = [
+            ActionSegment(name="approach", start_time=0.0, end_time=1.0, object_name="red_circle", hand_used="right", description="approaching"),
+            ActionSegment(name="contact", start_time=1.0, end_time=2.0, object_name="red_circle", hand_used="right", description="touching"),
+        ]
+        
+        pipeline.signal_segmenter.get_candidates = MagicMock(return_value=mock_candidates)
+        if pipeline.segment_labeler is not None:
+            pipeline.segment_labeler.label_segments = MagicMock(return_value=mock_labeled_segments)
 
         # Mock Language Generator
         pipeline.language_generator.generate_episode_description = MagicMock(return_value="approaching and touching a red circle")

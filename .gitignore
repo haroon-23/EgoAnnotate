@@ -44,8 +44,12 @@ Thumbs.db
 
 # Project-specific caches and reports
 .gemini_cache.json
+.env
+.env.*
 progress.json
 batch_report.json
 hand_landmarker.task
 .venv/
 .pytest_cache/
+run_log.txt
+*.code-workspace
