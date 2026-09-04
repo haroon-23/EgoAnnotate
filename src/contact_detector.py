@@ -83,11 +83,15 @@ class ContactDetector:
         best_object_name: Optional[str] = None
         best_fingers = np.zeros(5, dtype=bool)
         best_proximity_conf = 0.0
-        best_bbox = None
 
         for obj in objects:
             if obj.bbox is None:
                 continue  # Skip objects without real bbox
+
+            # Exclude person, human, arm, body, hand from being considered contact targets
+            name_lower = obj.name.lower()
+            if any(term in name_lower for term in ["person", "human", "arm", "body", "hand"]):
+                continue
 
             # bbox is [x_min, y_min, x_max, y_max] in normalized coordinates
             x_min, y_min, x_max, y_max = obj.bbox
@@ -95,7 +99,7 @@ class ContactDetector:
             bh = y_max - y_min
 
             obj_fingers = np.zeros(5, dtype=bool)
-            finger_distances = np.full(5, np.inf)  # Track min distance to bbox edge
+
 
             for f_idx in range(5):
                 px = tips[f_idx, 0]
@@ -103,7 +107,6 @@ class ContactDetector:
 
                 # Distance from point to bbox edge (negative = inside)
                 dist = self._distance_to_bbox_edge(px, py, x_min, y_min, bw, bh)
-                finger_distances[f_idx] = dist
 
                 if dist <= self.threshold:
                     obj_fingers[f_idx] = True
@@ -126,7 +129,6 @@ class ContactDetector:
                     best_proximity_conf = proximity_conf
                     best_object_name = obj.name
                     best_fingers = obj_fingers
-                    best_bbox = obj.bbox
 
         # --- 2. Depth consistency heuristic (MediaPipe z is relative, NOT metric 3D) ---
         depth_consistency = self._compute_depth_consistency_score(tips)
@@ -136,6 +138,10 @@ class ContactDetector:
         if best_proximity_conf == 0.0:
             for obj in objects:
                 if obj.bbox is None and obj.touched:
+                    # Exclude person, human, arm, body, hand from fallback touch detection
+                    name_lower = obj.name.lower()
+                    if any(term in name_lower for term in ["person", "human", "arm", "body", "hand"]):
+                        continue
                     # Low confidence fallback: all fingers, no geometry
                     best_object_name = obj.name
                     best_fingers = np.ones(5, dtype=bool)

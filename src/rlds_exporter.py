@@ -112,6 +112,18 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
     language_instructions = []
     actions = np.zeros((num_frames, 24), dtype=np.float32)
 
+    # Retargeted robot joint angles / gripper trajectory
+    has_robot_retargeting = any(f.get("robot_joint_angles") is not None for f in frames)
+    n_robot_dof = 0
+    if has_robot_retargeting:
+        for f in frames:
+            if f.get("robot_joint_angles"):
+                n_robot_dof = len(f["robot_joint_angles"])
+                break
+    robot_joint_angles = np.zeros((num_frames, n_robot_dof), dtype=np.float32) if has_robot_retargeting else None
+    robot_gripper_openings = np.zeros((num_frames, 1), dtype=np.float32) if has_robot_retargeting else None
+    robot_reachabilities = np.zeros((num_frames,), dtype=bool) if has_robot_retargeting else None
+
     is_first = np.zeros(num_frames, dtype=bool)
     is_last = np.zeros(num_frames, dtype=bool)
     is_terminal = np.zeros(num_frames, dtype=bool)
@@ -201,6 +213,16 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
             dtype=np.float32,
         )
 
+        # Retargeted robot arrays
+        if has_robot_retargeting:
+            ja = frame.get("robot_joint_angles")
+            if ja is not None:
+                robot_joint_angles[idx] = np.array(ja, dtype=np.float32)
+            g_op = frame.get("robot_gripper_opening_m")
+            if g_op is not None:
+                robot_gripper_openings[idx] = float(g_op)
+            robot_reachabilities[idx] = bool(frame.get("robot_reachable", False))
+
         # 2.5 language instruction
         language_instructions.append(frame.get("language_instruction", ""))
 
@@ -233,6 +255,11 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
         hand_pose_ds.attrs["hand_pose_note"] = "proxy using finger angles, labs should fit MANO PCA"
 
         obs_group.create_dataset("proprioception", data=proprioceptions, dtype=np.float32)
+
+        if has_robot_retargeting:
+            obs_group.create_dataset("robot_joint_angles", data=robot_joint_angles, dtype=np.float32)
+            obs_group.create_dataset("robot_gripper_opening_m", data=robot_gripper_openings, dtype=np.float32)
+            obs_group.create_dataset("robot_reachable", data=robot_reachabilities, dtype=bool)
 
         # String arrays in HDF5
         utf8_type = h5py.string_dtype(encoding="utf-8")

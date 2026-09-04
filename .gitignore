@@ -2,6 +2,13 @@
 data/
 output/
 
+# Model weights (large binaries — never commit)
+*.safetensors
+*.bin
+*.pth
+scripts/isaac_local/
+scripts/temp_transformers/
+
 # Python
 __pycache__/
 *.pyc

@@ -34,17 +34,19 @@ class HandTrackerConfig:
     model_path: str = "models/hand_landmarker.task"
     running_mode: str = "VIDEO"  # "VIDEO" or "IMAGE"
     num_hands: int = 2
-    min_detection_confidence: float = 0.3
-    min_tracking_confidence: float = 0.5
+    min_detection_confidence: float = 0.2
+    min_tracking_confidence: float = 0.3
     smoothing_window: int = 5
+    max_gap_frames: int = 5
+    max_gap_distance: float = 0.15
 
 
 class HandTracker:
     """Detects and tracks hand landmarks across video frames.
 
     Uses MediaPipe Tasks Vision API (HandLandmarker) in VIDEO mode to ensure
-    temporal consistency, followed by a rolling average smoothing filter to
-    reduce jitter in the 3D landmark coordinates.
+    temporal consistency, followed by a rolling average smoothing filter and
+    a gap-interpolation layer to handle brief occlusions.
     """
 
     # MediaPipe hand landmark connections for drawing the skeleton
@@ -159,9 +161,6 @@ class HandTracker:
                 for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
                     handedness_list = detection_result.handedness[idx]
                     category = handedness_list[0]
-                    # Note: MediaPipe's handedness is mirrored by default for front-facing cameras.
-                    # For egocentric video, we usually treat it directly.
-                    # MediaPipe typically returns 'Left' or 'Right'.
                     handedness_str = category.category_name
                     confidence = category.score
 
@@ -186,7 +185,8 @@ class HandTracker:
                         y=smoothed_pts[:, 1],
                         z=smoothed_pts[:, 2],
                         confidence=confidence,
-                        handedness=handedness_str
+                        handedness=handedness_str,
+                        is_interpolated=False,
                     )
 
                     frame_result[handedness_str.lower()] = hlm
@@ -198,7 +198,63 @@ class HandTracker:
 
             results.append(frame_result)
 
+        # Apply gap interpolation for brief tracking losses
+        self._interpolate_gaps(results)
+
         return results
+
+    def _interpolate_gaps(self, results: List[Dict[str, Optional[HandLandmarks]]]) -> None:
+        """Linearly interpolate missing hand landmarks for gaps <= max_gap_frames."""
+        n_frames = len(results)
+        if n_frames < 3:
+            return
+
+        for side in ("left", "right"):
+            i = 0
+            while i < n_frames:
+                if results[i][side] is None:
+                    start = i
+                    while i < n_frames and results[i][side] is None:
+                        i += 1
+                    end = i - 1
+                    gap_len = end - start + 1
+
+                    # Check if gap is eligible for interpolation
+                    if (
+                        gap_len <= self.config.max_gap_frames
+                        and start > 0
+                        and end < n_frames - 1
+                    ):
+                        prev_hlm = results[start - 1][side]
+                        next_hlm = results[end + 1][side]
+
+                        if prev_hlm is not None and next_hlm is not None:
+                            # Spatial distance check between wrist positions (landmark index 0)
+                            dx = float(next_hlm.x[0] - prev_hlm.x[0])
+                            dy = float(next_hlm.y[0] - prev_hlm.y[0])
+                            wrist_dist = float(np.sqrt(dx * dx + dy * dy))
+
+                            if wrist_dist <= self.config.max_gap_distance:
+                                # Interpolate keypoints for all gap frames
+                                total_steps = end + 1 - (start - 1)
+                                for step_idx, frame_k in enumerate(range(start, end + 1), start=1):
+                                    alpha = float(step_idx) / float(total_steps)
+
+                                    interp_x = (1.0 - alpha) * prev_hlm.x + alpha * next_hlm.x
+                                    interp_y = (1.0 - alpha) * prev_hlm.y + alpha * next_hlm.y
+                                    interp_z = (1.0 - alpha) * prev_hlm.z + alpha * next_hlm.z
+                                    interp_conf = float((1.0 - alpha) * prev_hlm.confidence + alpha * next_hlm.confidence)
+
+                                    results[frame_k][side] = HandLandmarks(
+                                        x=interp_x,
+                                        y=interp_y,
+                                        z=interp_z,
+                                        confidence=interp_conf,
+                                        handedness=prev_hlm.handedness,
+                                        is_interpolated=True,
+                                    )
+                else:
+                    i += 1
 
     def draw_landmarks(self, image: np.ndarray, hands: Dict[str, Optional[HandLandmarks]]) -> np.ndarray:
         """Draw hand skeleton overlays onto an image.

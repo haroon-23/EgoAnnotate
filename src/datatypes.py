@@ -37,6 +37,7 @@ class HandLandmarks:
     z: np.ndarray  # shape (21,)
     confidence: float
     handedness: str
+    is_interpolated: bool = False
 
     # -- helper constants ---------------------------------------------------
     # MediaPipe hand landmark indices for each fingertip.
@@ -73,6 +74,7 @@ class HandLandmarks:
             "z": self.z.tolist(),
             "confidence": self.confidence,
             "handedness": self.handedness,
+            "is_interpolated": self.is_interpolated,
         }
 
     @classmethod
@@ -84,6 +86,7 @@ class HandLandmarks:
             z=np.asarray(data["z"], dtype=np.float32),
             confidence=float(data["confidence"]),
             handedness=str(data["handedness"]),
+            is_interpolated=bool(data.get("is_interpolated", False)),
         )
 
 
@@ -307,6 +310,10 @@ class AnnotationFrame:
     action: Optional[RobotAgnosticAction] = None
     frame_description: str = ""
     action_segment: str = "idle"
+    robot_joint_angles: Optional[List[float]] = None
+    robot_gripper_opening_m: Optional[float] = None
+    robot_gripper_method: Optional[str] = None
+    robot_reachable: Optional[bool] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -333,6 +340,10 @@ class AnnotationFrame:
             "action": self.action.to_dict() if self.action else None,
             "frame_description": self.frame_description,
             "action_segment": self.action_segment,
+            "robot_joint_angles": self.robot_joint_angles,
+            "robot_gripper_opening_m": self.robot_gripper_opening_m,
+            "robot_gripper_method": self.robot_gripper_method,
+            "robot_reachable": self.robot_reachable,
             "metadata": self.metadata,
         }
 
@@ -359,23 +370,23 @@ class AnnotationFrame:
             ],
             left_contact=(
                 ContactState.from_dict(data["left_contact"])
-                if data.get("left_contact")
-                else None
+                if isinstance(data.get("left_contact"), dict)
+                else (ContactState(fingers=np.zeros(5, dtype=bool), object_name=data.get("left_contact_object"), in_contact=bool(data["left_contact"])) if isinstance(data.get("left_contact"), bool) else None)
             ),
             right_contact=(
                 ContactState.from_dict(data["right_contact"])
-                if data.get("right_contact")
-                else None
+                if isinstance(data.get("right_contact"), dict)
+                else (ContactState(fingers=np.zeros(5, dtype=bool), object_name=data.get("right_contact_object"), in_contact=bool(data["right_contact"])) if isinstance(data.get("right_contact"), bool) else None)
             ),
             left_grasp=(
                 GraspType.from_dict(data["left_grasp"])
-                if data.get("left_grasp")
-                else None
+                if isinstance(data.get("left_grasp"), dict)
+                else (GraspType(type=str(data["left_grasp"]), confidence=1.0, thumb_index_distance=0.0, num_curled_fingers=0) if isinstance(data.get("left_grasp"), str) else None)
             ),
             right_grasp=(
                 GraspType.from_dict(data["right_grasp"])
-                if data.get("right_grasp")
-                else None
+                if isinstance(data.get("right_grasp"), dict)
+                else (GraspType(type=str(data["right_grasp"]), confidence=1.0, thumb_index_distance=0.0, num_curled_fingers=0) if isinstance(data.get("right_grasp"), str) else None)
             ),
             action=(
                 RobotAgnosticAction.from_dict(data["action"])
@@ -384,6 +395,18 @@ class AnnotationFrame:
             ),
             frame_description=str(data.get("frame_description", "")),
             action_segment=str(data.get("action_segment", "idle")),
+            robot_joint_angles=data.get("robot_joint_angles"),
+            robot_gripper_opening_m=(
+                float(data["robot_gripper_opening_m"])
+                if data.get("robot_gripper_opening_m") is not None
+                else None
+            ),
+            robot_gripper_method=data.get("robot_gripper_method"),
+            robot_reachable=(
+                bool(data["robot_reachable"])
+                if data.get("robot_reachable") is not None
+                else None
+            ),
             metadata=dict(data.get("metadata", {})),
         )
 

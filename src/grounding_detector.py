@@ -14,19 +14,17 @@ from typing import List, Optional
 
 import cv2
 import numpy as np
-import torch
-
 from .datatypes import ObjectAnnotation
-
 logger = logging.getLogger(__name__)
 
 try:
+    import torch
     from transformers import AutoProcessor, OwlViTForObjectDetection
     OWL_VIT_AVAILABLE = True
 except ImportError:
     OWL_VIT_AVAILABLE = False
     logger.warning(
-        "transformers not installed. OWL-ViT will not be available. "
+        "transformers or torch not installed. OWL-ViT will not be available. "
         "Install via: pip install transformers>=4.30.0 torch>=2.0.0"
     )
 
@@ -93,12 +91,14 @@ class GroundingDINODetector:
         self,
         image: np.ndarray,
         object_names: List[str],
+        threshold: Optional[float] = None,
     ) -> List[ObjectAnnotation]:
         """Detect objects in an image using OWL-ViT.
         
         Args:
             image: Input image as numpy array (BGR or RGB, HxWx3)
             object_names: List of object names to search for (text prompts)
+            threshold: Optional confidence threshold override.
             
         Returns:
             List of ObjectAnnotation with populated bbox in normalized [0, 1] coordinates
@@ -109,6 +109,8 @@ class GroundingDINODetector:
         
         if not object_names:
             return []
+        
+        confidence_thresh = self.config.confidence_threshold if threshold is None else threshold
         
         # Convert BGR to RGB if needed
         if image.shape[2] == 3:
@@ -135,14 +137,14 @@ class GroundingDINODetector:
             target_sizes = torch.tensor([image_rgb.shape[:2]]).to(self._device)
             results = self._processor.post_process_object_detection(
                 outputs,
-                threshold=self.config.confidence_threshold,
+                threshold=confidence_thresh,
                 target_sizes=target_sizes
             )[0]
             
             # Convert results to ObjectAnnotation list
             annotations = []
             for box, score, label_idx in zip(results["boxes"], results["scores"], results["labels"]):
-                if score < self.config.confidence_threshold:
+                if score < confidence_thresh:
                     continue
                 
                 # Map label index to object name

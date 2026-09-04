@@ -112,6 +112,8 @@ class DatasetExporter:
                 "image_path": frame.image_path,
                 "left_hand_present": frame.left_hand is not None,
                 "right_hand_present": frame.right_hand is not None,
+                "left_hand_interpolated": frame.left_hand.is_interpolated if frame.left_hand is not None else False,
+                "right_hand_interpolated": frame.right_hand.is_interpolated if frame.right_hand is not None else False,
                 "left_hand_keypoints": left_kp,
                 "right_hand_keypoints": right_kp,
                 "left_contact": left_contact_val,
@@ -125,6 +127,10 @@ class DatasetExporter:
                 "action_gripper_openness": action_gripper,
                 "language_instruction": lang_inst,
                 "action_segment": frame.action_segment,
+                "robot_joint_angles": frame.robot_joint_angles,
+                "robot_gripper_opening_m": frame.robot_gripper_opening_m,
+                "robot_gripper_method": frame.robot_gripper_method,
+                "robot_reachable": frame.robot_reachable,
             }
             frame_data.append(row)
 

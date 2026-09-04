@@ -27,3 +27,6 @@ matplotlib>=3.7.0
 # LeRobot v2.1 export video compilation
 imageio[ffmpeg]
 
+# Retargeting: robot simulation and URDF parsing
+pybullet>=3.2.5
+urdfpy>=0.0.22

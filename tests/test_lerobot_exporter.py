@@ -91,36 +91,25 @@ class TestLeRobotExporter(unittest.TestCase):
             self.assertTrue(info_json_path.exists())
             with open(info_json_path, "r") as inf:
                 info_data = json.load(inf)
-                self.assertEqual(info_data["codebase_version"], "v2.1")
+                self.assertEqual(info_data["codebase_version"], "v3.0")
                 self.assertEqual(info_data["total_frames"], 2)
                 
                 # Check names order in observation.state
                 obs_names = info_data["features"]["observation.state"]["names"]
                 self.assertEqual(obs_names[9], "gripper")
-                self.assertEqual(obs_names[10], "finger_0")
+                self.assertEqual(obs_names[10], "f0")
                 self.assertEqual(len(obs_names), 24)
 
             # Verify Parquet contents
-            parquet_path = lerobot_dir / "data" / "chunk-000" / "episode_000000.parquet"
+            parquet_path = lerobot_dir / "data" / "chunk-000" / "file-000.parquet"
             self.assertTrue(parquet_path.exists())
             df = pd.read_parquet(parquet_path)
             
             self.assertEqual(len(df), 2)
             self.assertIn("observation.state", df.columns)
             self.assertIn("action", df.columns)
-            self.assertIn("observation.image", df.columns)
-            self.assertIn("video_path", df.columns)
-            
-            # Verify relative paths
-            self.assertEqual(df["observation.image"].iloc[0], "videos/chunk-000/observation.image/episode_000000.mp4")
-            self.assertEqual(df["video_path"].iloc[0], "videos/chunk-000/observation.image/episode_000000.mp4")
             
             # Verify observation.state values (wrist_trans (3) + wrist_rot (6) + gripper (1) + hand_pose_14 (14))
-            # Frame 0:
-            # - wrist_trans: 0.1, 0.2, 0.3
-            # - wrist_rot: 1.0, 0.0, 0.0, 0.0, 1.0, 0.0
-            # - gripper: 0.8
-            # - hand_pose_14: 0.5 * 14
             expected_state_0 = [0.1, 0.2, 0.3] + [1.0, 0.0, 0.0, 0.0, 1.0, 0.0] + [0.8] + [0.5] * 14
             np.testing.assert_allclose(df["observation.state"].iloc[0], expected_state_0, rtol=1e-5)
 

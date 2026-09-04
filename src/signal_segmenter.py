@@ -144,7 +144,14 @@ class SignalSegmenter:
             start_t = frame_timestamps[start_f]
             end_t = frame_timestamps[min(end_f, n_frames - 1)]
             
-            # Determine segment properties from middle frame
+            # Extract most frequent non-null object within segment frames
+            seg_objs = [o for o in object_names[start_f:end_f] if o is not None]
+            if seg_objs:
+                from collections import Counter
+                seg_obj = Counter(seg_objs).most_common(1)[0][0]
+            else:
+                seg_obj = None
+            
             mid_f = (start_f + end_f) // 2
             if mid_f >= n_frames:
                 mid_f = n_frames - 1
@@ -161,16 +168,16 @@ class SignalSegmenter:
                 transition_type=trans_type,
                 contact_state=contact_states[mid_f],
                 grasp_type=grasp_types[mid_f],
-                object_name=object_names[mid_f],
+                object_name=seg_obj,
             ))
         
-        # --- 5. Filter jitter (merge segments shorter than min duration) ---
+        # --- 5. Filter jitter (state-aware noise filtering) ---
         filtered = self._filter_jitter(raw_segments, frame_timestamps)
         
         # --- 6. Merge adjacent segments of same type ---
         merged = self._merge_adjacent_same_type(filtered)
         
-        # --- 7. Ensure at least one segment ---
+        # --- 7. Ensure at least one segment & Sanity Check ---
         if not merged:
             merged = [CandidateSegment(
                 start_frame=0,
@@ -182,7 +189,17 @@ class SignalSegmenter:
                 grasp_type=grasp_types[0],
                 object_name=object_names[0],
             )]
-        
+
+        # Sanity check: Flag if segment count collapsed relative to raw contact transitions
+        raw_contact_transitions = len([i for i in range(1, n_frames) if contact_states[i] != contact_states[i - 1]])
+        if raw_contact_transitions >= 5 and len(merged) == 1:
+            msg = (
+                f"[SignalSegmenter] SANITY WARNING: Video has {raw_contact_transitions} contact state transitions "
+                f"across {n_frames} frames but segmenter produced ONLY 1 segment. Segmentation collapse detected!"
+            )
+            logger.warning(msg)
+            print(f"⚠ WARNING: {msg}")
+
         return merged
     
     def _find_idle_boundaries(
@@ -224,8 +241,8 @@ class SignalSegmenter:
         segments: List[CandidateSegment],
         timestamps: List[float],
     ) -> List[CandidateSegment]:
-        """Merge segments shorter than min duration into adjacent segments."""
-        if not segments:
+        """Merge short jitter segments (< min_duration) into adjacent same-type segments."""
+        if len(segments) <= 1:
             return segments
         
         filtered = []
@@ -238,34 +255,43 @@ class SignalSegmenter:
                 filtered.append(seg)
                 i += 1
             else:
-                # Too short - merge with adjacent segment
-                if i > 0:
-                    # Merge with previous
+                # Short segment: attempt to resolve noise without crossing contact boundaries
+                if filtered and filtered[-1].contact_state == seg.contact_state:
                     prev = filtered[-1]
-                    new_seg = CandidateSegment(
+                    filtered[-1] = CandidateSegment(
                         start_frame=prev.start_frame,
                         end_frame=seg.end_frame,
                         start_time=prev.start_time,
                         end_time=seg.end_time,
                         transition_type=prev.transition_type,
                         contact_state=prev.contact_state,
-                        grasp_type=prev.grasp_type,
-                        object_name=prev.object_name,
+                        grasp_type=prev.grasp_type if prev.grasp_type != "unknown" else seg.grasp_type,
+                        object_name=prev.object_name or seg.object_name,
                     )
-                    filtered[-1] = new_seg
-                elif i + 1 < len(segments):
-                    # Merge with next (will be handled in next iteration)
-                    # For now, keep and let next iteration merge
-                    filtered.append(seg)
+                elif filtered and i + 1 < len(segments) and filtered[-1].contact_state == segments[i + 1].contact_state:
+                    # Glitch pulse (A -> B_short -> A): merge pulse into prev
+                    prev = filtered[-1]
+                    next_seg = segments[i + 1]
+                    filtered[-1] = CandidateSegment(
+                        start_frame=prev.start_frame,
+                        end_frame=next_seg.end_frame,
+                        start_time=prev.start_time,
+                        end_time=next_seg.end_time,
+                        transition_type=prev.transition_type,
+                        contact_state=prev.contact_state,
+                        grasp_type=prev.grasp_type if prev.grasp_type != "unknown" else next_seg.grasp_type,
+                        object_name=prev.object_name or next_seg.object_name,
+                    )
+                    i += 1  # consumed next_seg
                 else:
-                    # Only segment, keep it
+                    # Genuine state boundary transition — keep to preserve segment structure
                     filtered.append(seg)
                 i += 1
         
         return filtered
     
     def _merge_adjacent_same_type(self, segments: List[CandidateSegment]) -> List[CandidateSegment]:
-        """Merge adjacent segments with same contact_state and grasp_type."""
+        """Merge adjacent segments with same contact_state, compatible grasp_type, and object."""
         if len(segments) <= 1:
             return segments
         
@@ -274,31 +300,31 @@ class SignalSegmenter:
         for seg in segments[1:]:
             last = merged[-1]
             
-            # Check if same type (contact state + grasp type)
-            same_type = (
-                last.contact_state == seg.contact_state and
-                last.grasp_type == seg.grasp_type and
-                (last.object_name == seg.object_name or 
-                 (last.object_name is None and seg.object_name is None))
+            same_contact = (last.contact_state == seg.contact_state)
+            same_grasp = (
+                last.grasp_type == seg.grasp_type or 
+                last.grasp_type in ("none", "unknown") or 
+                seg.grasp_type in ("none", "unknown")
+            )
+            same_obj = (
+                last.object_name == seg.object_name or 
+                (last.object_name is None and seg.object_name is None)
             )
             
-            # Check time gap
             gap = seg.start_time - last.end_time
-            can_merge = same_type and gap <= self.config.merge_gap_sec
+            can_merge = same_contact and same_grasp and same_obj and (gap <= self.config.merge_gap_sec)
             
             if can_merge:
-                # Merge
-                new_seg = CandidateSegment(
+                merged[-1] = CandidateSegment(
                     start_frame=last.start_frame,
                     end_frame=seg.end_frame,
                     start_time=last.start_time,
                     end_time=seg.end_time,
                     transition_type=last.transition_type,
                     contact_state=last.contact_state,
-                    grasp_type=last.grasp_type,
-                    object_name=last.object_name,
+                    grasp_type=seg.grasp_type if seg.grasp_type not in ("none", "unknown") else last.grasp_type,
+                    object_name=last.object_name or seg.object_name,
                 )
-                merged[-1] = new_seg
             else:
                 merged.append(seg)
         

@@ -52,12 +52,17 @@ gemini:
   api_key: null  # Set via GEMINI_API_KEY env var
 
 grounding_dino:
-  model_name: "IDEA-Research/grounding-dino-tiny"
-  confidence_threshold: 0.3
-  box_threshold: 0.3
-  text_threshold: 0.25
+  model_name: "google/owlvit-base-patch32"
+  confidence_threshold: 0.1
+  box_threshold: 0.1
+  text_threshold: 0.1
 
 output:
   format: "json"
   include_image_bytes: false
   save_viz_video: true
+
+retargeting:
+  enable: true
+  config_path: "configs/retargeting_franka.yaml"
+  save_proof_video: true

@@ -468,6 +468,40 @@ class EgoVisualizer:
         
         return img
 
+    def _draw_ik_status(self, img: np.ndarray, frame: AnnotationFrame, episode: AnnotatedEpisode, w: int, h: int) -> None:
+        """Draw small IK status badge in top right if retargeting signal is present."""
+        if frame.robot_reachable is None:
+            return
+
+        is_valid = bool(frame.robot_reachable)
+        robot = episode.target_robot or "robot"
+        text = f"IK: VALID ({robot})" if is_valid else "IK: FALLBACK"
+        color = (0, 220, 0) if is_valid else (0, 140, 255)  # Green or Orange
+
+        # Position in top right
+        pad_x, pad_y = 10, 8
+        txt_size = cv2.getTextSize(text, self.cfg.font, 0.4, 1)[0]
+        bx2 = w - 10
+        bx1 = bx2 - txt_size[0] - pad_x * 2
+        by1 = 8
+        by2 = by1 + txt_size[1] + pad_y * 2
+
+        overlay = img.copy()
+        cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.85, img, 0.15, 0, img)
+        cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 1, cv2.LINE_AA)
+
+        cv2.putText(
+            img,
+            text,
+            (bx1 + pad_x, by2 - pad_y),
+            self.cfg.font,
+            0.4,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
     def _render_frame_with_all_overlays(
         self,
         img: np.ndarray,
@@ -475,26 +509,29 @@ class EgoVisualizer:
         episode: AnnotatedEpisode,
         total_frames: int,
     ) -> np.ndarray:
-        """Extended render frame with all new overlays."""
+        """Extended render frame with all overlays including IK status."""
         h, w = img.shape[:2]
         
         # 1. Draw skeletons (existing)
         self._draw_skeletons(img, frame, w, h)
         
-        # 2. Draw contact overlay (NEW)
+        # 2. Draw contact overlay
         hands_dict = {"left": frame.left_hand, "right": frame.right_hand}
         contact_states = {"left": frame.left_contact, "right": frame.right_contact}
         grasps_dict = {"left": frame.left_grasp, "right": frame.right_grasp}
         
         self.draw_contact_overlay(img, hands_dict, frame.objects, contact_states)
         
-        # 3. Draw grasp labels (NEW)
+        # 3. Draw grasp labels
         self.draw_grasp_label(img, hands_dict, grasps_dict, contact_states)
         
         # 4. Draw panels (existing HUD)
         self._draw_panels(img, frame, w, h, episode)
         
-        # 5. Draw detailed segment timeline (NEW)
+        # 5. Draw IK status badge (NEW)
+        self._draw_ik_status(img, frame, episode, w, h)
+
+        # 6. Draw detailed segment timeline
         self.draw_segment_timeline(img, frame.frame_idx, episode.segments, 30.0, total_frames)
         
         return img

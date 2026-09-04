@@ -38,7 +38,7 @@ class TestGroundingDINODetector(unittest.TestCase):
     def test_detector_creation(self):
         """Test that detector can be created (or gracefully fails)."""
         config = GroundingDINOConfig(
-            model_name="IDEA-Research/grounding-dino-tiny",
+            model_name="google/owlvit-base-patch32",
             confidence_threshold=0.3,
         )
         
@@ -57,7 +57,7 @@ class TestGroundingDINODetector(unittest.TestCase):
             self.skipTest("No test video available")
         
         config = GroundingDINOConfig(
-            model_name="IDEA-Research/grounding-dino-tiny",
+            model_name="google/owlvit-base-patch32",
             confidence_threshold=0.3,
         )
         detector = create_grounding_detector(config)
@@ -89,7 +89,7 @@ class TestGroundingDINODetector(unittest.TestCase):
         if self.test_frame is None:
             self.skipTest("No test video available")
         
-        config = GroundingDINOConfig(model_name="IDEA-Research/grounding-dino-tiny")
+        config = GroundingDINOConfig(model_name="google/owlvit-base-patch32")
         detector = create_grounding_detector(config)
         
         if detector is None:
@@ -103,7 +103,7 @@ class TestGroundingDINODetector(unittest.TestCase):
         if self.test_frame is None:
             self.skipTest("No test video available")
         
-        config = GroundingDINOConfig(model_name="IDEA-Research/grounding-dino-tiny")
+        config = GroundingDINOConfig(model_name="google/owlvit-base-patch32")
         detector = create_grounding_detector(config)
         
         if detector is None:

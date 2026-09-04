@@ -4,6 +4,7 @@ Two-stage approach:
 1. Gemini identifies WHAT objects are present and their touch state (semantic understanding)
 2. Grounding DINO localizes each object with REAL bounding boxes (spatial precision)
 """
+import logging
 import os
 import time
 import json
@@ -15,6 +16,8 @@ from PIL import Image
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
@@ -25,8 +28,8 @@ from .datatypes import ObjectAnnotation
 from .grounding_detector import GroundingDINODetector, GroundingDINOConfig, create_grounding_detector
 
 
-MAX_RETRIES = 2
-RETRY_DELAY = 3
+MAX_RETRIES = 6
+RETRY_DELAY = 10
 
 
 @dataclass
@@ -36,7 +39,7 @@ class ObjectDetectorConfig:
     gemini_model: str = "gemini-1.5-pro-latest"
     prompt: str = "Identify all objects in the frame. Respond in JSON format."
     # Grounding DINO settings (optional, can be overridden by pipeline config)
-    grounding_dino_model: str = "IDEA-Research/grounding-dino-tiny"
+    grounding_dino_model: str = "google/owlvit-base-patch32"
     grounding_dino_confidence: float = 0.3
     grounding_dino_box_threshold: float = 0.3
     grounding_dino_text_threshold: float = 0.25
@@ -84,16 +87,14 @@ class GeminiObjectDetector:
         genai.configure(api_key=api_key)
         
         model_name = self.config.gemini_model
-        if model_name == "gemini-1.5-flash":
-            model_name = "gemini-flash-latest"
-        elif model_name == "models/gemini-1.5-flash":
-            model_name = "models/gemini-flash-latest"
+        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest"]:
+            model_name = "gemini-flash-lite-latest"
             
         if not model_name.startswith("models/") and model_name != "gemini-1.5-pro-latest":
             model_name = f"models/{model_name}"
         
         self._model = genai.GenerativeModel(model_name)
-        print(f"[ObjectDetector] Using Gemini: {model_name}")
+        logger.debug("[ObjectDetector] Using Gemini: %s", model_name)
     
     def _init_grounding_dino(self):
         """Initialize Grounding DINO detector for bbox localization."""
@@ -105,9 +106,9 @@ class GeminiObjectDetector:
         )
         self._grounding_detector = create_grounding_detector(gd_config)
         if self._grounding_detector:
-            print(f"[ObjectDetector] Grounding DINO: {self.config.grounding_dino_model} (bbox localization enabled)")
+            logger.debug("[ObjectDetector] Grounding DINO: %s (bbox localization enabled)", self.config.grounding_dino_model)
         else:
-            print("[ObjectDetector] Grounding DINO: unavailable (will use Gemini location descriptions only)")
+            logger.warning("[ObjectDetector] Grounding DINO: unavailable (will use Gemini location descriptions only)")
     
     def detect_objects(self, video_path: str) -> List[ObjectAnnotation]:
         """Detect objects from keyframes using Gemini only (no bboxes).
@@ -140,8 +141,10 @@ class GeminiObjectDetector:
             if pil_image.width > 1024 or pil_image.height > 1024:
                 pil_image.thumbnail((1024, 1024))
             
+            # Let the exception propagate up, do NOT catch and ignore!
             objects = self._call_gemini_fast(pil_image)
             all_objects.extend(objects)
+            time.sleep(10)
         
         cap.release()
         
@@ -155,7 +158,7 @@ class GeminiObjectDetector:
                 deduped[obj.name] = obj
         
         result = list(deduped.values())
-        print(f"[ObjectDetector] {len(result)} objects (Gemini only): {[o.name for o in result]}")
+        logger.debug("[ObjectDetector] %d objects (Gemini only): %s", len(result), [o.name for o in result])
         return result
     
     def detect_objects_with_bboxes(self, video_path: str) -> List[ObjectAnnotation]:
@@ -171,7 +174,7 @@ class GeminiObjectDetector:
         
         # Stage 2: Grounding DINO localizes each object
         if self._grounding_detector is None:
-            print("[ObjectDetector] Grounding DINO not available, returning Gemini results without bboxes")
+            logger.warning("[ObjectDetector] Grounding DINO not available, returning Gemini results without bboxes")
             return gemini_objects
         
         # Extract object names for Grounding DINO
@@ -187,7 +190,7 @@ class GeminiObjectDetector:
         cap.release()
         
         if not ret:
-            print("[ObjectDetector] Could not read frame for Grounding DINO, returning Gemini results")
+            logger.warning("[ObjectDetector] Could not read frame for Grounding DINO, returning Gemini results")
             return gemini_objects
         
         # Run Grounding DINO detection
@@ -212,7 +215,7 @@ class GeminiObjectDetector:
                 # Object detected by Gemini but not localized by DINO
                 merged.append(gemini_obj)
         
-        print(f"[ObjectDetector] {len(merged)} objects with bboxes: {[o.name for o in merged]}")
+        logger.debug("[ObjectDetector] %d objects with bboxes: %s", len(merged), [o.name for o in merged])
         return merged
 
     def detect_per_frame_objects_with_bboxes(
@@ -228,22 +231,37 @@ class GeminiObjectDetector:
             List of ObjectAnnotation lists, one per frame in image_paths.
         """
         gemini_objects = self.detect_objects(video_path)
-        if not gemini_objects:
-            return [[] for _ in image_paths]
 
         if self._grounding_detector is None or not image_paths:
-            print("[ObjectDetector] Grounding DINO not available, returning Gemini results for all frames")
+            logger.warning("[ObjectDetector] Grounding DINO not available, returning Gemini results for all frames")
             return [gemini_objects for _ in image_paths]
 
         object_names = [obj.name for obj in gemini_objects]
+        # Exclude person, human, arm, body from OWL-ViT candidate list
+        object_names = [
+            name for name in object_names 
+            if not any(term in name.lower() for term in ["person", "human", "arm", "body"])
+        ]
         interval = max(1, self.config.bbox_keyframe_interval)
         num_frames = len(image_paths)
 
-        # Step 1: Detect DINO bboxes on keyframe images
+        # Open video capture to read full-resolution original frames specifically for object detection
+        cap = cv2.VideoCapture(str(video_path))
+        total_orig_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+
+        def get_fullres_frame(idx: int) -> Optional[np.ndarray]:
+            if cap.isOpened() and total_orig_frames > 0:
+                orig_idx = int(round(idx * (total_orig_frames - 1) / max(1, num_frames - 1)))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, orig_idx)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return frame
+            return cv2.imread(image_paths[idx])
+
+        # Step 1: Detect DINO bboxes on keyframe images (using full-resolution frames)
         keyframe_bboxes: dict = {}
         for idx in range(0, num_frames, interval):
-            img_path = image_paths[idx]
-            frame_img = cv2.imread(img_path)
+            frame_img = get_fullres_frame(idx)
             if frame_img is not None:
                 dino_results = self._grounding_detector.detect(frame_img, object_names)
                 if dino_results:
@@ -252,11 +270,14 @@ class GeminiObjectDetector:
         # Ensure last frame is also sampled if needed
         last_idx = num_frames - 1
         if last_idx not in keyframe_bboxes and last_idx > 0:
-            frame_img = cv2.imread(image_paths[last_idx])
+            frame_img = get_fullres_frame(last_idx)
             if frame_img is not None:
                 dino_results = self._grounding_detector.detect(frame_img, object_names)
                 if dino_results:
                     keyframe_bboxes[last_idx] = {obj.name: obj.bbox for obj in dino_results if obj.bbox is not None}
+
+        if cap.isOpened():
+            cap.release()
 
         # Step 2: Interpolate/propagate per-frame bboxes
         sorted_k_indices = sorted(keyframe_bboxes.keys())
@@ -302,9 +323,10 @@ class GeminiObjectDetector:
 
             per_frame_results.append(frame_objects)
 
-        print(
-            f"[ObjectDetector] Generated per-frame bboxes for {num_frames} frames "
-            f"({len(keyframe_bboxes)} DINO keyframe samples at interval {interval})"
+        logger.debug(
+            "[ObjectDetector] Generated per-frame bboxes for %d frames "
+            "(%d DINO keyframe samples at interval %d)",
+            num_frames, len(keyframe_bboxes), interval
         )
         return per_frame_results
     
@@ -312,32 +334,31 @@ class GeminiObjectDetector:
         """Call Gemini with strict retry limits. Fast fail on fatal errors."""
         prompt = self.config.prompt or """Analyze this egocentric video frame. List ALL objects the hands are interacting with or could interact with. For each: name, location (top-left/center/bottom-right), touched (yes/no). Format as JSON list. Example: [{"name":"red_cup","location":"center","touched":true}]"""
         
+        last_error = None
         for attempt in range(MAX_RETRIES):
             try:
-                response = self._model.generate_content([prompt, pil_image], generation_config={"temperature": 0.1})
+                response = self._model.generate_content([prompt, pil_image], generation_config={"temperature": 0.1}, request_options={"timeout": 5.0})
                 return self._parse_response(response.text)
             
             except Exception as e:
+                last_error = e
                 err = str(e).lower()
                 
                 # FATAL: wrong model, auth failure — fail immediately
                 if any(k in err for k in ["404", "not found", "no longer available", "invalid model", "api key not valid", "permission denied"]):
-                    print(f"[FATAL] {e}")
-                    print(f"[FATAL] Fix: change model in configs/default.yaml to gemini-1.5-flash")
-                    raise
+                    logger.error("[FATAL] Gemini API fatal error: %s", e)
+                    raise RuntimeError(f"Gemini API call failed with fatal error: {e}") from e
                 
                 # Rate limit — short wait then retry
                 if any(k in err for k in ["rate limit", "quota", "429", "resource exhausted"]):
                     wait = RETRY_DELAY * (attempt + 1)
-                    print(f"[RETRY] Rate limit. Wait {wait}s...")
+                    logger.warning("[RETRY] Rate limit. Waiting %ds before retry...", wait)
                     time.sleep(wait)
                 else:
-                    print(f"[RETRY] {attempt+1}/{MAX_RETRIES}: {e}")
+                    logger.warning("[RETRY] Attempt %d/%d failed: %s", attempt + 1, MAX_RETRIES, e)
                     time.sleep(RETRY_DELAY)
-                
-                if attempt == MAX_RETRIES - 1:
-                    print(f"[FAILED] Object detection failed after retries")
-                    return []
+        
+        raise RuntimeError(f"Gemini VLM API Call failed after {MAX_RETRIES} attempts. Last error: {last_error}")
         
         return []
     
@@ -373,7 +394,7 @@ class GeminiObjectDetector:
             annotations = []
             for item in object_list:
                 if isinstance(item, dict):
-                    name = item.get("name", item.get("object", "unknown"))
+                    name = item.get("name", item.get("object", item.get("label", "unknown")))
                     loc = item.get("location", item.get("location_description", "unknown"))
                     touched = bool(item.get("touched", False))
                     annotations.append(ObjectAnnotation(name=name, location_description=loc, touched=touched))
@@ -385,8 +406,8 @@ class GeminiObjectDetector:
         # 3. Fallback: regex search for JSON-like lines in broken JSON
         annotations = []
         for line in text.split("\n"):
-            if "name" in line or "object" in line:
-                name_match = re.search(r'["\']?(?:name|object)["\']?\s*[:=]\s*["\']?([^"\'\r\n,}]+)', line)
+            if "name" in line or "object" in line or "label" in line:
+                name_match = re.search(r'["\']?(?:name|object|label)["\']?\s*[:=]\s*["\']?([^"\'\r\n,}]+)', line)
                 if name_match:
                     name = name_match.group(1).strip().strip('"\'')
                     

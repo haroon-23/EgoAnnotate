@@ -92,13 +92,11 @@ class SegmentLabeler:
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set.")
         
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=api_key, transport='rest')
         
         model_name = self.config.gemini_model
-        if model_name == "gemini-1.5-flash":
-            model_name = "gemini-flash-latest"
-        elif model_name == "models/gemini-1.5-flash":
-            model_name = "models/gemini-flash-latest"
+        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest"]:
+            model_name = "gemini-flash-lite-latest"
             
         if not model_name.startswith("models/") and model_name != "gemini-1.5-pro-latest":
             model_name = f"models/{model_name}"
@@ -209,7 +207,8 @@ class SegmentLabeler:
             try:
                 response = self._model.generate_content(
                     [prompt, image],
-                    generation_config={"temperature": 0.1}
+                    generation_config={"temperature": 0.1},
+                    request_options={"timeout": 5.0}
                 )
                 return self._parse_response(response.text)
             

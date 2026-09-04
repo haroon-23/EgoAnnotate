@@ -1,0 +1,59 @@
+# Retargeting configuration for KUKA LBR iiwa 14 R820
+#
+# URDF source: bundled with pybullet_data (kuka_iiwa/model.urdf)
+# DOF: 7 revolute arm joints, NO gripper in the base URDF.
+# Joint names: lbr_iiwa_joint_1 through lbr_iiwa_joint_7
+# End-effector link: lbr_iiwa_link_7 (tip of the wrist)
+#
+# This config proves the pipeline is URDF-agnostic:
+# ONLY this file changes vs retargeting_franka.yaml — zero code changes required.
+#
+# KUKA iiwa workspace (roughly):
+#   Max reach: ~820 mm from base origin
+#   Typical tabletop: 0.3–0.7 m from base, centred near x=0.4, y=0
+#
+# Gripper: iiwa has no gripper in this URDF. gripper_joint_names is empty.
+# GripperMapper will default to full-open (max-opening) for every frame
+# and report method="no_hand" (no gripper joints to actuate).
+
+robot:
+  # KUKA iiwa URDF from pybullet_data — no custom path needed
+  target_urdf_path: null
+  # To use the bundled kuka URDF, set urdf_key below instead of target_urdf_path.
+  # The retargeter will resolve this relative to pybullet_data.getDataPath().
+  urdf_key: "kuka_iiwa/model.urdf"
+
+  # End-effector: last link before the tool flange
+  end_effector_link: "lbr_iiwa_link_7"
+
+  # KUKA base URDF has no gripper — empty list
+  gripper_joint_names: []
+
+  # KUKA iiwa workspace bounds (metres, robot base frame)
+  # Reachable envelope: ~820mm radius sphere, typical tabletop task range:
+  workspace_bounds:
+    x_min: 0.20
+    x_max: 0.70
+    y_min: -0.35
+    y_max: 0.35
+    z_min: 0.15
+    z_max: 0.70
+
+pose_mapper:
+  preferred_hand: "right"
+  z_floor_m: 0.10
+  orientation_scale: 1.0
+
+ik_solver:
+  max_iterations: 200
+  residual_threshold_m: 0.005
+  joint_damping: 0.005
+  num_attempts: 3
+
+gripper_mapper:
+  confidence_threshold: 0.6
+  hand_ref_size_m: 0.18
+  smoothing_alpha: 0.3
+
+output:
+  output_dir: "data/output/retargeting_kuka"

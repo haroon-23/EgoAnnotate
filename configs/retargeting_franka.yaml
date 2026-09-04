@@ -1,0 +1,50 @@
+# Retargeting configuration for Franka Panda
+# Used as the default robot. Switch to a different robot by pointing --config
+# at configs/retargeting_kuka.yaml (or any other robot-specific config).
+#
+# ALL robot-specific settings (URDF path, end-effector, gripper joints, workspace)
+# live here — no code changes required to swap robots.
+
+robot:
+  # Path to URDF. null = use the bundled Franka Panda from pybullet_data.
+  target_urdf_path: null
+
+  # Name of the link to use as the IK end-effector target.
+  # Must be a valid link name in the loaded URDF.
+  end_effector_link: "panda_link8"
+
+  # Names of the prismatic gripper finger joints in the URDF.
+  # Leave empty ([]) if the robot has no gripper in the URDF.
+  gripper_joint_names:
+    - "panda_finger_joint1"
+    - "panda_finger_joint2"
+
+  # Robot workspace bounds (metres, in robot base frame).
+  # The human wrist trajectory is linearly mapped into this box.
+  # Tuned for Franka Panda tabletop manipulation reach envelope.
+  workspace_bounds:
+    x_min: 0.30
+    x_max: 0.65
+    y_min: -0.30
+    y_max: 0.30
+    z_min: 0.20
+    z_max: 0.65
+
+pose_mapper:
+  preferred_hand: "right"    # "right" | "left" | "auto"
+  z_floor_m: 0.10            # minimum EE height above base (prevents below-table targets)
+  orientation_scale: 1.0     # 1.0 = full wrist rotation, reduce if IK becomes unstable
+
+ik_solver:
+  max_iterations: 200
+  residual_threshold_m: 0.005   # 5 mm — frame marked unreachable if exceeded
+  joint_damping: 0.005
+  num_attempts: 3               # random restarts per frame to escape local minima
+
+gripper_mapper:
+  confidence_threshold: 0.6    # grasp_type used if confidence >= this, else continuous_distance
+  hand_ref_size_m: 0.18        # reference adult hand size for continuous_distance scaling
+  smoothing_alpha: 0.3         # exponential smoothing [0=none, 1=hold]
+
+output:
+  output_dir: "data/output/retargeting"

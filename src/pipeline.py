@@ -18,12 +18,19 @@ import yaml
 from .action_computer import ActionComputer, ActionComputerConfig
 from .contact_detector import ContactDetector, ContactDetectorConfig
 from .dataset_exporter import DatasetExporter, ExporterConfig
-from .datatypes import AnnotatedEpisode, AnnotationFrame
+from .datatypes import ActionSegment, AnnotatedEpisode, AnnotationFrame
 from .grasp_classifier import GraspClassifier, GraspClassifierConfig
 from .grounding_detector import GroundingDINOConfig
 from .hand_tracker import HandTracker, HandTrackerConfig
 from .language_generator import GeminiLanguageGenerator, LanguageGeneratorConfig
 from .object_detector import GeminiObjectDetector, ObjectDetectorConfig
+from .retargeting import (
+    Retargeter,
+    RetargetingConfig,
+    PoseMapper,
+    IKSolver,
+    GripperMapper,
+)
 from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
@@ -81,7 +88,7 @@ class EgoAnnotatePipeline:
             bbox_keyframe_interval=int(od_cfg.get("bbox_keyframe_interval", 15)),
             gemini_model=gemini_cfg.get("model", od_cfg.get("gemini_model", "gemini-1.5-pro-latest")),
             prompt=od_prompt,
-            grounding_dino_model=gd_cfg.get("model_name", "IDEA-Research/grounding-dino-tiny"),
+            grounding_dino_model=gd_cfg.get("model_name", "google/owlvit-base-patch32"),
             grounding_dino_confidence=float(gd_cfg.get("confidence_threshold", 0.3)),
             grounding_dino_box_threshold=float(gd_cfg.get("box_threshold", 0.3)),
             grounding_dino_text_threshold=float(gd_cfg.get("text_threshold", 0.25)),
@@ -161,6 +168,37 @@ class EgoAnnotatePipeline:
         )
         self.dataset_exporter = DatasetExporter(exp_config)
 
+        # 10. Retargeter (Optional human-to-robot kinematic retargeting)
+        ret_cfg = self.config.get("retargeting") or {}
+        self.enable_retargeting = bool(ret_cfg.get("enable", False))
+        self.save_retargeting_proof_video = bool(ret_cfg.get("save_proof_video", True))
+        self.retargeter: Optional[Retargeter] = None
+
+        if self.enable_retargeting:
+            try:
+                cfg_path = ret_cfg.get("config_path")
+                if cfg_path and os.path.exists(cfg_path):
+                    r_config = RetargetingConfig.from_yaml(cfg_path)
+                else:
+                    r_config = RetargetingConfig(
+                        urdf_path=ret_cfg.get("target_urdf_path"),
+                        urdf_key=ret_cfg.get("urdf_key"),
+                        end_effector_link=ret_cfg.get("end_effector_link", "panda_link8"),
+                        gripper_joint_names=ret_cfg.get(
+                            "gripper_joint_names",
+                            ["panda_finger_joint1", "panda_finger_joint2"],
+                        ),
+                    )
+                self.retargeter = Retargeter(r_config)
+                logger.info("Retargeting stage enabled.")
+            except Exception as e:
+                logger.warning(
+                    "Failed to initialize Retargeter (%s). Retargeting stage will be skipped cleanly.",
+                    e,
+                )
+                self.enable_retargeting = False
+                self.retargeter = None
+
         print("\n" + "=" * 50)
         print("EGO ANNOTATE initialized with stages:")
         print("  1. VideoProcessor")
@@ -172,6 +210,8 @@ class EgoAnnotatePipeline:
         print("  7. GeminiActionSegmenter")
         print("  8. GeminiLanguageGenerator")
         print("  9. DatasetExporter")
+        if self.enable_retargeting:
+            print(" 10. Retargeter (Human-to-Robot Kinematic Retargeting)")
         print("=" * 50 + "\n")
 
     def process_video(self, video_path: str, episode_id: Optional[str] = None) -> AnnotatedEpisode:
@@ -263,10 +303,16 @@ class EgoAnnotatePipeline:
         print(f"[Pipeline] SignalSegmenter found {len(candidates)} candidate segments")
 
         # Stage 6b: VLM labeling of pre-computed segments
+        segments = []
         if self.segment_labeler is not None:
-            segments = self.segment_labeler.label_segments(candidates, video_path)
-            print(f"[Pipeline] SegmentLabeler labeled {len(segments)} segments")
-        else:
+            try:
+                segments = self.segment_labeler.label_segments(candidates, video_path)
+                print(f"[Pipeline] SegmentLabeler labeled {len(segments)} segments")
+            except Exception as e:
+                print(f"[Pipeline] SegmentLabeler failed: {e}, falling back to auto-labeling")
+                self.segment_labeler = None
+        
+        if self.segment_labeler is None:
             # Fallback: create default segments from candidates
             segments = []
             for cand in candidates:
@@ -305,9 +351,58 @@ class EgoAnnotatePipeline:
                 if seg.start_time <= frame.timestamp <= seg.end_time:
                     frame.frame_description = seg.description
                     break
+            
+            # Resolve frame-level caption object mismatch
+            active_obj = (
+                frame.right_contact.object_name if (frame.right_contact and frame.right_contact.in_contact and frame.right_contact.object_name)
+                else (frame.left_contact.object_name if (frame.left_contact and frame.left_contact.in_contact and frame.left_contact.object_name) else None)
+            )
+            if active_obj and ("unknown" in (frame.frame_description or "").lower() or not frame.frame_description):
+                act_name = frame.action_segment if frame.action_segment and frame.action_segment not in ("idle", "unknown") else "manipulate"
+                frame.frame_description = f"{act_name} the {active_obj}"
 
         # Stage 8: VLA Action Primitives Computation
         self.action_computer.compute_actions(frames)
+
+        # Stage 9: Kinematic Retargeting (Optional)
+        target_robot_name = "human_egocentric"
+        if self.enable_retargeting and self.retargeter is not None:
+            try:
+                print("\n[Pipeline] Running Stage 9: Human-to-Robot Kinematic Retargeting...")
+                kin = self.retargeter.load_kinematics()
+                target_robot_name = kin.robot_name
+
+                target_poses = PoseMapper(self.retargeter.config.pose_mapper).map_frames(frames)
+                with IKSolver(kin, self.retargeter.config.ik_solver) as solver:
+                    ik_results = solver.solve_sequence(target_poses)
+                gripper_mapper = GripperMapper(kin, self.retargeter.config.gripper_mapper)
+                gripper_commands = gripper_mapper.map_frames(frames)
+
+                for i, f in enumerate(frames):
+                    f.robot_joint_angles = ik_results[i].joint_angles.tolist()
+                    f.robot_gripper_opening_m = float(gripper_commands[i].opening_m)
+                    f.robot_gripper_method = gripper_commands[i].gripper_mapping_method
+                    f.robot_reachable = ik_results[i].reachable
+
+                n_reach = sum(1 for r in ik_results if r.reachable)
+                print(
+                    f"[Pipeline] Retargeting complete ({target_robot_name}): "
+                    f"{n_reach}/{len(frames)} frames reachable ({100.0 * n_reach / max(len(frames), 1):.1f}%)"
+                )
+
+                if self.save_retargeting_proof_video:
+                    out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
+                    out_ep_dir.mkdir(parents=True, exist_ok=True)
+                    sbs_path = out_ep_dir / "side_by_side.mp4"
+                    self._generate_proof_video(
+                        video_path, frames, ik_results, gripper_commands, kin, sbs_path
+                    )
+            except Exception as e:
+                logger.error(
+                    "Retargeting stage failed: %s. Continuing pipeline export without retargeting.",
+                    e,
+                    exc_info=True,
+                )
 
         # Build Annotated Episode
         if episode_id is None:
@@ -322,9 +417,10 @@ class EgoAnnotatePipeline:
             segments=segments,
             num_frames=len(frames),
             duration_seconds=duration_sec,
+            target_robot=target_robot_name,
         )
 
-        # Stage 9: Export Episode
+        # Stage 10: Export Episode
         self.dataset_exporter.export_episode(episode)
 
         print("\n" + "=" * 50)
@@ -335,9 +431,97 @@ class EgoAnnotatePipeline:
         print(f"Total Frames:     {episode.num_frames}")
         print(f"Duration:         {episode.duration_seconds:.2f} seconds")
         print(f"Action Segments:  {len(episode.segments)}")
+        print(f"Target Robot:     {episode.target_robot}")
         print("=" * 50 + "\n")
 
         return episode
+
+    def _generate_proof_video(
+        self,
+        video_path: str,
+        frames: List[AnnotationFrame],
+        ik_results: List[Any],
+        gripper_commands: List[Any],
+        kin: Any,
+        output_path: Path,
+    ) -> None:
+        """Render side-by-side proof video of human vs robot simulation."""
+        from scripts.validate_retargeting import (
+            render_robot_frame_pybullet,
+            render_robot_skeleton_2d,
+            compose_side_by_side,
+            RENDER_W,
+            RENDER_H,
+        )
+        import pybullet as pb
+        import pybullet_data
+
+        client_id = pb.connect(pb.DIRECT)
+        pb.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client_id)
+        robot_id = pb.loadURDF(
+            kin.urdf_path, basePosition=[0, 0, 0], useFixedBase=True, physicsClientId=client_id
+        )
+
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+        ret, first_human_img = cap.read()
+        if not ret or first_human_img is None:
+            first_human_img = np.zeros((480, 640, 3), np.uint8)
+
+        test_img = render_robot_frame_pybullet(
+            pb, client_id, robot_id, kin, kin.rest_poses, 0.02
+        )
+        using_pybullet = test_img is not None
+
+        dummy_robot = (
+            test_img
+            if using_pybullet
+            else render_robot_skeleton_2d(kin.rest_poses, kin, RENDER_W, RENDER_H)
+        )
+        dummy_composed = compose_side_by_side(
+            first_human_img, dummy_robot, 0, 0.0, True, 0.02, "grasp_type", robot_name=kin.robot_name
+        )
+        out_h, out_w = dummy_composed.shape[:2]
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (out_w, out_h))
+
+        # Reset capture to start of video
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        for i in range(len(frames)):
+            ret, human_img = cap.read()
+            if not ret or human_img is None:
+                human_img = np.zeros((480, 640, 3), np.uint8)
+
+            ik_r = ik_results[i]
+            gc = gripper_commands[i]
+            g_m = float(gc.opening_m)
+
+            if using_pybullet:
+                r_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, ik_r.joint_angles, g_m)
+                if r_img is None:
+                    r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
+            else:
+                r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
+
+            comp = compose_side_by_side(
+                human_img,
+                r_img,
+                ik_r.frame_idx,
+                ik_r.timestamp,
+                ik_r.reachable,
+                g_m,
+                gc.gripper_mapping_method,
+                robot_name=kin.robot_name,
+            )
+            writer.write(comp)
+
+        cap.release()
+        writer.release()
+        pb.disconnect(client_id)
+        logger.info("Retargeting proof video saved to: %s", output_path)
 
     def process_videos(self, video_paths: List[str]) -> List[AnnotatedEpisode]:
         """Process a list of videos in a batch, logging errors and continuing on failure.
