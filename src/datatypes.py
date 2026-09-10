@@ -432,6 +432,8 @@ class CandidateSegment:
         contact_state: "contact" or "no_contact" for this segment.
         grasp_type: Grasp type string for this segment, or "none".
         object_name: Primary object name, or None.
+        hands: List of hands in contact during segment (e.g. ["right"], ["left", "right"]).
+        hand_used: Backwards-compatible alias ("left", "right", "both").
     """
     start_frame: int
     end_frame: int
@@ -441,6 +443,8 @@ class CandidateSegment:
     contact_state: str
     grasp_type: str
     object_name: Optional[str] = None
+    hands: List[str] = field(default_factory=lambda: ["right"])
+    hand_used: str = "right"
 
 
 @dataclass
@@ -454,6 +458,7 @@ class ActionSegment:
         object_name: Primary object involved in the action.
         hand_used: ``"left"``, ``"right"``, or ``"both"``.
         description: Optional natural-language description of the action.
+        hands: List of active hands (e.g. ``["left"]``, ``["left", "right"]``).
     """
 
     name: str
@@ -462,6 +467,7 @@ class ActionSegment:
     object_name: str
     hand_used: str
     description: str = ""
+    hands: List[str] = field(default_factory=lambda: ["right"])
 
     @property
     def duration(self) -> float:
@@ -476,19 +482,25 @@ class ActionSegment:
             "end_time": self.end_time,
             "object_name": self.object_name,
             "hand_used": self.hand_used,
+            "hands": self.hands,
             "description": self.description,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ActionSegment:
         """Reconstruct from a dictionary produced by :meth:`to_dict`."""
+        hands_val = data.get("hands")
+        if not hands_val:
+            h_used = str(data.get("hand_used", "right"))
+            hands_val = ["left", "right"] if h_used == "both" else [h_used]
         return cls(
             name=str(data["name"]),
             start_time=float(data["start_time"]),
             end_time=float(data["end_time"]),
             object_name=str(data["object_name"]),
-            hand_used=str(data["hand_used"]),
+            hand_used=str(data.get("hand_used", "both" if len(hands_val) == 2 else hands_val[0])),
             description=str(data.get("description", "")),
+            hands=list(hands_val),
         )
 
 

@@ -60,7 +60,8 @@ grounding_dino:
 output:
   format: "json"
   include_image_bytes: false
-  save_viz_video: true
+  save_viz_video: true           # Internal debug HUD (224×224) → debug_hud_preview.mp4
+  save_overlay_video: true       # Client-facing native-res overlay → overlay_annotated.mp4
 
 retargeting:
   enable: true

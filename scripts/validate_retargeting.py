@@ -43,6 +43,7 @@ from src.retargeting import (
     Retargeter,
     RetargetingConfig,
     RetargetingResult,
+    finger_joint_from_opening,
 )
 from src.retargeting.urdf_loader import URDFLoader
 from src.retargeting.ik_solver import IKResult
@@ -83,8 +84,9 @@ def render_robot_frame_pybullet(
     for idx, angle in zip(kin.arm_joint_indices, joint_angles.tolist()):
         pb.resetJointState(robot_id, idx, angle, physicsClientId=client_id)
     # Set gripper
+    finger_joint = finger_joint_from_opening(gripper_opening_m)
     for idx in kin.gripper_joint_indices:
-        pb.resetJointState(robot_id, idx, gripper_opening_m, physicsClientId=client_id)
+        pb.resetJointState(robot_id, idx, finger_joint, physicsClientId=client_id)
 
     # Compute view matrix
     view_matrix = pb.computeViewMatrixFromYawPitchRoll(
@@ -206,10 +208,14 @@ def compose_side_by_side(
 
     scale1 = target_h / h1
     new_w1 = int(w1 * scale1)
+    if new_w1 % 2 != 0:
+        new_w1 += 1
     lf = cv2.resize(human_frame, (new_w1, target_h))
 
     scale2 = target_h / h2
     new_w2 = int(w2 * scale2)
+    if new_w2 % 2 != 0:
+        new_w2 += 1
     rf = cv2.resize(robot_frame, (new_w2, target_h))
 
     # Add column labels
@@ -229,6 +235,10 @@ def compose_side_by_side(
     # HUD strip at bottom
     hud_h = 40
     total_w = combined.shape[1]
+    if total_w % 2 != 0:
+        combined = cv2.copyMakeBorder(combined, 0, 0, 0, 1, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        total_w = combined.shape[1]
+
     hud = np.zeros((hud_h, total_w, 3), dtype=np.uint8)
     hud[:] = (30, 30, 30)
 
@@ -238,7 +248,10 @@ def compose_side_by_side(
                 f"Gripper={gripper_m*100:.1f}mm  Method={gripper_method}",
                 (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.5, reach_color, 1, cv2.LINE_AA)
 
-    return np.vstack([combined, hud])
+    out_frame = np.vstack([combined, hud])
+    if out_frame.shape[0] % 2 != 0:
+        out_frame = cv2.copyMakeBorder(out_frame, 0, 1, 0, 0, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    return out_frame
 
 
 # ---------------------------------------------------------------------------
@@ -349,25 +362,35 @@ def main() -> None:
         print("[WARN] PyBullet rendered black frames — using 2D skeleton fallback.")
 
     # ------------------------------------------------------------------
-    # Step 3: Open source video and build side-by-side output
+    # Step 3: Aligned human frames + correct output fps
     # ------------------------------------------------------------------
-    cap = cv2.VideoCapture(args.video)
-    if not cap.isOpened():
-        print(f"[ERROR] Cannot open video: {args.video}")
-        sys.exit(1)
+    with open(args.annotations) as f:
+        ann_records = json.load(f)
+    if not isinstance(ann_records, list) or not ann_records:
+        raise RuntimeError(f"Expected non-empty list of frame records: {args.annotations}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_vid_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    src_cap = cv2.VideoCapture(args.video)
+    if not src_cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {args.video}")
+    src_fps = src_cap.get(cv2.CAP_PROP_FPS) or 30.0
+    src_n   = int(src_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    src_cap.release()
+    if src_n <= 0 or src_fps <= 0:
+        raise RuntimeError(f"Cannot probe source video: {args.video}")
+    src_duration = src_n / src_fps
 
-    # Read all source frames needed
-    print(f"[INFO] Reading {n_frames} frames from {args.video}...")
+    fps = n_frames / src_duration      # annotation sample rate, NOT container fps
+    if abs(fps - round(fps)) < 1e-6:
+        fps = float(round(fps))
+
     human_frames = []
-    for fi in range(n_frames):
-        ret, fr = cap.read()
-        if not ret:
-            break
-        human_frames.append(fr)
-    cap.release()
+    for rec in ann_records[:n_frames]:
+        img = cv2.imread(rec["image_path"])
+        if img is None:
+            raise RuntimeError(f"Missing sampled frame on disk: {rec['image_path']}")
+        human_frames.append(img)
+    if not human_frames:
+        raise RuntimeError("No human frames loaded; aborting side-by-side render.")
 
     # Set up output video
     sbs_path = output_dir / "side_by_side.mp4"
@@ -426,6 +449,16 @@ def main() -> None:
         writer.write(composed)
 
     writer.release()
+    out_cap = cv2.VideoCapture(str(sbs_path))
+    out_n   = int(out_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    out_fps = out_cap.get(cv2.CAP_PROP_FPS) or fps
+    out_cap.release()
+    out_dur = out_n / out_fps
+    if abs(out_dur - src_duration) > 0.2:
+        raise RuntimeError(
+            f"DURATION MISMATCH: side_by_side {out_dur:.2f}s vs source {src_duration:.2f}s")
+    print(f"[INFO] Side-by-side duration verified: {out_dur:.2f}s == source {src_duration:.2f}s")
+
     pb.disconnect(render_client)
 
     # ------------------------------------------------------------------

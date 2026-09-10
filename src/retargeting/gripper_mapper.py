@@ -25,12 +25,21 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+import numpy as np
 
 from ..datatypes import GraspType
 from .urdf_loader import RobotKinematics
 
 logger = logging.getLogger(__name__)
+
+PANDA_FINGER_JOINT_MAX = 0.04   # per-finger limit from franka URDF
+
+def opening_from_finger_joint(joint_m: float) -> float:
+    """Finger-to-finger distance = 2 x per-finger joint displacement."""
+    return 2.0 * joint_m
+
+def finger_joint_from_opening(opening_m: float) -> float:
+    return min(max(opening_m, 0.0), 2.0 * PANDA_FINGER_JOINT_MAX) / 2.0
 
 # Confidence threshold that determines which mapping method is used.
 # If grasp_type.confidence >= this, use discrete clamp. Otherwise continuous.
@@ -50,6 +59,38 @@ _GRASP_TYPE_CLAMP_NORMALIZED: Dict[str, Tuple[float, float]] = {
     "open":            (0.75, 1.00),  # fully open hand
     "unknown":         (0.20, 0.80),  # wide range — uncertain
 }
+
+
+D_LO, D_HI = 0.01, 0.09   # metric thumb-index distance domain in metres
+
+
+def map_opening(
+    thumb_idx_dist: float,
+    grasp_type: str = "unknown",
+    confidence: float = 0.9,
+    max_m: float = PANDA_FINGER_JOINT_MAX,
+    min_m: float = 0.0,
+    hand_ref_size_m: float = DEFAULT_HAND_REF_SIZE_M,
+    confidence_threshold: float = CONFIDENCE_THRESHOLD,
+) -> float:
+    """Map thumb-index distance and grasp type to finger joint opening.
+
+    The grasp type defines BOUNDS; the continuous value is RESCALED into them, never clipped.
+    """
+    clamp_range = _GRASP_TYPE_CLAMP_NORMALIZED.get(
+        grasp_type,
+        _GRASP_TYPE_CLAMP_NORMALIZED["unknown"],
+    )
+    lo = clamp_range[0] * max_m
+    hi = clamp_range[1] * max_m
+
+    if confidence < confidence_threshold:
+        lo, hi = min_m, max_m
+
+    t = (thumb_idx_dist - D_LO) / (D_HI - D_LO)
+    t = float(min(max(t, 0.0), 1.0))
+    t = t * t * (3.0 - 2.0 * t)          # smoothstep: no hard edges
+    return lo + t * (hi - lo)
 
 
 @dataclass
@@ -162,7 +203,8 @@ class GripperMapper:
             # No hand detected — open gripper to maximum (safe default)
             raw_m = max_m
             method = "no_hand"
-            opening_m = float(max_m)
+            joint_cmd = float(max_m)
+            opening_m = opening_from_finger_joint(joint_cmd)
             opening_norm = 1.0
             cmd = GripperCommand(
                 frame_idx=frame_idx,
@@ -180,7 +222,7 @@ class GripperMapper:
                     "gripper_min_m": min_m,
                 },
             )
-            self._prev_opening_m = opening_m
+            self._prev_opening_m = joint_cmd
             return cmd
 
         confidence = grasp.confidence
@@ -188,12 +230,12 @@ class GripperMapper:
         grasp_type = grasp.type
 
         # ----------------------------------------------------------------
-        # PRECEDENCE RULE (Correction 2):
-        #   confidence >= threshold → discrete grasp-type clamp
+        # PRECEDENCE RULE:
+        #   confidence >= threshold → discrete grasp-type bounds (continuous inside)
         #   confidence <  threshold → continuous thumb-index distance
         # ----------------------------------------------------------------
         if confidence >= cfg.confidence_threshold:
-            # --- Method: grasp_type (discrete clamp) -----------------------
+            # --- Method: grasp_type (continuous inside discrete bounds) -----
             clamp_range = _GRASP_TYPE_CLAMP_NORMALIZED.get(
                 grasp_type,
                 _GRASP_TYPE_CLAMP_NORMALIZED["unknown"],
@@ -201,11 +243,15 @@ class GripperMapper:
             clamp_lo_m = clamp_range[0] * max_m
             clamp_hi_m = clamp_range[1] * max_m
 
-            # Within the clamp range, scale by thumb-index distance as a
-            # fine-grained signal (preserves some motion nuance)
-            alpha = min(1.0, thumb_idx_dist / (cfg.hand_ref_size_m * 0.5))
-            raw_m = clamp_lo_m + alpha * (clamp_hi_m - clamp_lo_m)
-            raw_m = float(max(clamp_lo_m, min(clamp_hi_m, raw_m)))
+            raw_m = map_opening(
+                thumb_idx_dist=thumb_idx_dist,
+                grasp_type=grasp_type,
+                confidence=confidence,
+                max_m=max_m,
+                min_m=min_m,
+                hand_ref_size_m=cfg.hand_ref_size_m,
+                confidence_threshold=cfg.confidence_threshold,
+            )
 
             method = "grasp_type"
             metadata = {
@@ -260,12 +306,17 @@ class GripperMapper:
         self._prev_opening_m = smoothed_m
         metadata["opening_m_after_smooth"] = smoothed_m
 
-        opening_norm = (smoothed_m - min_m) / (max_m - min_m) if max_m > min_m else 0.0
+        joint_cmd = smoothed_m
+        total_opening_m = opening_from_finger_joint(joint_cmd)
+        max_total_opening_m = opening_from_finger_joint(max_m)
+        min_total_opening_m = opening_from_finger_joint(min_m)
+
+        opening_norm = (total_opening_m - min_total_opening_m) / (max_total_opening_m - min_total_opening_m) if max_total_opening_m > min_total_opening_m else 0.0
 
         return GripperCommand(
             frame_idx=frame_idx,
             timestamp=timestamp,
-            opening_m=smoothed_m,
+            opening_m=total_opening_m,
             opening_normalized=float(opening_norm),
             gripper_mapping_method=method,
             grasp_type_used=grasp_type if method == "grasp_type" else None,

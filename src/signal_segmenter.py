@@ -46,6 +46,7 @@ class SignalSegmenter:
         left_grasp_timeline: List[Optional[GraspType]],
         right_grasp_timeline: List[Optional[GraspType]],
         frame_timestamps: List[float],
+        dwell: Optional[Dict[str, int]] = None,
     ) -> List[CandidateSegment]:
         """Detect segment boundaries from signal timelines.
         
@@ -53,6 +54,7 @@ class SignalSegmenter:
             left/right_contact_timeline: Per-frame ContactState (or None).
             left/right_grasp_timeline: Per-frame GraspType (or None).
             frame_timestamps: Timestamp in seconds for each frame.
+            dwell: Dict of accumulated contact dwell counts per object name.
             
         Returns:
             List of CandidateSegment with boundaries, no VLM labels yet.
@@ -147,8 +149,13 @@ class SignalSegmenter:
             # Extract most frequent non-null object within segment frames
             seg_objs = [o for o in object_names[start_f:end_f] if o is not None]
             if seg_objs:
-                from collections import Counter
-                seg_obj = Counter(seg_objs).most_common(1)[0][0]
+                if dwell is not None and len(dwell) > 0:
+                    from .contact_detector import eligible_objects, segment_object
+                    eligible = eligible_objects(dwell, min_dwell=3)
+                    seg_obj = segment_object(seg_objs, eligible, dwell)
+                else:
+                    from collections import Counter
+                    seg_obj = Counter(seg_objs).most_common(1)[0][0]
             else:
                 seg_obj = None
             
@@ -160,6 +167,27 @@ class SignalSegmenter:
             if trans_type == "idle":
                 trans_type = "idle"
             
+            # Derive active hands from per-hand contact state-machine outputs in window
+            left_active = any(
+                lc and lc.in_contact
+                for lc in left_contact_timeline[start_f:end_f]
+                if lc is not None
+            )
+            right_active = any(
+                rc and rc.in_contact
+                for rc in right_contact_timeline[start_f:end_f]
+                if rc is not None
+            )
+            seg_hands = []
+            if left_active:
+                seg_hands.append("left")
+            if right_active:
+                seg_hands.append("right")
+            if not seg_hands:
+                seg_hands = ["right"]
+
+            hand_used_val = seg_hands[0] if len(seg_hands) == 1 else "both"
+
             raw_segments.append(CandidateSegment(
                 start_frame=start_f,
                 end_frame=end_f,
@@ -169,6 +197,8 @@ class SignalSegmenter:
                 contact_state=contact_states[mid_f],
                 grasp_type=grasp_types[mid_f],
                 object_name=seg_obj,
+                hands=seg_hands,
+                hand_used=hand_used_val,
             ))
         
         # --- 5. Filter jitter (state-aware noise filtering) ---
@@ -258,6 +288,8 @@ class SignalSegmenter:
                 # Short segment: attempt to resolve noise without crossing contact boundaries
                 if filtered and filtered[-1].contact_state == seg.contact_state:
                     prev = filtered[-1]
+                    comb_hands = sorted(list(set(getattr(prev, "hands", ["right"]) + getattr(seg, "hands", ["right"]))))
+                    comb_used = comb_hands[0] if len(comb_hands) == 1 else "both"
                     filtered[-1] = CandidateSegment(
                         start_frame=prev.start_frame,
                         end_frame=seg.end_frame,
@@ -267,11 +299,15 @@ class SignalSegmenter:
                         contact_state=prev.contact_state,
                         grasp_type=prev.grasp_type if prev.grasp_type != "unknown" else seg.grasp_type,
                         object_name=prev.object_name or seg.object_name,
+                        hands=comb_hands,
+                        hand_used=comb_used,
                     )
                 elif filtered and i + 1 < len(segments) and filtered[-1].contact_state == segments[i + 1].contact_state:
                     # Glitch pulse (A -> B_short -> A): merge pulse into prev
                     prev = filtered[-1]
                     next_seg = segments[i + 1]
+                    comb_hands = sorted(list(set(getattr(prev, "hands", ["right"]) + getattr(seg, "hands", ["right"]) + getattr(next_seg, "hands", ["right"]))))
+                    comb_used = comb_hands[0] if len(comb_hands) == 1 else "both"
                     filtered[-1] = CandidateSegment(
                         start_frame=prev.start_frame,
                         end_frame=next_seg.end_frame,
@@ -281,6 +317,8 @@ class SignalSegmenter:
                         contact_state=prev.contact_state,
                         grasp_type=prev.grasp_type if prev.grasp_type != "unknown" else next_seg.grasp_type,
                         object_name=prev.object_name or next_seg.object_name,
+                        hands=comb_hands,
+                        hand_used=comb_used,
                     )
                     i += 1  # consumed next_seg
                 else:
@@ -315,6 +353,8 @@ class SignalSegmenter:
             can_merge = same_contact and same_grasp and same_obj and (gap <= self.config.merge_gap_sec)
             
             if can_merge:
+                comb_hands = sorted(list(set(getattr(last, "hands", ["right"]) + getattr(seg, "hands", ["right"]))))
+                comb_used = comb_hands[0] if len(comb_hands) == 1 else "both"
                 merged[-1] = CandidateSegment(
                     start_frame=last.start_frame,
                     end_frame=seg.end_frame,
@@ -324,6 +364,8 @@ class SignalSegmenter:
                     contact_state=last.contact_state,
                     grasp_type=seg.grasp_type if seg.grasp_type not in ("none", "unknown") else last.grasp_type,
                     object_name=last.object_name or seg.object_name,
+                    hands=comb_hands,
+                    hand_used=comb_used,
                 )
             else:
                 merged.append(seg)

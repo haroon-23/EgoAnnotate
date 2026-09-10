@@ -251,6 +251,40 @@ class TestSignalSegmenter(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].contact_state, "no_contact")
 
+    def test_bimanual_segment_detection(self):
+        """Test that segments with left and right hand contact report hands=['left', 'right'] and hand_used='both'."""
+        left_contact = [None] * self.n_frames
+        right_contact = [None] * self.n_frames
+        left_grasp = [None] * self.n_frames
+        right_grasp = [None] * self.n_frames
+
+        for i in range(30, 60):
+            left_contact[i] = make_contact(True, "box")
+            right_contact[i] = make_contact(True, "box")
+            left_grasp[i] = make_grasp("power_wrap")
+            right_grasp[i] = make_grasp("power_wrap")
+
+        candidates = self.segmenter.get_candidates(
+            left_contact, right_contact,
+            left_grasp, right_grasp,
+            self.timestamps
+        )
+
+        bimanual_segs = [c for c in candidates if c.contact_state == "contact"]
+        self.assertEqual(len(bimanual_segs), 1)
+        self.assertEqual(bimanual_segs[0].hands, ["left", "right"])
+        self.assertEqual(bimanual_segs[0].hand_used, "both")
+
+    def test_build_instruction_grammar(self):
+        """Test build_instruction never emits 'the unknown' or 'idle the <object>'."""
+        from src.segment_labeler import build_instruction
+
+        self.assertEqual(build_instruction("idle", "mug", ["right"]), "idle (no object)")
+        self.assertEqual(build_instruction("manipulate", "", ["right"]), "idle (no object)")
+        self.assertEqual(build_instruction("grasp", "unknown", ["left"]), "grasp an unidentified object with left hand")
+        self.assertEqual(build_instruction("pick_up", "bottle", ["left", "right"]), "pick_up bottle with both hands")
+        self.assertEqual(build_instruction("pour", "jug", ["right"]), "pour jug with right hand")
+
 
 if __name__ == "__main__":
     unittest.main()

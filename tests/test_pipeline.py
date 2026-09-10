@@ -190,7 +190,7 @@ class TestPipelineIntegration(unittest.TestCase):
             ("metadata.json", out_dir / "metadata.json"),
             ("action_segments.json", out_dir / "action_segments.json"),
             ("summary.json", out_dir / "summary.json"),
-            ("visualization.mp4", out_dir / "visualization.mp4")
+            ("debug_hud_preview.mp4", out_dir / "debug_hud_preview.mp4")
         ]
         
         for name, path in expected_files:

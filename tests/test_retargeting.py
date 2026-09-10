@@ -44,6 +44,7 @@ from src.retargeting.gripper_mapper import (
     GripperMapper,
     GripperMapperConfig,
     CONFIDENCE_THRESHOLD,
+    opening_from_finger_joint,
 )
 from src.datatypes import HandLandmarks, GraspType, AnnotationFrame
 
@@ -518,15 +519,15 @@ class TestGripperMapper(unittest.TestCase):
         """None grasp (no hand) should produce max-opening command."""
         mapper = self._mapper()
         cmd = mapper.map_frame(0, 0.0, None)
-        max_m = self.kin.gripper_joints[0].upper_limit
+        max_m = opening_from_finger_joint(self.kin.gripper_joints[0].upper_limit)
         self.assertEqual(cmd.gripper_mapping_method, "no_hand")
         self.assertAlmostEqual(cmd.opening_m, max_m, places=5)
 
     def test_opening_always_in_valid_range(self):
         """All opening values must be within URDF [min, max] bounds."""
         mapper = self._mapper()
-        max_m = self.kin.gripper_joints[0].upper_limit
-        min_m = self.kin.gripper_joints[0].lower_limit
+        max_m = opening_from_finger_joint(self.kin.gripper_joints[0].upper_limit)
+        min_m = opening_from_finger_joint(self.kin.gripper_joints[0].lower_limit)
         grasps = [
             self._grasp("precision_pinch", 0.9, 0.01),
             self._grasp("power_wrap", 0.9, 0.15),

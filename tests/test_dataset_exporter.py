@@ -108,7 +108,7 @@ class TestDatasetExporter(unittest.TestCase):
 
     def test_export_episode_json(self):
         """Test complete JSON export flow and assert all required files and fields exist."""
-        config = ExporterConfig(output_dir=str(self.output_dir), format="json", save_viz_video=True)
+        config = ExporterConfig(output_dir=str(self.output_dir), format="json", save_viz_video=True, save_overlay_video=False)
         exporter = DatasetExporter(config)
         
         episode_dir = exporter.export_episode(self.episode)
@@ -122,7 +122,9 @@ class TestDatasetExporter(unittest.TestCase):
         self.assertTrue((episode_dir / "action_segments.json").exists())
         self.assertTrue((episode_dir / "frame_annotations.json").exists())
         self.assertTrue((episode_dir / "summary.json").exists())
-        self.assertTrue((episode_dir / "visualization.mp4").exists())
+        self.assertTrue((episode_dir / "debug_hud_preview.mp4").exists())
+        # Verify old name does NOT exist (renamed)
+        self.assertFalse((episode_dir / "visualization.mp4").exists())
         
         # Verify metadata
         with open(episode_dir / "metadata.json", "r") as f:
@@ -179,16 +181,64 @@ class TestDatasetExporter(unittest.TestCase):
 
     def test_export_episode_parquet_graceful_fallback(self):
         """Test Parquet export run (assert it runs and falls back to JSON or produces Parquet)."""
-        config = ExporterConfig(output_dir=str(self.output_dir), format="parquet", save_viz_video=False)
+        from unittest.mock import patch
+        config = ExporterConfig(output_dir=str(self.output_dir), format="parquet", save_viz_video=False, save_overlay_video=False)
         exporter = DatasetExporter(config)
-        
-        episode_dir = exporter.export_episode(self.episode)
+
+        # Patch out RLDS and LeRobot exports — this test is specifically about frame-annotation
+        # Parquet export, not RLDS/LeRobot pipeline integration.
+        with patch.object(exporter, "_export_rlds"), patch.object(exporter, "_export_lerobot"):
+            episode_dir = exporter.export_episode(self.episode)
+
         self.assertTrue(episode_dir.exists())
-        
+
         # At least one of frame_annotations.json or frame_annotations.parquet must exist
         has_json = (episode_dir / "frame_annotations.json").exists()
         has_parquet = (episode_dir / "frame_annotations.parquet").exists()
         self.assertTrue(has_json or has_parquet)
+
+    def test_no_partial_overlay_on_missing_source(self):
+        """Test that no overlay_annotated.mp4 is produced when save_overlay_video=False."""
+        config = ExporterConfig(
+            output_dir=str(self.output_dir),
+            format="json",
+            save_viz_video=False,
+            save_overlay_video=False,
+        )
+        exporter = DatasetExporter(config)
+        episode_dir = exporter.export_episode(self.episode)
+        self.assertFalse((episode_dir / "overlay_annotated.mp4").exists())
+
+    def test_ffprobe_video_info_returns_none_for_missing(self):
+        """Test _ffprobe_video_info returns None for nonexistent file."""
+        config = ExporterConfig(output_dir=str(self.output_dir), save_overlay_video=False)
+        exporter = DatasetExporter(config)
+        result = exporter._ffprobe_video_info("/nonexistent/path.mp4")
+        self.assertIsNone(result)
+
+    def test_validate_delivery_fails_missing_overlay(self):
+        """Test validate_delivery raises when overlay file is absent."""
+        config = ExporterConfig(output_dir=str(self.output_dir), save_overlay_video=False)
+        exporter = DatasetExporter(config)
+        episode_dir = self.output_dir / "test_ep"
+        episode_dir.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(RuntimeError) as ctx:
+            exporter.validate_delivery(episode_dir, "dummy.mp4")
+        # New unified error format
+        self.assertIn("overlay_annotated.mp4", str(ctx.exception))
+        self.assertIn("MISSING", str(ctx.exception))
+
+    def test_validate_delivery_fails_zero_byte_overlay(self):
+        """Test validate_delivery raises when overlay file is 0 bytes."""
+        config = ExporterConfig(output_dir=str(self.output_dir), save_overlay_video=False)
+        exporter = DatasetExporter(config)
+        episode_dir = self.output_dir / "test_ep_zero"
+        episode_dir.mkdir(parents=True, exist_ok=True)
+        (episode_dir / "overlay_annotated.mp4").touch()  # 0 bytes
+        with self.assertRaises(RuntimeError) as ctx:
+            exporter.validate_delivery(episode_dir, "dummy.mp4")
+        # New unified error format
+        self.assertIn("ZERO BYTES", str(ctx.exception))
 
 
 if __name__ == "__main__":

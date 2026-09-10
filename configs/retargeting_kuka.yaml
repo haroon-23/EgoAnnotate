@@ -43,6 +43,11 @@ pose_mapper:
   preferred_hand: "right"
   z_floor_m: 0.10
   orientation_scale: 1.0
+  enable_trajectory_smoothing: true
+  smoothing_window: 9
+  smoothing_polyorder: 2
+  enable_metric_calibration: true
+
 
 ik_solver:
   max_iterations: 200

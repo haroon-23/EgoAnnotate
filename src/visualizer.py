@@ -1,5 +1,6 @@
 """Egocentric HUD visualization overlay for annotated episodes."""
 import cv2
+import os
 import numpy as np
 import subprocess
 from pathlib import Path
@@ -542,6 +543,7 @@ def render_annotated_video(
     episode: AnnotatedEpisode,
     output_path: Path,
     fps: float = 30.0,
+    atomic: bool = False,
 ) -> Path:
     """Create a burned-in overlay video from original video + pipeline episode.
     
@@ -550,11 +552,17 @@ def render_annotated_video(
         episode: AnnotatedEpisode from pipeline
         output_path: Where to save the overlay MP4
         fps: Output video FPS
+        atomic: If True, render to a temp file and only rename to output_path
+                on full success. Prevents partial/corrupt files on crash.
         
     Returns:
         Path to created video
     """
     visualizer = EgoVisualizer()
+
+    # Determine the actual write target — use temp path for atomic writes
+    final_path = Path(output_path)
+    write_target = final_path.with_suffix(".tmp.mp4") if atomic else final_path
     
     # Open original video
     cap = cv2.VideoCapture(video_path)
@@ -566,13 +574,16 @@ def render_annotated_video(
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Use temporary file for initial OpenCV output
-    raw_tmp_path = output_path.with_name(output_path.stem + "_raw.mp4")
+    # Use temporary file for initial OpenCV output (mp4v codec)
+    raw_tmp_path = write_target.with_name(write_target.stem + "_raw.mp4")
 
     # Create writer using mp4v fourcc
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, fps, (orig_w, orig_h))
     if not writer.isOpened():
+        # Clean up temp artifacts on failure
+        if atomic and raw_tmp_path.exists():
+            raw_tmp_path.unlink()
         raise RuntimeError(f"Failed to create video writer for {raw_tmp_path}")
 
     # Map episode frames to original video frames
@@ -605,30 +616,49 @@ def render_annotated_video(
 
             writer.write(rendered)
             pbar.update(1)
+    except Exception:
+        pbar.close()
+        cap.release()
+        writer.release()
+        # Atomic cleanup: remove partial temp files
+        if raw_tmp_path.exists():
+            raw_tmp_path.unlink()
+        if atomic and write_target.exists():
+            write_target.unlink()
+        raise
     finally:
         pbar.close()
         cap.release()
         writer.release()
 
-    # Convert to native H.264 (avc1 / yuv420p / faststart) for 100% macOS QuickTime compatibility
+    # Convert to native H.264 (avc1 / yuv420p / faststart) for macOS QuickTime compatibility
     try:
         cmd = [
             "ffmpeg", "-y", "-i", str(raw_tmp_path),
             "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
             "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-movflags", "+faststart",
-            "-loglevel", "error", str(output_path)
+            "-loglevel", "error", str(write_target)
         ]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res.returncode == 0 and output_path.exists():
+        if res.returncode == 0 and write_target.exists():
             if raw_tmp_path.exists():
                 raw_tmp_path.unlink()
         else:
-            # Fallback if ffmpeg fails: move raw file to output_path
+            # Fallback if ffmpeg fails: move raw file to write_target
             if raw_tmp_path.exists():
-                raw_tmp_path.replace(output_path)
+                raw_tmp_path.replace(write_target)
     except Exception:
         if raw_tmp_path.exists():
-            raw_tmp_path.replace(output_path)
+            raw_tmp_path.replace(write_target)
 
-    print(f"[Visualizer] Saved overlay video: {output_path}")
-    return output_path
+    # Atomic rename: only move temp → final on full success
+    if atomic:
+        if write_target.exists():
+            os.replace(str(write_target), str(final_path))
+        else:
+            raise RuntimeError(
+                f"Atomic overlay rendering failed: temp file {write_target} not produced"
+            )
+
+    print(f"[Visualizer] Saved overlay video: {final_path}")
+    return final_path

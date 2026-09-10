@@ -63,14 +63,21 @@ class RetargetingConfig:
         pm_kwargs = {}
         if wb:
             pm_kwargs["robot_workspace_bounds"] = wb
-        if "preferred_hand" in pm_data:
-            pm_kwargs["preferred_hand"] = pm_data["preferred_hand"]
-        if "z_floor_m" in pm_data:
-            pm_kwargs["z_floor_m"] = pm_data["z_floor_m"]
-        if "orientation_scale" in pm_data:
-            pm_kwargs["orientation_scale"] = pm_data["orientation_scale"]
+        for k in (
+            "preferred_hand",
+            "z_floor_m",
+            "orientation_scale",
+            "enable_trajectory_smoothing",
+            "smoothing_window",
+            "smoothing_polyorder",
+            "enable_metric_calibration",
+            "camera_intrinsics",
+        ):
+            if k in pm_data:
+                pm_kwargs[k] = pm_data[k]
 
         pose_mapper = PoseMapperConfig(**pm_kwargs)
+
 
         ik_kwargs = {}
         for k in ("max_iterations", "residual_threshold_m", "joint_damping", "num_attempts"):
@@ -135,11 +142,19 @@ class RetargetingResult:
                 {
                     "frame_idx": ik.frame_idx,
                     "timestamp": ik.timestamp,
+                    "joint_angles": ik.joint_angles.tolist(),
                     "joint_angles_rad": ik.joint_angles.tolist(),
                     "gripper_opening_m": float(self.gripper_trajectory[i]),
                     "gripper_mapping_method": self.gripper_commands[i].gripper_mapping_method,
                     "gripper_opening_normalized": self.gripper_commands[i].opening_normalized,
-                    "reachable": ik.reachable,
+                    "reachable": bool(ik.reachable),
+                    "retarget_source": getattr(
+                        ik,
+                        "retarget_source",
+                        "no_hand" if not self.target_poses[i].hand_detected
+                        else ("interpolated_hold" if self.target_poses[i].is_interpolated else "tracked")
+                    ),
+                    "interpolated": bool(self.target_poses[i].is_interpolated),
                     "ik_residual_m": (
                         float(ik.ik_residual_m) if not np.isnan(ik.ik_residual_m) else None
                     ),
@@ -159,6 +174,65 @@ class RetargetingResult:
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
         logger.info("Retargeting result saved to %s", path)
+
+
+PANDA_VEL = np.array([2.17, 2.17, 2.17, 2.17, 2.61, 2.61, 2.61], dtype=np.float64)
+
+
+def apply_source_gate(
+    reachable: bool,
+    interpolated: bool,
+    present: bool,
+    gripper_prev: float,
+    gripper_m: float = 0.0,
+    gripper_method: str = "",
+) -> Dict[str, Any]:
+    """Apply R3 interpolation gate logic per frame."""
+    if interpolated:
+        return {
+            "reachable": False,
+            "gripper_opening_m": float(gripper_prev),
+            "gripper_mapping_method": "interpolated_hold",
+            "retarget_source": "interpolated_hold",
+            "interpolated": True,
+        }
+    elif not present:
+        return {
+            "reachable": bool(reachable),
+            "gripper_opening_m": float(gripper_m),
+            "gripper_mapping_method": gripper_method or "no_hand",
+            "retarget_source": "no_hand",
+            "interpolated": False,
+        }
+    else:
+        return {
+            "reachable": bool(reachable),
+            "gripper_opening_m": float(gripper_m),
+            "gripper_mapping_method": gripper_method or "tracked",
+            "retarget_source": "tracked",
+            "interpolated": False,
+        }
+
+
+def enforce_velocity_limits(
+    joint_trajectories: np.ndarray,
+    reachability_mask: np.ndarray,
+    dt: float = 1 / 30.0,
+    vel_limits: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Enforce joint velocity limits across consecutive reachable frames."""
+    reach = np.array(reachability_mask, dtype=bool).copy()
+    if vel_limits is None:
+        vel_limits = PANDA_VEL
+    vel_limits = np.asarray(vel_limits, dtype=np.float64)
+
+    n = len(joint_trajectories)
+    for i in range(1, n):
+        if reach[i] and reach[i - 1]:
+            v = np.abs((joint_trajectories[i] - joint_trajectories[i - 1]) / dt)
+            if np.any(v > 0.9 * vel_limits):
+                reach[i] = False
+    return reach
 
 
 class Retargeter:
@@ -254,6 +328,56 @@ class Retargeter:
         gripper_traj = np.array([c.opening_m for c in gripper_commands], dtype=np.float64)
         reachability = np.array([r.reachable for r in ik_results], dtype=bool)
 
+        # --- Task 1: R3 interpolation gate ----------------------------------
+        for i in range(n):
+            target_pose = target_poses[i]
+            ik_res = ik_results[i]
+            grip_cmd = gripper_commands[i]
+            interp = bool(target_pose.is_interpolated)
+            present = bool(target_pose.hand_detected)
+            prev_grip = gripper_traj[i - 1] if i > 0 else float(grip_cmd.opening_m)
+
+            gate = apply_source_gate(
+                reachable=ik_res.reachable,
+                interpolated=interp,
+                present=present,
+                gripper_prev=prev_grip,
+                gripper_m=grip_cmd.opening_m,
+                gripper_method=grip_cmd.gripper_mapping_method,
+            )
+
+            ik_res.reachable = gate["reachable"]
+            reachability[i] = gate["reachable"]
+            gripper_traj[i] = gate["gripper_opening_m"]
+            grip_cmd.opening_m = gate["gripper_opening_m"]
+            grip_cmd.gripper_mapping_method = gate["gripper_mapping_method"]
+            setattr(ik_res, "retarget_source", gate["retarget_source"])
+
+        # --- Task 2: R4 velocity feasibility --------------------------------
+        dt = 1.0 / 30.0
+        vel_limits = PANDA_VEL
+        if hasattr(kin, "joint_velocity_limits") and kin.joint_velocity_limits is not None:
+            vel_limits = kin.joint_velocity_limits
+
+        reach_before_vel = reachability.copy()
+        reachability = enforce_velocity_limits(
+            joint_traj, reachability, dt=dt, vel_limits=vel_limits
+        )
+
+        for i in range(n):
+            ik_results[i].reachable = bool(reachability[i])
+
+        max_v = 0.0
+        vel_infeasible_count = 0
+        for i in range(1, n):
+            if reach_before_vel[i] and reach_before_vel[i - 1]:
+                v = np.abs((joint_traj[i] - joint_traj[i - 1]) / dt)
+                max_v = max(max_v, float(np.max(v)))
+                if not reachability[i]:
+                    vel_infeasible_count += 1
+
+        pct_vel_infeasible = float(100.0 * vel_infeasible_count / max(n, 1))
+
         t_elapsed = time.perf_counter() - t_start
 
         # Gripper method summary counts
@@ -273,6 +397,8 @@ class Retargeter:
             "avg_solve_time_ms": float(
                 np.mean([r.solve_time_ms for r in ik_results if not r.fallback_used or r.reachable])
             ),
+            "max_joint_speed_rad_s": max_v,
+            "pct_velocity_infeasible": pct_vel_infeasible,
             "wall_clock_seconds": float(t_elapsed),
             "gripper_method_counts": dict(method_counts),
             "kinematics_urdf": kin.urdf_path,

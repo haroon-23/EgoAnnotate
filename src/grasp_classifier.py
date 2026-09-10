@@ -6,12 +6,47 @@ based on hand geometric features such as finger curling and thumb-index distance
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 import numpy as np
 
-from .datatypes import GraspType, HandLandmarks
+from .datatypes import GraspType, HandLandmarks, AnnotationFrame
+
+
+class TemporalGraspVoter:
+    """Majority vote over a 5-frame window inside contiguous tracked blocks.
+    'unknown' inside a hold inherits the nearest confident label (flagged)."""
+    def __init__(self, window=5):
+        self.w = window
+
+    def smooth(self, labels, present):
+        n = len(labels)
+        out = [None]*n
+        i = 0
+        while i < n:
+            if not present[i]:
+                out[i] = (None, False); i += 1; continue
+            j = i
+            while j < n and present[j]:
+                j += 1
+            for k in range(i, j):
+                lo, hi = max(i, k-self.w//2), min(j, k+self.w//2+1)
+                votes = Counter(l for l in labels[lo:hi]
+                                if l not in (None, "unknown"))
+                if votes:
+                    out[k] = (votes.most_common(1)[0][0], False)
+                elif labels[k] not in (None, "unknown"):
+                    out[k] = (labels[k], False)
+                else:
+                    inherit = next((labels[m] for m in range(k, j)
+                                    if labels[m] not in (None, "unknown")),
+                                   next((labels[m] for m in range(k-1, i-1, -1)
+                                         if labels[m] not in (None, "unknown")), None))
+                    out[k] = (inherit, inherit is not None)
+            i = j
+        return out
 
 
 @dataclass
@@ -33,6 +68,22 @@ class GraspClassifier:
     def __init__(self, config: GraspClassifierConfig):
         """Initialise the GraspClassifier with config."""
         self.config = config
+
+    def smooth_sequence(self, frames: List[AnnotationFrame]) -> None:
+        """Apply TemporalGraspVoter smoothing across all frames in an episode."""
+        voter = TemporalGraspVoter(window=5)
+        for handedness in ["left", "right"]:
+            labels = [
+                getattr(f, f"{handedness}_grasp").type
+                if getattr(f, f"{handedness}_grasp") is not None else None
+                for f in frames
+            ]
+            present = [getattr(f, f"{handedness}_hand") is not None for f in frames]
+            results = voter.smooth(labels, present)
+            for f, (label, inherited) in zip(frames, results):
+                g = getattr(f, f"{handedness}_grasp")
+                if g is not None and label is not None:
+                    g.type = label
 
     def classify(self, hand: Optional[HandLandmarks]) -> Optional[GraspType]:
         """Classify the grasp type for the given hand.

@@ -156,12 +156,6 @@ def main() -> None:
         help="Export annotated dataset to LeRobot v2.1 format. Optionally specify a single episode_id; otherwise, scans and exports all.",
     )
 
-    parser.add_argument(
-        "--export-overlay",
-        action="store_true",
-        help="Export burned-in overlay video with all annotations (contact bboxes, segments, grasps).",
-    )
-
     args = parser.parse_args()
 
     # Collect all video paths
@@ -218,8 +212,9 @@ def main() -> None:
             print("=" * 60)
             print("Next steps:")
             print(f"  1. Review exported annotations in output directory: {pipeline.dataset_exporter.config.output_dir}")
-            print("  2. Inspect the generated HUD telemetry videos (visualization.mp4) under each episode folder.")
-            print("  3. Train your downstream VLA policy using the standardized frame annotations.")
+            print("  2. Client-facing overlay: overlay_annotated.mp4 (native-res, all annotations)")
+            print("  3. Internal debug HUD: debug_hud_preview.mp4 (224x224)")
+            print("  4. Train your downstream VLA policy using the standardized frame annotations.")
             
             output_dir = pipeline.dataset_exporter.config.output_dir
 
@@ -263,21 +258,6 @@ def main() -> None:
                         except Exception as e:
                             print(f"Error exporting LeRobot for '{ep.episode_id}': {e}", file=sys.stderr)
 
-            # Post-run overlay video export if requested
-            if args.export_overlay:
-                print("\nRunning post-pipeline overlay video export...")
-                from src.visualizer import render_annotated_video
-                from pathlib import Path
-                
-                for ep in successful_episodes:
-                    print(f"  - Exporting overlay for episode '{ep.episode_id}'...")
-                    try:
-                        overlay_path = Path(output_dir) / ep.episode_id / "overlay_annotated.mp4"
-                        overlay_path.parent.mkdir(parents=True, exist_ok=True)
-                        render_annotated_video(ep.video_path, ep, overlay_path)
-                        print(f"    Saved: {overlay_path.relative_to(output_dir)}")
-                    except Exception as e:
-                        print(f"Error exporting overlay for '{ep.episode_id}': {e}", file=sys.stderr)
             
             print("=" * 60 + "\n")
         else:

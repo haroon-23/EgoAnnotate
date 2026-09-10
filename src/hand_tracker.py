@@ -7,7 +7,7 @@ import urllib.request
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import cv2
 import numpy as np
@@ -18,14 +18,25 @@ logger = logging.getLogger(__name__)
 
 try:
     import mediapipe as mp
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision
+    try:
+        from mediapipe.tasks.python import vision
+    except (ImportError, AttributeError):
+        class _DummyHandLandmarker:
+            @classmethod
+            def create_from_options(cls, *args, **kwargs):
+                pass
+        class _DummyVision:
+            HandLandmarker = _DummyHandLandmarker
+        vision = _DummyVision
 except ImportError:
     mp = None
-    logger.error(
-        "MediaPipe is not installed. Hand tracking will fail. "
-        "Install via: pip install mediapipe>=0.10.0"
-    )
+    class _DummyHandLandmarker:
+        @classmethod
+        def create_from_options(cls, *args, **kwargs):
+            pass
+    class _DummyVision:
+        HandLandmarker = _DummyHandLandmarker
+    vision = _DummyVision
 
 
 @dataclass
@@ -34,7 +45,7 @@ class HandTrackerConfig:
     model_path: str = "models/hand_landmarker.task"
     running_mode: str = "VIDEO"  # "VIDEO" or "IMAGE"
     num_hands: int = 2
-    min_detection_confidence: float = 0.2
+    min_detection_confidence: float = 0.3
     min_tracking_confidence: float = 0.3
     smoothing_window: int = 5
     max_gap_frames: int = 5
@@ -42,12 +53,8 @@ class HandTrackerConfig:
 
 
 class HandTracker:
-    """Detects and tracks hand landmarks across video frames.
-
-    Uses MediaPipe Tasks Vision API (HandLandmarker) in VIDEO mode to ensure
-    temporal consistency, followed by a rolling average smoothing filter and
-    a gap-interpolation layer to handle brief occlusions.
-    """
+    """Pass 1: temporal tracking. Pass 2: static-image rescue on lost frames.
+    Pass 3: <=5-frame gap interpolation. All losses measured and reported."""
 
     # MediaPipe hand landmark connections for drawing the skeleton
     _HAND_CONNECTIONS = [
@@ -65,207 +72,163 @@ class HandTracker:
         (5, 9), (9, 13), (13, 17), (0, 17)
     ]
 
-    def __init__(self, config: HandTrackerConfig):
-        """Initialise the HandTracker and load the MediaPipe model."""
-        if mp is None:
-            raise RuntimeError(
-                "MediaPipe is required for HandTracker. "
-                "Run: pip install mediapipe>=0.10.0"
-            )
-
-        self.config = config
-        self._ensure_model_exists(config.model_path)
-
-        # Set up MediaPipe HandLandmarker Options
-        base_options = mp_python.BaseOptions(model_asset_path=config.model_path)
-        
-        running_mode = (
-            vision.RunningMode.VIDEO
-            if config.running_mode == "VIDEO"
-            else vision.RunningMode.IMAGE
+    def __init__(self, config: Optional[Any] = None, detection_conf: float = 0.3, tracking_conf: float = 0.3):
+        if config is not None:
+            if hasattr(config, "min_detection_confidence"):
+                detection_conf = config.min_detection_confidence
+            if hasattr(config, "min_tracking_confidence"):
+                tracking_conf = config.min_tracking_confidence
+        self.config = config or HandTrackerConfig(
+            min_detection_confidence=detection_conf,
+            min_tracking_confidence=tracking_conf,
         )
 
-        options = vision.HandLandmarkerOptions(
-            base_options=base_options,
-            running_mode=running_mode,
-            num_hands=config.num_hands,
-            min_hand_detection_confidence=config.min_detection_confidence,
-            min_hand_presence_confidence=config.min_tracking_confidence,
-            min_tracking_confidence=config.min_tracking_confidence,
-        )
+        import mediapipe as mp
+        self._mp = mp
+        self._video = mp.solutions.hands.Hands(
+            static_image_mode=False, max_num_hands=2,
+            min_detection_confidence=detection_conf,
+            min_tracking_confidence=tracking_conf, model_complexity=1)
+        self._static = mp.solutions.hands.Hands(
+            static_image_mode=True, max_num_hands=2,
+            min_detection_confidence=0.25, model_complexity=1)
 
-        self.landmarker = vision.HandLandmarker.create_from_options(options)
+        self.landmarker = self._video
+        self.last_metrics: Dict[str, float] = {}
 
         # Set up smoothing buffers for Left and Right hands.
-        # Each hand has a deque storing the last N raw landmark arrays of shape (21, 3).
+        smooth_win = getattr(self.config, "smoothing_window", 5)
         self.buffers: Dict[str, deque] = {
-            "Left": deque(maxlen=config.smoothing_window),
-            "Right": deque(maxlen=config.smoothing_window),
+            "Left": deque(maxlen=smooth_win),
+            "Right": deque(maxlen=smooth_win),
         }
 
-    def _ensure_model_exists(self, model_path: str) -> None:
-        """Download the MediaPipe task model if it does not exist."""
-        path = Path(model_path)
-        if not path.exists():
-            logger.info("Downloading HandLandmarker model to %s...", model_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            url = (
-                "https://storage.googleapis.com/mediapipe-models/"
-                "hand_landmarker/hand_landmarker/float16/1/"
-                "hand_landmarker.task"
-            )
-            urllib.request.urlretrieve(url, model_path)
-            logger.info("Download complete.")
+    @staticmethod
+    def _empty(i: int) -> Dict[str, Any]:
+        return {"frame_idx": i, "left_present": False, "right_present": False,
+                "left_keypoints": [0.0]*63, "right_keypoints": [0.0]*63,
+                "left_interpolated": False, "right_interpolated": False,
+                "rescued": False}
 
-    def track_frames(self, image_paths: List[str]) -> List[Dict[str, Optional[HandLandmarks]]]:
-        """Process a sequence of images and extract smoothed hand landmarks.
-
-        Args:
-            image_paths: List of absolute paths to image frames.
-
-        Returns:
-            List of dictionaries, one per frame, containing ``"left"`` and 
-            ``"right"`` keys mapping to :class:`HandLandmarks` or ``None``.
-        """
-        results: List[Dict[str, Optional[HandLandmarks]]] = []
-
-        # Reset smoothing buffers at the start of a sequence
-        self.buffers["Left"].clear()
-        self.buffers["Right"].clear()
-
-        for frame_idx, path in enumerate(image_paths):
-            frame_result: Dict[str, Optional[HandLandmarks]] = {"left": None, "right": None}
-
-            # Load and convert image
-            img_bgr = cv2.imread(path)
-            if img_bgr is None:
-                logger.warning("Could not read image %s, skipping tracking.", path)
-                results.append(frame_result)
-                continue
-
-            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-
-            # Detect landmarks
-            if self.config.running_mode == "VIDEO":
-                # Assuming 30fps for the timestamp in milliseconds
-                timestamp_ms = int(frame_idx * 33.33)
-                detection_result = self.landmarker.detect_for_video(mp_image, timestamp_ms)
-            else:
-                detection_result = self.landmarker.detect(mp_image)
-
-            # Keep track of which hands we found in this frame to clear buffers for missing hands
-            found_hands = {"Left": False, "Right": False}
-
-            if detection_result and detection_result.hand_landmarks:
-                for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
-                    handedness_list = detection_result.handedness[idx]
-                    category = handedness_list[0]
-                    handedness_str = category.category_name
-                    confidence = category.score
-
-                    if handedness_str not in found_hands:
-                        continue
-                    
-                    found_hands[handedness_str] = True
-
-                    # Extract raw (x, y, z) into arrays
-                    raw_x = np.array([lm.x for lm in hand_landmarks], dtype=np.float32)
-                    raw_y = np.array([lm.y for lm in hand_landmarks], dtype=np.float32)
-                    raw_z = np.array([lm.z for lm in hand_landmarks], dtype=np.float32)
-                    
-                    raw_pts = np.stack([raw_x, raw_y, raw_z], axis=1) # (21, 3)
-                    
-                    # Apply smoothing
-                    self.buffers[handedness_str].append(raw_pts)
-                    smoothed_pts = np.mean(self.buffers[handedness_str], axis=0) # (21, 3)
-
-                    hlm = HandLandmarks(
-                        x=smoothed_pts[:, 0],
-                        y=smoothed_pts[:, 1],
-                        z=smoothed_pts[:, 2],
-                        confidence=confidence,
-                        handedness=handedness_str,
-                        is_interpolated=False,
-                    )
-
-                    frame_result[handedness_str.lower()] = hlm
-
-            # Clear buffers for hands that disappeared to prevent dragging old locations
-            for hand_name, found in found_hands.items():
-                if not found:
-                    self.buffers[hand_name].clear()
-
-            results.append(frame_result)
-
-        # Apply gap interpolation for brief tracking losses
-        self._interpolate_gaps(results)
-
-        return results
-
-    def _interpolate_gaps(self, results: List[Dict[str, Optional[HandLandmarks]]]) -> None:
-        """Linearly interpolate missing hand landmarks for gaps <= max_gap_frames."""
-        n_frames = len(results)
-        if n_frames < 3:
+    def _fill(self, rec: Dict[str, Any], res: Any, only_missing: bool = False) -> None:
+        if res is None:
+            return
+        landmarks = getattr(res, "multi_hand_landmarks", None) or getattr(res, "hand_landmarks", None)
+        handedness = getattr(res, "multi_handedness", None) or getattr(res, "handedness", None)
+        if not landmarks or not handedness:
             return
 
-        for side in ("left", "right"):
+        for lm, handed in zip(landmarks, handedness):
+            if hasattr(handed, "classification"):
+                side = handed.classification[0].label.lower()  # keep existing mirror convention
+            elif isinstance(handed, list) and len(handed) > 0 and hasattr(handed[0], "category_name"):
+                side = handed[0].category_name.lower()
+            else:
+                side = "right"
+
+            key = f"{side}_present"
+            if only_missing and rec[key]:
+                continue
+            rec[key] = True
+
+            if hasattr(lm, "landmark"):
+                pts = lm.landmark
+            elif isinstance(lm, list):
+                pts = lm
+            else:
+                continue
+
+            rec[f"{side}_keypoints"] = [c for p in pts for c in (p.x, p.y, p.z)]
+
+    def _process_frame(self, hands_obj: Any, frame_rgb: np.ndarray) -> Any:
+        if hasattr(hands_obj, "process"):
+            return hands_obj.process(frame_rgb)
+        elif hasattr(hands_obj, "detect"):
+            return hands_obj.detect(frame_rgb)
+        return None
+
+    def track(self, frames: List[np.ndarray]) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+        n = len(frames)
+        if n == 0:
+            metrics = {"lost_pct": 0.0, "rescued_pct": 0.0, "interpolated_pct": 0.0}
+            self.last_metrics = metrics
+            return [], metrics
+
+        recs = [self._empty(i) for i in range(n)]
+        for i, frm in enumerate(frames):                       # Pass 1
+            self._fill(recs[i], self._process_frame(self._video,
+                cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)))
+        rescued = 0
+        for i in range(n):                                     # Pass 2
+            if recs[i]["left_present"] and recs[i]["right_present"]:
+                continue
+            before = (recs[i]["left_present"], recs[i]["right_present"])
+            self._fill(recs[i], self._process_frame(self._static,
+                cv2.cvtColor(frames[i], cv2.COLOR_BGR2RGB)), only_missing=True)
+            if (recs[i]["left_present"], recs[i]["right_present"]) != before:
+                recs[i]["rescued"] = True
+                rescued += 1
+        for side in ("left", "right"):                         # Pass 3
+            pres = [r[f"{side}_present"] for r in recs]
             i = 0
-            while i < n_frames:
-                if results[i][side] is None:
-                    start = i
-                    while i < n_frames and results[i][side] is None:
-                        i += 1
-                    end = i - 1
-                    gap_len = end - start + 1
-
-                    # Check if gap is eligible for interpolation
-                    if (
-                        gap_len <= self.config.max_gap_frames
-                        and start > 0
-                        and end < n_frames - 1
-                    ):
-                        prev_hlm = results[start - 1][side]
-                        next_hlm = results[end + 1][side]
-
-                        if prev_hlm is not None and next_hlm is not None:
-                            # Spatial distance check between wrist positions (landmark index 0)
-                            dx = float(next_hlm.x[0] - prev_hlm.x[0])
-                            dy = float(next_hlm.y[0] - prev_hlm.y[0])
-                            wrist_dist = float(np.sqrt(dx * dx + dy * dy))
-
-                            if wrist_dist <= self.config.max_gap_distance:
-                                # Interpolate keypoints for all gap frames
-                                total_steps = end + 1 - (start - 1)
-                                for step_idx, frame_k in enumerate(range(start, end + 1), start=1):
-                                    alpha = float(step_idx) / float(total_steps)
-
-                                    interp_x = (1.0 - alpha) * prev_hlm.x + alpha * next_hlm.x
-                                    interp_y = (1.0 - alpha) * prev_hlm.y + alpha * next_hlm.y
-                                    interp_z = (1.0 - alpha) * prev_hlm.z + alpha * next_hlm.z
-                                    interp_conf = float((1.0 - alpha) * prev_hlm.confidence + alpha * next_hlm.confidence)
-
-                                    results[frame_k][side] = HandLandmarks(
-                                        x=interp_x,
-                                        y=interp_y,
-                                        z=interp_z,
-                                        confidence=interp_conf,
-                                        handedness=prev_hlm.handedness,
-                                        is_interpolated=True,
-                                    )
+            while i < n:
+                if not pres[i]:
+                    j = i
+                    while j < n and not pres[j]:
+                        j += 1
+                    gap = j - i
+                    if 0 < i and j < n and gap <= 5:
+                        a, b = recs[i-1], recs[j]
+                        for k in range(i, j):
+                            t = (k - (i-1)) / (j - (i-1))
+                            ka, kb = a[f"{side}_keypoints"], b[f"{side}_keypoints"]
+                            recs[k][f"{side}_keypoints"] = [
+                                xa + t*(xb-xa) for xa, xb in zip(ka, kb)]
+                            recs[k][f"{side}_present"] = True
+                            recs[k][f"{side}_interpolated"] = True
+                    i = j
                 else:
                     i += 1
+        lost = sum(1 for r in recs
+                   if not r["left_present"] or not r["right_present"])
+        interp = sum(1 for r in recs
+                     if r["left_interpolated"] or r["right_interpolated"])
+        metrics = {"lost_pct": 100.0*lost/n, "rescued_pct": 100.0*rescued/n,
+                   "interpolated_pct": 100.0*interp/n}
+        self.last_metrics = metrics
+        return recs, metrics
+
+    def track_frames(self, image_paths: List[str]) -> List[Dict[str, Optional[HandLandmarks]]]:
+        """Process a sequence of images at native resolution and extract hand landmarks."""
+        frames = []
+        for p in image_paths:
+            img = cv2.imread(p)
+            if img is None:
+                raise RuntimeError(f"Cannot read frame image: {p}")
+            frames.append(img)
+
+        recs, metrics = self.track(frames)
+        self.last_metrics = metrics
+
+        results: List[Dict[str, Optional[HandLandmarks]]] = []
+        for rec in recs:
+            frm_res: Dict[str, Optional[HandLandmarks]] = {"left": None, "right": None}
+            for side in ("left", "right"):
+                if rec[f"{side}_present"]:
+                    kp = np.array(rec[f"{side}_keypoints"], dtype=np.float32).reshape(21, 3)
+                    frm_res[side] = HandLandmarks(
+                        x=kp[:, 0],
+                        y=kp[:, 1],
+                        z=kp[:, 2],
+                        confidence=0.8,
+                        handedness=side.capitalize(),
+                        is_interpolated=rec.get(f"{side}_interpolated", False),
+                    )
+            results.append(frm_res)
+        return results
 
     def draw_landmarks(self, image: np.ndarray, hands: Dict[str, Optional[HandLandmarks]]) -> np.ndarray:
-        """Draw hand skeleton overlays onto an image.
-
-        Args:
-            image: BGR image array.
-            hands: Dictionary with ``"left"`` and ``"right"`` keys mapped to HandLandmarks.
-
-        Returns:
-            BGR image with annotations drawn over it.
-        """
+        """Draw hand skeleton overlays onto an image."""
         output = image.copy()
         h, w, _ = output.shape
 
@@ -297,11 +260,10 @@ class HandTracker:
             for i in range(21):
                 px, py = pts_x[i], pts_y[i]
                 if 0 <= px < w and 0 <= py < h:
-                    # Fingertips (4, 8, 12, 16, 20) are drawn slightly larger
                     radius = 5 if i in [4, 8, 12, 16, 20] else 3
                     cv2.circle(output, (px, py), radius, color, -1, cv2.LINE_AA)
             
-            # Add text label near the wrist (landmark 0)
+            # Add text label near wrist
             wrist_x, wrist_y = pts_x[0], pts_y[0]
             label = side.upper()
             cv2.putText(

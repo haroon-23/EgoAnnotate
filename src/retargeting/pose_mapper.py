@@ -56,6 +56,11 @@ class PoseMapperConfig:
     })
     z_floor_m: float = 0.10
     orientation_scale: float = 1.0
+    enable_trajectory_smoothing: bool = True
+    smoothing_window: int = 9
+    smoothing_polyorder: int = 2
+    enable_metric_calibration: bool = True
+    camera_intrinsics: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -159,6 +164,39 @@ def _wrist_orientation_from_landmarks(hand: HandLandmarks) -> np.ndarray:
     return R
 
 
+from scipy.signal import savgol_filter
+from scipy.spatial.transform import Rotation
+
+
+def smooth_targets(pos, quat, present):
+    """Smooth position and orientation targets using Savitzky-Golay filter.
+
+    Applied per contiguous tracked block; NEVER smooths across a tracking gap.
+    """
+    pos = np.array(pos, dtype=np.float64)
+    quat = np.array(quat, dtype=np.float64)
+    out_pos = pos.copy()
+    out_quat = quat.copy()
+    i = 0
+    n = len(present)
+    while i < n:
+        if not present[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and present[j]:
+            j += 1
+        b = list(range(i, j))
+        m = len(b)
+        w = min(9, m if m % 2 else m - 1)
+        if w >= 5:
+            out_pos[b] = savgol_filter(pos[b], w, 2, axis=0)
+            rv = Rotation.from_quat(quat[b]).as_rotvec()
+            out_quat[b] = Rotation.from_rotvec(savgol_filter(rv, w, 2, axis=0)).as_quat()
+        i = j
+    return out_pos, out_quat
+
+
 class PoseMapper:
     """Converts HandLandmarks to workspace-mapped end-effector target poses.
 
@@ -219,6 +257,20 @@ class PoseMapper:
         robot_max = np.array([wb["x_max"], wb["y_max"], wb["z_max"]], dtype=np.float64)
         robot_range = robot_max - robot_min
 
+        # --- Metric Calibration Estimation ----------------------------------
+        if self.config.enable_metric_calibration:
+            from .metric_calibration import MetricCalibrator, MetricCalibrationConfig
+            calibrator_cfg = MetricCalibrationConfig(
+                enabled=True,
+                camera_intrinsics=self.config.camera_intrinsics,
+            )
+            calibrator = MetricCalibrator(calibrator_cfg)
+            hands = [self._select_hand(f)[0] for f in frames]
+            metric_res = calibrator.calibrate(hands, raw_wrists)
+            metric_meta = metric_res.metadata
+        else:
+            metric_meta = {"calibration_method": "disabled"}
+
         scaling_metadata_base = {
             "method": "linear_workspace_normalization",
             "caveat": (
@@ -231,6 +283,7 @@ class PoseMapper:
             "human_wrist_bbox_max": human_max.tolist(),
             "robot_workspace_min_m": robot_min.tolist(),
             "robot_workspace_max_m": robot_max.tolist(),
+            "metric_calibration": metric_meta,
         }
 
         # --- Pass 2: map each frame -----------------------------------------
@@ -294,7 +347,31 @@ class PoseMapper:
                 },
             ))
 
+        # --- Trajectory Smoothing -------------------------------------------
+        if self.config.enable_trajectory_smoothing:
+            from .trajectory_smoother import TrajectorySmoother, TrajectorySmootherConfig
+            smoother_cfg = TrajectorySmootherConfig(
+                enabled=True,
+                window_length=self.config.smoothing_window,
+                polyorder=self.config.smoothing_polyorder,
+                respect_gaps=True,
+            )
+            targets = TrajectorySmoother(smoother_cfg).smooth_poses(targets)
+
+        # Pre-IK target smoothing per contiguous tracked block
+        positions = np.array([t.position for t in targets], dtype=np.float64)
+        quats = np.array([t.quaternion for t in targets], dtype=np.float64)
+        present = [t.hand_detected for t in targets]
+
+        smooth_pos, smooth_q = smooth_targets(positions, quats, present)
+
+        for i, t in enumerate(targets):
+            if t.hand_detected:
+                t.position = smooth_pos[i]
+                t.quaternion = smooth_q[i]
+
         return targets
+
 
     def _select_hand(self, frame) -> Tuple[Optional[HandLandmarks], Optional[str]]:
         """Return (hand, side) according to preferred_hand config."""

@@ -186,32 +186,44 @@ class IKSolver:
         self,
         target_pos: np.ndarray,
         target_quat: np.ndarray,
-    ) -> Tuple[np.ndarray, float]:
-        """Run IK for a single target pose and return (joint_angles, residual_m).
+        q_prev_full: Optional[list] = None,
+    ) -> Tuple[np.ndarray, float, list]:
+        """Run IK for a single target pose and return (joint_angles, residual_m, q_full).
 
         Returns the best result over num_attempts random restarts.
+        q_full is the full IK solution (arm + gripper) for warm-starting the next frame.
         """
         pb = self._pb
         kin = self.kinematics
         cfg = self.config
 
-        # Build per-joint damping list (PyBullet IK requires one per DOF)
+        n_arm = len(kin.arm_joint_indices)
         n_active = len(kin.active_joints)  # includes gripper
-        damping = [cfg.joint_damping] * n_active
 
         best_angles = None
         best_residual = float("inf")
+        best_q_full: Optional[list] = None
 
         for attempt in range(cfg.num_attempts):
             if attempt > 0:
                 # Random restart: perturb current joint state
-                noise = np.random.uniform(-0.3, 0.3, len(kin.arm_joint_indices))
+                noise = np.random.uniform(-0.3, 0.3, n_arm)
                 current = np.clip(
                     kin.rest_poses + noise,
                     kin.lower_limits,
                     kin.upper_limits,
                 )
                 self._set_joint_state(current)
+
+            # Warm-start: seed IK by setting sim joint state to previous
+            # frame's solution. This eliminates branch-flipping flail
+            # across frames. PyBullet reads initial positions from sim state.
+            if q_prev_full is not None and attempt == 0:
+                for idx, angle in zip(kin.arm_joint_indices, q_prev_full[:n_arm]):
+                    pb.resetJointState(
+                        self._robot_id, idx, angle,
+                        physicsClientId=self._client_id,
+                    )
 
             raw = pb.calculateInverseKinematics(
                 self._robot_id,
@@ -222,15 +234,14 @@ class IKSolver:
                 upperLimits=kin.upper_limits.tolist(),
                 jointRanges=(kin.upper_limits - kin.lower_limits).tolist(),
                 restPoses=kin.rest_poses.tolist(),
-                jointDamping=damping,
-                maxNumIterations=cfg.max_iterations,
-                residualThreshold=1e-6,
+                jointDamping=[0.15] * n_active,
+                maxNumIterations=120,
+                residualThreshold=1e-4,
                 physicsClientId=self._client_id,
             )
 
             # raw contains values for ALL active joints (arm + gripper fingers)
             # We take only the arm DOFs (first n_arm values)
-            n_arm = len(kin.arm_joint_indices)
             arm_angles = np.array(raw[:n_arm], dtype=np.float64)
 
             # Apply to simulation and measure actual residual
@@ -241,8 +252,10 @@ class IKSolver:
             if residual < best_residual:
                 best_residual = residual
                 best_angles = arm_angles.copy()
+                best_q_full = list(raw)
 
-        return best_angles, best_residual
+        # Update q_prev_full unconditionally after solve
+        return best_angles, best_residual, best_q_full
 
     def _check_joint_limits(
         self, angles: np.ndarray
@@ -290,6 +303,7 @@ class IKSolver:
 
         results: List[IKResult] = []
         prev_valid_angles: Optional[np.ndarray] = self.kinematics.rest_poses.copy()
+        q_prev_full: Optional[list] = None  # warm-start seed for IK
         n_reachable = 0
         n_fallback = 0
         n_no_hand = 0
@@ -316,9 +330,9 @@ class IKSolver:
                 ))
                 continue
 
-            # Solve IK
-            raw_angles, residual = self._solve_ik_single(
-                pose.position, pose.quaternion
+            # Solve IK with warm-start from previous frame
+            raw_angles, residual, q_prev_full = self._solve_ik_single(
+                pose.position, pose.quaternion, q_prev_full=q_prev_full
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             total_solve_ms += elapsed_ms

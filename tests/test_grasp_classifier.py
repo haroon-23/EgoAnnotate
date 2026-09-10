@@ -164,5 +164,31 @@ class TestGraspClassifier(unittest.TestCase):
         self.assertEqual(result.num_curled_fingers, 0)
 
 
+class TestTemporalGraspVoter(unittest.TestCase):
+
+    def test_majority_voting_and_unknown_inheritance(self):
+        """Test TemporalGraspVoter 5-frame majority voting and nearest confident label inheritance."""
+        from src.grasp_classifier import TemporalGraspVoter
+        voter = TemporalGraspVoter(window=5)
+
+        # 1. Majority vote overrides single outlier frame
+        labels = ["power_wrap", "power_wrap", "open", "power_wrap", "power_wrap"]
+        present = [True, True, True, True, True]
+        out = voter.smooth(labels, present)
+        smoothed_labels = [res[0] for res in out]
+        self.assertEqual(smoothed_labels, ["power_wrap"] * 5)
+
+        # 2. Unknown inside a hold inherits nearest confident label
+        labels_unk = ["power_wrap", "unknown", "unknown", "power_wrap"]
+        present_unk = [True, True, True, True]
+        out_unk = voter.smooth(labels_unk, present_unk)
+        for label, inherited in out_unk:
+            self.assertEqual(label, "power_wrap")
+
+        # 3. Unpresent hand returns None
+        out_unpresent = voter.smooth(["power_wrap"], [False])
+        self.assertEqual(out_unpresent[0], (None, False))
+
+
 if __name__ == "__main__":
     unittest.main()

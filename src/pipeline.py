@@ -31,7 +31,7 @@ from .retargeting import (
     IKSolver,
     GripperMapper,
 )
-from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler
+from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler, build_instruction
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
 
@@ -159,12 +159,14 @@ class EgoAnnotatePipeline:
         format_val = output_cfg.get("format", exp_cfg.get("format", "json"))
         include_bytes = output_cfg.get("include_image_bytes", exp_cfg.get("include_image_bytes", False))
         save_viz = output_cfg.get("save_viz_video", (self.config.get("visualizer") or {}).get("output_video", True))
+        save_overlay = output_cfg.get("save_overlay_video", True)
         
         exp_config = ExporterConfig(
             output_dir=output_dir,
             format=format_val,
             include_image_bytes=include_bytes,
             save_viz_video=save_viz,
+            save_overlay_video=save_overlay,
         )
         self.dataset_exporter = DatasetExporter(exp_config)
 
@@ -285,6 +287,9 @@ class EgoAnnotatePipeline:
             )
             frames.append(frame)
 
+        # Stage 5b: Temporal Grasp Majority Voting & Hold Inheritance
+        self.grasp_classifier.smooth_sequence(frames)
+
         # Build signal timelines for segmentation
         left_contact_timeline = [f.left_contact for f in frames]
         right_contact_timeline = [f.right_contact for f in frames]
@@ -316,13 +321,18 @@ class EgoAnnotatePipeline:
             # Fallback: create default segments from candidates
             segments = []
             for cand in candidates:
+                hands = cand.hands if hasattr(cand, "hands") and cand.hands else ["right"]
+                hand_used = cand.hand_used if hasattr(cand, "hand_used") else ("both" if len(hands) == 2 else hands[0])
+                act_name = cand.transition_type if cand.transition_type != "full_video" else "idle"
+                desc = build_instruction(act_name, cand.object_name or "unknown", hands)
                 segments.append(ActionSegment(
-                    name=cand.transition_type if cand.transition_type != "full_video" else "idle",
+                    name=act_name,
                     start_time=cand.start_time,
                     end_time=cand.end_time,
                     object_name=cand.object_name or "unknown",
-                    hand_used="right",
-                    description=f"auto: {cand.contact_state} {cand.grasp_type}",
+                    hand_used=hand_used,
+                    hands=hands,
+                    description=desc,
                 ))
             print(f"[Pipeline] SegmentLabeler unavailable, using {len(segments)} auto-labeled segments")
 
@@ -367,41 +377,37 @@ class EgoAnnotatePipeline:
         # Stage 9: Kinematic Retargeting (Optional)
         target_robot_name = "human_egocentric"
         if self.enable_retargeting and self.retargeter is not None:
-            try:
-                print("\n[Pipeline] Running Stage 9: Human-to-Robot Kinematic Retargeting...")
-                kin = self.retargeter.load_kinematics()
-                target_robot_name = kin.robot_name
+            # Fail-loud: if retargeting is explicitly enabled, failures are not silently swallowed.
+            # A broken URDF or config should surface immediately rather than producing silent
+            # human_egocentric output that passes as retargeted data downstream.
+            print("\n[Pipeline] Running Stage 9: Human-to-Robot Kinematic Retargeting...")
+            kin = self.retargeter.load_kinematics()
+            target_robot_name = kin.robot_name
 
-                target_poses = PoseMapper(self.retargeter.config.pose_mapper).map_frames(frames)
-                with IKSolver(kin, self.retargeter.config.ik_solver) as solver:
-                    ik_results = solver.solve_sequence(target_poses)
-                gripper_mapper = GripperMapper(kin, self.retargeter.config.gripper_mapper)
-                gripper_commands = gripper_mapper.map_frames(frames)
+            target_poses = PoseMapper(self.retargeter.config.pose_mapper).map_frames(frames)
+            with IKSolver(kin, self.retargeter.config.ik_solver) as solver:
+                ik_results = solver.solve_sequence(target_poses)
+            gripper_mapper = GripperMapper(kin, self.retargeter.config.gripper_mapper)
+            gripper_commands = gripper_mapper.map_frames(frames)
 
-                for i, f in enumerate(frames):
-                    f.robot_joint_angles = ik_results[i].joint_angles.tolist()
-                    f.robot_gripper_opening_m = float(gripper_commands[i].opening_m)
-                    f.robot_gripper_method = gripper_commands[i].gripper_mapping_method
-                    f.robot_reachable = ik_results[i].reachable
+            for i, f in enumerate(frames):
+                f.robot_joint_angles = ik_results[i].joint_angles.tolist()
+                f.robot_gripper_opening_m = float(gripper_commands[i].opening_m)
+                f.robot_gripper_method = gripper_commands[i].gripper_mapping_method
+                f.robot_reachable = ik_results[i].reachable
 
-                n_reach = sum(1 for r in ik_results if r.reachable)
-                print(
-                    f"[Pipeline] Retargeting complete ({target_robot_name}): "
-                    f"{n_reach}/{len(frames)} frames reachable ({100.0 * n_reach / max(len(frames), 1):.1f}%)"
-                )
+            n_reach = sum(1 for r in ik_results if r.reachable)
+            print(
+                f"[Pipeline] Retargeting complete ({target_robot_name}): "
+                f"{n_reach}/{len(frames)} frames reachable ({100.0 * n_reach / max(len(frames), 1):.1f}%)"
+            )
 
-                if self.save_retargeting_proof_video:
-                    out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
-                    out_ep_dir.mkdir(parents=True, exist_ok=True)
-                    sbs_path = out_ep_dir / "side_by_side.mp4"
-                    self._generate_proof_video(
-                        video_path, frames, ik_results, gripper_commands, kin, sbs_path
-                    )
-            except Exception as e:
-                logger.error(
-                    "Retargeting stage failed: %s. Continuing pipeline export without retargeting.",
-                    e,
-                    exc_info=True,
+            if self.save_retargeting_proof_video:
+                out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
+                out_ep_dir.mkdir(parents=True, exist_ok=True)
+                sbs_path = out_ep_dir / "side_by_side.mp4"
+                self._generate_proof_video(
+                    video_path, frames, ik_results, gripper_commands, kin, sbs_path
                 )
 
         # Build Annotated Episode
@@ -419,6 +425,12 @@ class EgoAnnotatePipeline:
             duration_seconds=duration_sec,
             target_robot=target_robot_name,
         )
+
+        if hasattr(self.hand_tracker, "last_metrics") and self.hand_tracker.last_metrics:
+            m = self.hand_tracker.last_metrics
+            episode.tracking_loss_pct = m.get("lost_pct", 0.0)
+            episode.tracking_rescued_pct = m.get("rescued_pct", 0.0)
+            episode.tracking_interpolated_pct = m.get("interpolated_pct", 0.0)
 
         # Stage 10: Export Episode
         self.dataset_exporter.export_episode(episode)
@@ -463,37 +475,35 @@ class EgoAnnotatePipeline:
         )
 
         cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        src_n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        src_duration = src_n / src_fps if (src_n > 0 and src_fps > 0) else (len(frames) / 30.0)
 
-        ret, first_human_img = cap.read()
-        if not ret or first_human_img is None:
-            first_human_img = np.zeros((480, 640, 3), np.uint8)
+        # Output video FPS matches the sampling rate of the processed frames so the side_by_side duration matches source video duration
+        writer_fps = len(frames) / src_duration if src_duration > 0 else src_fps
 
         test_img = render_robot_frame_pybullet(
             pb, client_id, robot_id, kin, kin.rest_poses, 0.02
         )
         using_pybullet = test_img is not None
 
-        dummy_robot = (
-            test_img
-            if using_pybullet
-            else render_robot_skeleton_2d(kin.rest_poses, kin, RENDER_W, RENDER_H)
-        )
-        dummy_composed = compose_side_by_side(
-            first_human_img, dummy_robot, 0, 0.0, True, 0.02, "grasp_type", robot_name=kin.robot_name
-        )
-        out_h, out_w = dummy_composed.shape[:2]
-
+        # Write frames to a temporary mp4v file first (OpenCV limitation: cannot write H.264 directly)
+        tmp_path = output_path.with_suffix(".tmp.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (out_w, out_h))
-
-        # Reset capture to start of video
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        writer = None
+        out_w, out_h = None, None
 
         for i in range(len(frames)):
-            ret, human_img = cap.read()
-            if not ret or human_img is None:
-                human_img = np.zeros((480, 640, 3), np.uint8)
+            frame_obj = frames[i]
+            human_img = None
+            if hasattr(frame_obj, "image_path") and frame_obj.image_path and Path(frame_obj.image_path).exists():
+                human_img = cv2.imread(frame_obj.image_path)
+            if human_img is None:
+                f_idx = getattr(frame_obj, "frame_idx", i)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+                ret, human_img = cap.read()
+                if not ret or human_img is None:
+                    human_img = np.zeros((480, 640, 3), np.uint8)
 
             ik_r = ik_results[i]
             gc = gripper_commands[i]
@@ -516,12 +526,52 @@ class EgoAnnotatePipeline:
                 gc.gripper_mapping_method,
                 robot_name=kin.robot_name,
             )
+
+            if writer is None:
+                out_h, out_w = comp.shape[:2]
+                writer = cv2.VideoWriter(str(tmp_path), fourcc, writer_fps, (out_w, out_h))
+
+            if comp.shape[0] != out_h or comp.shape[1] != out_w:
+                comp = cv2.resize(comp, (out_w, out_h))
+
             writer.write(comp)
 
+        if writer is not None:
+            writer.release()
         cap.release()
-        writer.release()
         pb.disconnect(client_id)
-        logger.info("Retargeting proof video saved to: %s", output_path)
+
+        # Re-encode mp4v → H.264 (libx264 + yuv420p + faststart) for browser/QuickTime compatibility.
+        # Uses atomic write: encode to output_path, then remove the tmp file.
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-i", str(tmp_path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-preset", "fast",
+            str(output_path),
+        ]
+        try:
+            import subprocess as _sp
+            result = _sp.run(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=300)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg H.264 re-encode failed (returncode={result.returncode}):\n"
+                    f"{result.stderr.decode()}"
+                )
+            tmp_path.unlink(missing_ok=True)
+            logger.info("Retargeting proof video (H.264) saved to: %s", output_path)
+            print(f"[Pipeline] side_by_side.mp4 (H.264/libx264): {output_path}")
+        except Exception as e:
+            # If ffmpeg fails, keep the mp4v file so the user is not left with nothing,
+            # but log a loud warning.
+            tmp_path.rename(output_path)
+            logger.warning(
+                "H.264 re-encode of side_by_side.mp4 failed (%s). "
+                "Kept legacy mp4v version at %s. Install ffmpeg with libx264 to fix.",
+                e, output_path,
+            )
 
     def process_videos(self, video_paths: List[str]) -> List[AnnotatedEpisode]:
         """Process a list of videos in a batch, logging errors and continuing on failure.

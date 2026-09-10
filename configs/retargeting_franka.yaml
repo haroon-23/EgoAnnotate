@@ -34,6 +34,11 @@ pose_mapper:
   preferred_hand: "right"    # "right" | "left" | "auto"
   z_floor_m: 0.10            # minimum EE height above base (prevents below-table targets)
   orientation_scale: 1.0     # 1.0 = full wrist rotation, reduce if IK becomes unstable
+  enable_trajectory_smoothing: true
+  smoothing_window: 9
+  smoothing_polyorder: 2
+  enable_metric_calibration: true
+
 
 ik_solver:
   max_iterations: 200

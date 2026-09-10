@@ -62,6 +62,16 @@ class SegmentLabelerConfig:
     )
 
 
+def build_instruction(segment_name: str, object_name: str, hands: list[str]) -> str:
+    """hands: list like ["left"], ["right"], ["left","right"]. Never emits
+    'the unknown' or 'idle the <object>'."""
+    if segment_name == "idle" or not object_name:
+        return "idle (no object)"
+    obj = object_name if object_name != "unknown" else "an unidentified object"
+    who = "both hands" if len(hands) == 2 else f"{hands[0]} hand"
+    return f"{segment_name} {obj} with {who}"
+
+
 class SegmentLabeler:
     """Labels pre-computed segments with action categories using Gemini."""
     
@@ -125,14 +135,20 @@ class SegmentLabeler:
         
         for seg in candidates:
             label = self._label_single_segment(seg, video_path)
-            
+            hands = getattr(seg, "hands", ["right"])
+            hand_used = getattr(seg, "hand_used", "both" if len(hands) == 2 else (hands[0] if hands else "right"))
+            desc = label.get("description")
+            if not desc or desc.startswith("auto"):
+                desc = build_instruction(label["action"], seg.object_name or "unknown", hands)
+
             labeled_segments.append(ActionSegment(
                 name=label["action"],
                 start_time=seg.start_time,
                 end_time=seg.end_time,
                 object_name=seg.object_name or "unknown",
-                hand_used="right",  # Could be enhanced to track hand
-                description=label["description"],
+                hand_used=hand_used,
+                description=desc,
+                hands=hands,
             ))
         
         return labeled_segments
@@ -288,9 +304,11 @@ class SegmentLabeler:
             else:
                 action = "manipulate"
         
+        hands = getattr(seg, "hands", ["right"])
+        desc = build_instruction(action, seg.object_name or "unknown", hands)
         return {
             "action": action,
-            "description": f"auto-labeled: {action} ({seg.transition_type})"
+            "description": desc,
         }
 
 

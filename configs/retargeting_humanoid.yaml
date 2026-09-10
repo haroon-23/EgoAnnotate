@@ -1,0 +1,52 @@
+# Retargeting configuration for Unitree H1 Humanoid Arm
+#
+# Embodiment: Unitree H1 Humanoid Robot (Right Arm, 7-DOF)
+# URDF Source: Unitree Robotics official open-source repository (unitree_ros / h1_description).
+#
+# Joint Chain (7-DOF):
+#   1. right_shoulder_pitch_joint (-2.87 to 2.87 rad)
+#   2. right_shoulder_roll_joint  (-0.34 to 3.11 rad)
+#   3. right_shoulder_yaw_joint   (-1.30 to 4.45 rad)
+#   4. right_elbow_joint          (-1.25 to 2.61 rad)
+#   5. right_wrist_roll_joint     (-2.87 to 2.87 rad)
+#   6. right_wrist_pitch_joint    (-1.57 to 1.57 rad)
+#   7. right_wrist_yaw_joint      (-2.87 to 2.87 rad)
+#
+# End-effector link: right_hand_link
+
+robot:
+  target_urdf_path: "data/urdfs/unitree_h1_arm.urdf"
+  end_effector_link: "right_hand_link"
+  gripper_joint_names: []
+
+  workspace_bounds:
+    x_min: 0.10
+    x_max: 0.50
+    y_min: -0.40
+    y_max: 0.00
+    z_min: 0.00
+    z_max: 0.40
+
+pose_mapper:
+  preferred_hand: "right"
+  z_floor_m: 0.00
+
+  orientation_scale: 1.0
+  enable_trajectory_smoothing: true
+  smoothing_window: 9
+  smoothing_polyorder: 2
+  enable_metric_calibration: true
+
+ik_solver:
+  max_iterations: 200
+  residual_threshold_m: 0.005
+  joint_damping: 0.005
+  num_attempts: 3
+
+gripper_mapper:
+  confidence_threshold: 0.6
+  hand_ref_size_m: 0.18
+  smoothing_alpha: 0.3
+
+output:
+  output_dir: "data/output/retargeting_humanoid"
