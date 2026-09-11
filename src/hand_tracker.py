@@ -189,12 +189,24 @@ class HandTracker:
                     i = j
                 else:
                     i += 1
-        lost = sum(1 for r in recs
-                   if not r["left_present"] or not r["right_present"])
-        interp = sum(1 for r in recs
-                     if r["left_interpolated"] or r["right_interpolated"])
-        metrics = {"lost_pct": 100.0*lost/n, "rescued_pct": 100.0*rescued/n,
-                   "interpolated_pct": 100.0*interp/n}
+        detected = [r["left_present"] or r["right_present"] for r in recs]
+        active_mask = [False] * n
+        for i in range(n):
+            if detected[i]:
+                for k in range(max(0, i - 10), min(n, i + 11)):
+                    active_mask[k] = True
+
+        active_frames = sum(1 for a in active_mask if a)
+        lost = sum(1 for r in recs if not r["left_present"] or not r["right_present"])
+        lost_active = sum(1 for i, r in enumerate(recs) if active_mask[i] and (not r["left_present"] or not r["right_present"]))
+
+        interp = sum(1 for r in recs if r["left_interpolated"] or r["right_interpolated"])
+        metrics = {
+            "lost_pct": 100.0 * lost / max(n, 1),
+            "lost_pct_active": 100.0 * lost_active / max(active_frames, 1) if active_frames > 0 else 0.0,
+            "rescued_pct": 100.0 * rescued / max(n, 1),
+            "interpolated_pct": 100.0 * interp / max(n, 1),
+        }
         self.last_metrics = metrics
         return recs, metrics
 

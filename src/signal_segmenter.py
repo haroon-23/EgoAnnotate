@@ -22,11 +22,17 @@ logger = logging.getLogger(__name__)
 class SignalSegmenterConfig:
     """Configuration for the SignalSegmenter."""
     # Minimum segment duration in seconds (filters jitter)
-    min_segment_duration_sec: float = 0.2
+    min_segment_duration_sec: float = 0.03
     # Maximum gap to merge adjacent same-type segments (seconds)
     merge_gap_sec: float = 0.3
     # Idle threshold: sustained no-contact period to start new segment
     idle_threshold_sec: float = 1.0
+
+
+def window_object(contact_counts_in_window, eligible):
+    c = {o: n for o, n in contact_counts_in_window.items()
+         if o in eligible and o != "unknown" and n >= 1}
+    return max(c, key=c.get) if c else None
 
 
 class SignalSegmenter:
@@ -63,11 +69,10 @@ class SignalSegmenter:
         if n_frames == 0:
             return []
         
-        # --- 1. Determine per-frame dominant hand state ---
-        # Use right hand if present, else left
+        # --- 1. Determine per-frame hand contact & grasp state ---
         contact_states = []
         grasp_types = []
-        object_names = []
+        frame_object_lists = []
         
         for i in range(n_frames):
             lc = left_contact_timeline[i] if i < len(left_contact_timeline) else None
@@ -75,34 +80,27 @@ class SignalSegmenter:
             lg = left_grasp_timeline[i] if i < len(left_grasp_timeline) else None
             rg = right_grasp_timeline[i] if i < len(right_grasp_timeline) else None
             
-            # Prefer right hand (typically dominant in egocentric)
-            if rc is not None:
-                contact = rc
-                grasp = rg
-                hand = "right"
-            elif lc is not None:
-                contact = lc
-                grasp = lg
-                hand = "left"
-            else:
-                contact = None
-                grasp = None
-                hand = "none"
+            frame_objs = []
+            if rc and rc.in_contact and rc.object_name:
+                frame_objs.append(rc.object_name)
+            if lc and lc.in_contact and lc.object_name:
+                frame_objs.append(lc.object_name)
             
-            # Contact state: "contact" or "no_contact"
-            if contact and contact.in_contact:
+            if frame_objs:
                 contact_state = "contact"
-                obj_name = contact.object_name
             else:
                 contact_state = "no_contact"
-                obj_name = None
             
-            # Grasp type
-            grasp_type = grasp.type if grasp else "none"
+            if rc and rc.in_contact and rg:
+                grasp_type = rg.type
+            elif lc and lc.in_contact and lg:
+                grasp_type = lg.type
+            else:
+                grasp_type = "none"
             
             contact_states.append(contact_state)
             grasp_types.append(grasp_type)
-            object_names.append(obj_name)
+            frame_object_lists.append(frame_objs)
         
         # --- 2. Find transition frames ---
         transition_frames = set()
@@ -117,8 +115,13 @@ class SignalSegmenter:
                 else:
                     transition_types[i] = "contact_off"
             
+            # Object changes (during contact)
+            elif contact_states[i] == "contact" and set(frame_object_lists[i]) != set(frame_object_lists[i - 1]):
+                transition_frames.add(i)
+                transition_types[i] = "object_change"
+            
             # Grasp type changes (only during contact)
-            if grasp_types[i] != grasp_types[i - 1] and contact_states[i] == "contact":
+            elif grasp_types[i] != grasp_types[i - 1] and contact_states[i] == "contact":
                 transition_frames.add(i)
                 transition_types[i] = "grasp_change"
         
@@ -146,18 +149,15 @@ class SignalSegmenter:
             start_t = frame_timestamps[start_f]
             end_t = frame_timestamps[min(end_f, n_frames - 1)]
             
-            # Extract most frequent non-null object within segment frames
-            seg_objs = [o for o in object_names[start_f:end_f] if o is not None]
-            if seg_objs:
-                if dwell is not None and len(dwell) > 0:
-                    from .contact_detector import eligible_objects, segment_object
-                    eligible = eligible_objects(dwell, min_dwell=3)
-                    seg_obj = segment_object(seg_objs, eligible, dwell)
-                else:
-                    from collections import Counter
-                    seg_obj = Counter(seg_objs).most_common(1)[0][0]
+            # Extract per-window object contact counts inside the segment window
+            from collections import Counter
+            window_objs = [o for frame_objs in frame_object_lists[start_f:end_f] for o in frame_objs if o is not None]
+            contact_counts_in_window = Counter(window_objs)
+            if dwell is not None and len(dwell) > 0:
+                eligible = {o for o, n in dwell.items() if n >= 3}
             else:
-                seg_obj = None
+                eligible = set(contact_counts_in_window.keys())
+            seg_obj = window_object(contact_counts_in_window, eligible)
             
             mid_f = (start_f + end_f) // 2
             if mid_f >= n_frames:

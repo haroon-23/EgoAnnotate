@@ -80,17 +80,31 @@ class GeminiObjectDetector:
         if not GEMINI_AVAILABLE:
             raise RuntimeError("google-generativeai not installed.")
 
+        if not os.environ.get("GEMINI_API_KEY"):
+            for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
+                if env_path.exists():
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("GEMINI_API_KEY="):
+                                val = line.split("=", 1)[1].strip("'\"")
+                                if val:
+                                    os.environ["GEMINI_API_KEY"] = val
+                                    break
+                    if os.environ.get("GEMINI_API_KEY"):
+                        break
+
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiObjectDetector.")
-        
+
         genai.configure(api_key=api_key)
         
         model_name = self.config.gemini_model
-        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest"]:
+        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest", "gemini-1.5-pro-latest", "models/gemini-1.5-pro-latest"]:
             model_name = "gemini-flash-lite-latest"
             
-        if not model_name.startswith("models/") and model_name != "gemini-1.5-pro-latest":
+        if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
         
         self._model = genai.GenerativeModel(model_name)

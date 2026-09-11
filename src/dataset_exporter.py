@@ -512,6 +512,16 @@ class DatasetExporter:
                 right_contact_count += 1
 
         total_frames = len(episode.frames)
+        detected = [f.left_hand is not None or f.right_hand is not None for f in episode.frames]
+        active_mask = [False] * total_frames
+        for i in range(total_frames):
+            if detected[i]:
+                for k in range(max(0, i - 10), min(total_frames, i + 11)):
+                    active_mask[k] = True
+        active_frames = sum(1 for a in active_mask if a)
+        lost_active = sum(1 for i, f in enumerate(episode.frames) if active_mask[i] and (f.left_hand is None or f.right_hand is None))
+        default_loss_active = 100.0 * lost_active / max(active_frames, 1) if active_frames > 0 else 0.0
+
         summary = {
             "left_grasp_distribution": left_grasps,
             "right_grasp_distribution": right_grasps,
@@ -521,6 +531,7 @@ class DatasetExporter:
             "ratio_left_contact": left_contact_count / total_frames if total_frames > 0 else 0.0,
             "ratio_right_contact": right_contact_count / total_frames if total_frames > 0 else 0.0,
             "tracking_loss_pct": getattr(episode, "tracking_loss_pct", 100.0 * sum(1 for f in episode.frames if f.left_hand is None or f.right_hand is None) / max(total_frames, 1)),
+            "tracking_loss_pct_active": getattr(episode, "tracking_loss_pct_active", default_loss_active),
             "tracking_rescued_pct": getattr(episode, "tracking_rescued_pct", 0.0),
             "tracking_interpolated_pct": getattr(episode, "tracking_interpolated_pct", 100.0 * sum(1 for f in episode.frames if (f.left_hand and f.left_hand.is_interpolated) or (f.right_hand and f.right_hand.is_interpolated)) / max(total_frames, 1)),
         }

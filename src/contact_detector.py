@@ -142,6 +142,7 @@ class ContactDetector:
         best_in_contact = False
         best_proximity_conf = 0.0
 
+        best_score = -999.0
         for t_obj in tracked_objs:
             obj_id = t_obj["id"]
             bbox = t_obj["bbox"]
@@ -157,15 +158,26 @@ class ContactDetector:
             state_on = sm.update(evidence)
 
             if state_on:
-                self.dwell[canon_name] = self.dwell.get(canon_name, 0) + 1
-                best_object_name = canon_name
-                best_in_contact = True
-                best_proximity_conf = 1.0
                 x1, y1, x2, y2 = bbox
-                best_fingers = np.array([
-                    x1 <= hand_kps[idx][0] <= x2 and y1 <= hand_kps[idx][1] <= y2
-                    for idx in (4, 8, 12, 16, 20)
-                ], dtype=bool)
+                tips_inside = sum(
+                    1 for idx in (4, 8, 12, 16, 20)
+                    if x1 <= hand_kps[idx][0] <= x2 and y1 <= hand_kps[idx][1] <= y2
+                )
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                dist = float(np.hypot(cx - hand_kps[0][0], cy - hand_kps[0][1]))
+                score = tips_inside * 10.0 - dist
+                if score > best_score:
+                    best_score = score
+                    best_object_name = canon_name
+                    best_in_contact = True
+                    best_proximity_conf = 1.0
+                    best_fingers = np.array([
+                        x1 <= hand_kps[idx][0] <= x2 and y1 <= hand_kps[idx][1] <= y2
+                        for idx in (4, 8, 12, 16, 20)
+                    ], dtype=bool)
+
+        if best_in_contact and best_object_name:
+            self.dwell[best_object_name] = self.dwell.get(best_object_name, 0) + 1
 
         # Fallback if state machine is not ON yet but geometry touches (e.g. single frame test)
         if not best_in_contact:

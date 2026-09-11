@@ -105,15 +105,15 @@ class TestGeminiLanguageGenerator(unittest.TestCase):
         generator.model.generate_content.return_value = mock_response
         
         segments = [
-            ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left"),
-            ActionSegment(name="place_down", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right")
+            ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left", hands=["left"]),
+            ActionSegment(name="place_down", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right", hands=["right"])
         ]
         
         results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
         self.assertEqual(len(results), 2)
         # Should fallback to formatted names
-        self.assertEqual(results[0], "pick up the spoon")
-        self.assertEqual(results[1], "place down the cup")
+        self.assertEqual(results[0], "pick_up spoon with left hand")
+        self.assertEqual(results[1], "place_down cup with right hand")
 
 
 if __name__ == "__main__":

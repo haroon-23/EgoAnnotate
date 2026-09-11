@@ -137,12 +137,12 @@ class SegmentLabeler:
             label = self._label_single_segment(seg, video_path)
             hands = getattr(seg, "hands", ["right"])
             hand_used = getattr(seg, "hand_used", "both" if len(hands) == 2 else (hands[0] if hands else "right"))
-            desc = label.get("description")
-            if not desc or desc.startswith("auto"):
-                desc = build_instruction(label["action"], seg.object_name or "unknown", hands)
+            action_name = label.get("action", "idle")
+            obj_name = seg.object_name if (action_name != "idle" and seg.contact_state != "no_contact") else None
+            desc = build_instruction(action_name, obj_name, hands)
 
             labeled_segments.append(ActionSegment(
-                name=label["action"],
+                name=action_name,
                 start_time=seg.start_time,
                 end_time=seg.end_time,
                 object_name=seg.object_name or "unknown",
@@ -179,7 +179,11 @@ class SegmentLabeler:
         )
         
         # Call Gemini with retries
-        result = self._call_gemini_with_retry(keyframe, prompt)
+        try:
+            result = self._call_gemini_with_retry(keyframe, prompt)
+        except Exception as e:
+            logger.warning(f"Gemini call exception for segment {seg.start_time}-{seg.end_time}: {e}, using default")
+            result = None
         
         if result is None:
             logger.warning(f"Gemini call failed for segment {seg.start_time}-{seg.end_time}, using default")
@@ -231,11 +235,12 @@ class SegmentLabeler:
             except Exception as e:
                 err = str(e).lower()
                 
-                # Fatal errors
+                # Fatal or network unreachable errors
                 if any(k in err for k in ["404", "not found", "no longer available", 
-                                          "invalid model", "api key not valid", "permission denied"]):
-                    logger.error(f"[FATAL] {e}")
-                    raise
+                                          "invalid model", "api key not valid", "permission denied",
+                                          "dns", "could not contact dns", "address lookup failed"]):
+                    logger.error(f"[FATAL/NETWORK UNREACHABLE] {e}")
+                    return None
                 
                 # Rate limit
                 if any(k in err for k in ["rate limit", "quota", "429", "resource exhausted"]):
@@ -305,7 +310,8 @@ class SegmentLabeler:
                 action = "manipulate"
         
         hands = getattr(seg, "hands", ["right"])
-        desc = build_instruction(action, seg.object_name or "unknown", hands)
+        obj_name = seg.object_name if (action != "idle" and seg.contact_state != "no_contact") else None
+        desc = build_instruction(action, obj_name, hands)
         return {
             "action": action,
             "description": desc,

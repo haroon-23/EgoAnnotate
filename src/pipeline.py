@@ -290,12 +290,21 @@ class EgoAnnotatePipeline:
         # Stage 5b: Temporal Grasp Majority Voting & Hold Inheritance
         self.grasp_classifier.smooth_sequence(frames)
 
-        # Build signal timelines for segmentation
+        # Build signal timelines for segmentation and compute episode dwell counts
         left_contact_timeline = [f.left_contact for f in frames]
         right_contact_timeline = [f.right_contact for f in frames]
         left_grasp_timeline = [f.left_grasp for f in frames]
         right_grasp_timeline = [f.right_grasp for f in frames]
         frame_timestamps = [f.timestamp for f in frames]
+
+        dwell: dict = {}
+        for f in frames:
+            if f.left_contact and f.left_contact.in_contact and f.left_contact.object_name:
+                obj = f.left_contact.object_name
+                dwell[obj] = dwell.get(obj, 0) + 1
+            if f.right_contact and f.right_contact.in_contact and f.right_contact.object_name:
+                obj = f.right_contact.object_name
+                dwell[obj] = dwell.get(obj, 0) + 1
 
         # Stage 6a: Signal-based segment boundary detection (deterministic)
         candidates = self.signal_segmenter.get_candidates(
@@ -304,6 +313,7 @@ class EgoAnnotatePipeline:
             left_grasp_timeline,
             right_grasp_timeline,
             frame_timestamps,
+            dwell=dwell,
         )
         print(f"[Pipeline] SignalSegmenter found {len(candidates)} candidate segments")
 
@@ -324,7 +334,8 @@ class EgoAnnotatePipeline:
                 hands = cand.hands if hasattr(cand, "hands") and cand.hands else ["right"]
                 hand_used = cand.hand_used if hasattr(cand, "hand_used") else ("both" if len(hands) == 2 else hands[0])
                 act_name = cand.transition_type if cand.transition_type != "full_video" else "idle"
-                desc = build_instruction(act_name, cand.object_name or "unknown", hands)
+                obj_name = cand.object_name if (act_name != "idle" and cand.object_name != "unknown") else None
+                desc = build_instruction(act_name, obj_name, hands)
                 segments.append(ActionSegment(
                     name=act_name,
                     start_time=cand.start_time,
@@ -349,27 +360,20 @@ class EgoAnnotatePipeline:
 
         # Stage 7: Language Generation
         task_description = self.language_generator.generate_episode_description(video_path)
-        seg_descriptions = self.language_generator.generate_segment_descriptions(
-            video_path, segments
-        )
-        # Assign descriptions to action segments and frame descriptions
-        for seg, desc in zip(segments, seg_descriptions):
-            seg.description = desc
+        for seg in segments:
+            obj_name = seg.object_name if (seg.name != "idle" and seg.object_name != "unknown") else None
+            seg.description = build_instruction(seg.name, obj_name, seg.hands)
 
         for frame in frames:
+            assigned = False
             for seg in segments:
                 if seg.start_time <= frame.timestamp <= seg.end_time:
-                    frame.frame_description = seg.description
+                    obj_name = seg.object_name if (seg.name != "idle" and seg.object_name != "unknown") else None
+                    frame.frame_description = build_instruction(seg.name, obj_name, seg.hands)
+                    assigned = True
                     break
-            
-            # Resolve frame-level caption object mismatch
-            active_obj = (
-                frame.right_contact.object_name if (frame.right_contact and frame.right_contact.in_contact and frame.right_contact.object_name)
-                else (frame.left_contact.object_name if (frame.left_contact and frame.left_contact.in_contact and frame.left_contact.object_name) else None)
-            )
-            if active_obj and ("unknown" in (frame.frame_description or "").lower() or not frame.frame_description):
-                act_name = frame.action_segment if frame.action_segment and frame.action_segment not in ("idle", "unknown") else "manipulate"
-                frame.frame_description = f"{act_name} the {active_obj}"
+            if not assigned:
+                frame.frame_description = build_instruction("idle", None, ["right"])
 
         # Stage 8: VLA Action Primitives Computation
         self.action_computer.compute_actions(frames)
@@ -429,6 +433,7 @@ class EgoAnnotatePipeline:
         if hasattr(self.hand_tracker, "last_metrics") and self.hand_tracker.last_metrics:
             m = self.hand_tracker.last_metrics
             episode.tracking_loss_pct = m.get("lost_pct", 0.0)
+            episode.tracking_loss_pct_active = m.get("lost_pct_active", 0.0)
             episode.tracking_rescued_pct = m.get("rescued_pct", 0.0)
             episode.tracking_interpolated_pct = m.get("interpolated_pct", 0.0)
 

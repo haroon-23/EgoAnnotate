@@ -21,17 +21,11 @@ class TestGeminiObjectDetector(unittest.TestCase):
 
     def test_api_key_missing_raises_error(self):
         """Test that ValueError is raised if GEMINI_API_KEY environment variable is missing."""
-        # Ensure GEMINI_API_KEY is not in environment
-        old_key = os.environ.pop("GEMINI_API_KEY", None)
-        try:
+        with patch.dict(os.environ, {}, clear=True), patch("pathlib.Path.exists", return_value=False):
             config = ObjectDetectorConfig()
             with self.assertRaises(ValueError) as context:
                 GeminiObjectDetector(config)
             self.assertIn("GEMINI_API_KEY environment variable is not set", str(context.exception))
-        finally:
-            # Restore environment key if existed
-            if old_key is not None:
-                os.environ["GEMINI_API_KEY"] = old_key
 
     @patch("google.generativeai.configure")
     @patch("google.generativeai.GenerativeModel")
@@ -43,7 +37,7 @@ class TestGeminiObjectDetector(unittest.TestCase):
         
         self.assertEqual(detector.config, config)
         mock_configure.assert_called_once_with(api_key="mock-api-key-value")
-        mock_model.assert_called_once_with("gemini-1.5-pro-latest")
+        mock_model.assert_called_once_with("models/gemini-flash-lite-latest")
 
     @patch("google.generativeai.configure")
     @patch("google.generativeai.GenerativeModel")

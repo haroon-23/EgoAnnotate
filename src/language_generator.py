@@ -66,10 +66,10 @@ class GeminiLanguageGenerator:
         
         genai.configure(api_key=api_key, transport='rest')
         model_name = self.config.gemini_model
-        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest"]:
+        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest", "gemini-1.5-pro-latest", "models/gemini-1.5-pro-latest"]:
             model_name = "gemini-flash-lite-latest"
             
-        if not model_name.startswith("models/") and model_name != "gemini-1.5-pro-latest":
+        if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
         self.model = genai.GenerativeModel(model_name)
         print(f"[LanguageGenerator] Using {model_name}")
@@ -122,15 +122,16 @@ class GeminiLanguageGenerator:
         except Exception as e:
             print(f"[LanguageGenerator] Gemini call failed for segment descriptions ({e}), using default fallback")
         
-        # Build final descriptions list, falling back to "{name_clean} the {object_name}"
+        # Build final descriptions list, falling back to build_instruction
         descriptions = []
+        from .segment_labeler import build_instruction
         for idx, seg in enumerate(segments):
             seg_num = idx + 1
             if seg_num in descriptions_map and descriptions_map[seg_num]:
                 descriptions.append(descriptions_map[seg_num])
             else:
-                name_clean = seg.name.replace('_', ' ')
-                descriptions.append(f"{name_clean} the {seg.object_name}")
+                obj_name = seg.object_name if (seg.name != "idle" and seg.object_name != "unknown") else None
+                descriptions.append(build_instruction(seg.name, obj_name, seg.hands))
                 
         return descriptions
     

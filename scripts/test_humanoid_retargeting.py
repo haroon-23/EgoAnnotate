@@ -15,7 +15,7 @@ def test_humanoid():
     for j in kin.arm_joints:
         print(f"  {j.name:<30} limits: [{j.lower_limit:+.2f}, {j.upper_limit:+.2f}] rad")
         
-    res = retargeter.run_from_annotations("data/output/new_video/frame_annotations.json", episode_id="new_video_humanoid")
+    res = retargeter.run_from_annotations("data/output/whatsapp_video/frame_annotations.json", episode_id="whatsapp_video_humanoid")
     print("\n=== HUMANOID RETARGETING SUMMARY ===")
     print(f"Total Frames : {res.n_frames}")
     print(f"Reachable    : {res.summary['n_reachable']} / {res.n_frames} ({res.summary['pct_reachable']:.1f}%)")
