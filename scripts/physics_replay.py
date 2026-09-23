@@ -7,7 +7,7 @@ import numpy as np
 import h5py
 
 KP = [600, 600, 400, 400, 150, 80, 50]   # arm position gains (tunable)
-KF, KVF = 100.0, 4.0                     # finger gains
+KF, KVF = 300.0, 10.0  # 3× stiffer fingers for reliable grasp
 
 def build_scene(urdf, cache, obj_home):
     if not os.path.exists(cache):
@@ -64,6 +64,10 @@ def main():
         horiz = float(np.linalg.norm(data.xpos[obj_b][:2] - data.xpos[ee_b][:2]))
         best_lift = max(best_lift, lift); lifts.append(lift)
         if closed and not in_win:
+            # Validate grasp initiation: EE must be within 5cm of object
+            ee_obj_dist = np.linalg.norm(data.xpos[ee_b][:2] - data.xpos[obj_b][:2])
+            if ee_obj_dist > 0.05:
+                continue  # skip this window; grasp too early
             in_win, win_succ, win_steps, windows = True, False, 0, windows + 1
         if in_win:
             win_steps += 1

@@ -277,7 +277,7 @@ def main():
         K = 1.0 / sdata["px_per_m"]
         scale_method = "a4_plane"
     else:
-        K = 0.6
+        K = 0.75  # tighter coupling: wrist closer to object center
         scale_method = "anthropometry±15%"
 
     mj=mujoco.MjModel.from_xml_path(a.urdf)

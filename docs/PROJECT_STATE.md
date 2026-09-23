@@ -14,8 +14,8 @@ not a retargeter); HaMeR/Isaac GPU-walled; ORB-SLAM3/YOLO-World GPL-excluded.
 DECISIONS (Phase A Close & Phase D Physics):
 - MoGe ViT-L rejected for CPU depth extraction (27.50s/frame CPU vs <=4s budget).
 - Depth-Anything-V2-Small rejected for CPU depth extraction (avg 7.40s/frame @ 512px vs <=4s budget).
-- Metric Scale Strategy: A4 table-plane calibration (scripts/calibrate_scale.py) when A4 sheet is present, falling back to anthropometric ratio (K=0.6) with disclosed ±15% caveat.
-- Physics Replay Proof: Replayed joints in MuJoCo with gravity, position actuators (KP=[600,600,400,400,150,80,50], KF=100), and free object on table (`scripts/physics_replay.py`).
+- Metric Scale Strategy: A4 table-plane calibration (scripts/calibrate_scale.py) when A4 sheet is present, falling back to anthropometric ratio (K=0.75) with disclosed ±15% caveat.
+- Physics Replay Proof: Patched gripper stiffness (KF=300, KVF=10), grasp initiation validation, and K=0.75 gain. Physics replay shows success=0; Phase D declared blocked on raw MediaPipe/GDINO tracking, moving to Phase B (SAM2/RTMW upgrade).
 DISCIPLINE: raw paste only; no silent fallbacks; per-joint limits at export; commit+tag+push
 after every gate; update this file in the same commit.
 
