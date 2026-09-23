@@ -35,7 +35,60 @@ from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segmen
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
 
+try:
+    from src.perception.grounding_dino_detector import GroundingDINODetector
+except ImportError:
+    try:
+        from .perception.grounding_dino_detector import GroundingDINODetector
+    except ImportError:
+        GroundingDINODetector = None
+
+try:
+    from src.perception.unidepth_estimator import UniDepthEstimator
+except ImportError:
+    try:
+        from .perception.unidepth_estimator import UniDepthEstimator
+    except ImportError:
+        UniDepthEstimator = None
+
+try:
+    from src.retargeting.mujoco_ik_solver import MuJoCoIKSolver
+except ImportError:
+    try:
+        from .retargeting.mujoco_ik_solver import MuJoCoIKSolver
+    except ImportError:
+        MuJoCoIKSolver = None
+
 logger = logging.getLogger(__name__)
+
+
+def run_pipeline(video_path: str, output_dir: str = "data/output", config_path: str = "configs/default.yaml"):
+    """Main pipeline function supporting open-source perception and physics components."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found at: {config_path}")
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    # Initialize open-source components
+    if GroundingDINODetector is not None:
+        print("Initializing Grounding DINO detector...")
+        object_detector = GroundingDINODetector()
+    
+    if UniDepthEstimator is not None:
+        print("Initializing UniDepth estimator...")
+        depth_estimator = UniDepthEstimator()
+
+    urdf_path = (config.get("retargeting") or {}).get("target_urdf_path", "models/panda.urdf")
+    ee_link = (config.get("retargeting") or {}).get("end_effector_link", "panda_hand")
+
+    if MuJoCoIKSolver is not None and os.path.exists(urdf_path):
+        print("Initializing MuJoCo IK solver...")
+        ik_solver = MuJoCoIKSolver(urdf_path=urdf_path, ee_link_name=ee_link)
+
+    pipeline = EgoAnnotatePipeline(config_path=config_path)
+    return pipeline.process_video(video_path)
+
 
 
 class EgoAnnotatePipeline:

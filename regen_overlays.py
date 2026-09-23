@@ -93,6 +93,7 @@ if __name__ == '__main__':
     results = {}
     for name, video in [
         ("test_10s", "data/raw_videos/test_10s.mp4"),
+        ("whatsapp_video", "data/raw_videos/whatsapp_video.mp4"),
         ("client_video", "data/raw_videos/client_video.mp4"),
         ("new_video", "data/raw_videos/new_video.mp4"),
     ]:

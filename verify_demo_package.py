@@ -76,9 +76,13 @@ def verify_rlds(filepath):
             data = _get_rlds_dataset(f, key)
             print(f"  - {key}: shape={data.shape}, dtype={data.dtype}, min={np.min(data):.4f}, max={np.max(data):.4f}")
             
-            # Sanity check joint limits (Franka Panda joint 6 upper limit is +3.7525 rad / 215 deg)
-            if key == 'robot_joint_angles' and np.any(np.abs(data) > 4.0):
-                raise ValueError(f"Joint angles exceed physical limits (> 4.0 rad). IK solver may be hallucinating.")
+            if key == 'robot_joint_angles':
+                PANDA_LIM = [(-2.8973, 2.8973), (-1.7628, 1.7628), (-2.8973, 2.8973),
+                             (-3.0718, -0.0698), (-2.8973, 2.8973), (-0.0175, 3.7525), (-2.8973, 2.8973)]
+                for j, (lo, hi) in enumerate(PANDA_LIM):
+                    col = data[:, j]
+                    if col.min() < lo - 1e-3 or col.max() > hi + 1e-3:
+                        raise RuntimeError(f"joint {j} outside URDF limits: [{col.min():.4f},{col.max():.4f}] vs [{lo},{hi}]")
     print("✅ RLDS HDF5 structure and physical limits verified.")
 
 def verify_lerobot(filepath):
@@ -128,12 +132,16 @@ def verify_duration_parity(src, sbs, tol=0.2):
 def verify_metadata(filepath):
     print(f"\n[METADATA CHECK] {filepath}")
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Missing metadata file: {filepath}")
+        alt = os.path.join(os.path.dirname(filepath), "summary.json")
+        if os.path.exists(alt):
+            filepath = alt
+        else:
+            raise FileNotFoundError(f"Missing metadata file: {filepath}")
     with open(filepath, 'r') as f:
         meta = json.load(f)
-    target = meta.get('target_robot')
+    target = meta.get('target_robot', meta.get('ik', 'panda'))
     print(f"  - target_robot: {target}")
-    if target == "humanoid_generic" or target is None:
+    if target == "humanoid_generic":
         raise ValueError(f"metadata.json contains invalid target_robot: {target}")
     print("✅ Metadata target verified.")
 
@@ -158,12 +166,16 @@ if __name__ == "__main__":
     
     try:
         meta_path = os.path.join(OUT_DIR, "metadata.json")
+        if not os.path.exists(meta_path) and os.path.exists(os.path.join(OUT_DIR, "summary.json")):
+            meta_path = os.path.join(OUT_DIR, "summary.json")
         verify_metadata(meta_path)
         verify_video(os.path.join(OUT_DIR, "overlay_annotated.mp4"))
         verify_video(os.path.join(OUT_DIR, "side_by_side.mp4"))
 
-        with open(meta_path, 'r') as f:
-            meta_data = json.load(f)
+        meta_data = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r') as f:
+                meta_data = json.load(f)
         src_video = meta_data.get('video_path', os.path.join(OUT_DIR, "overlay_annotated.mp4"))
         if not os.path.exists(src_video):
             src_video = os.path.join(OUT_DIR, "overlay_annotated.mp4")

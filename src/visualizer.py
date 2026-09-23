@@ -151,12 +151,13 @@ class EgoVisualizer:
             y = gap
             ph = self.cfg.pad_y * 2 + len(lines) * self.cfg.line_h + 2
 
-            # Background
-            overlay = img.copy()
-            cv2.rectangle(overlay, (x, y), (x + panel_w, y + ph),
-                          self.cfg.panel_bg, -1)
-            cv2.addWeighted(overlay, self.cfg.alpha, img,
-                            1 - self.cfg.alpha, 0, img)
+            # Background blending (ROI slice for high performance)
+            y_max = min(h, y + ph)
+            x_max = min(w, x + panel_w)
+            if y_max > y and x_max > x:
+                roi = img[y:y_max, x:x_max]
+                bg = np.full_like(roi, self.cfg.panel_bg, dtype=np.uint8)
+                cv2.addWeighted(bg, self.cfg.alpha, roi, 1.0 - self.cfg.alpha, 0, roi)
 
             # Border
             cv2.rectangle(img, (x, y), (x + panel_w, y + ph),
@@ -378,10 +379,11 @@ class EgoVisualizer:
         timeline_h = 40  # taller for detailed view
         y0 = h - timeline_h
         
-        # Background
-        overlay = img.copy()
-        cv2.rectangle(overlay, (0, y0), (w, h), (15, 15, 15), -1)
-        cv2.addWeighted(overlay, 0.88, img, 0.12, 0, img)
+        # Background blending (ROI slice for high performance)
+        if h > y0 and w > 0:
+            roi = img[y0:h, 0:w]
+            bg = np.full_like(roi, (15, 15, 15), dtype=np.uint8)
+            cv2.addWeighted(bg, 0.88, roi, 0.12, 0, roi)
         cv2.line(img, (0, y0), (w, y0), (60, 60, 60), 1, cv2.LINE_AA)
         
         if not segments:
@@ -454,10 +456,15 @@ class EgoVisualizer:
             y = 25 + idx * 22
             x = 10
             
-            # Background
-            overlay = img.copy()
-            cv2.rectangle(overlay, (x - 4, y - 18), (x + 280, y + 4), (20, 20, 20), -1)
-            cv2.addWeighted(overlay, 0.85, img, 0.15, 0, img)
+            # Background blending (ROI slice for high performance)
+            y1 = max(0, y - 18)
+            y2 = min(h, y + 4)
+            x1 = max(0, x - 4)
+            x2 = min(w, x + 280)
+            if y2 > y1 and x2 > x1:
+                roi = img[y1:y2, x1:x2]
+                bg = np.full_like(roi, (20, 20, 20), dtype=np.uint8)
+                cv2.addWeighted(bg, 0.85, roi, 0.15, 0, roi)
             
             # Color based on contact
             if contact and contact.in_contact:
@@ -487,9 +494,15 @@ class EgoVisualizer:
         by1 = 8
         by2 = by1 + txt_size[1] + pad_y * 2
 
-        overlay = img.copy()
-        cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
-        cv2.addWeighted(overlay, 0.85, img, 0.15, 0, img)
+        # Background blending (ROI slice for high performance)
+        y1 = max(0, by1)
+        y2 = min(h, by2)
+        x1 = max(0, bx1)
+        x2 = min(w, bx2)
+        if y2 > y1 and x2 > x1:
+            roi = img[y1:y2, x1:x2]
+            bg = np.full_like(roi, (20, 20, 20), dtype=np.uint8)
+            cv2.addWeighted(bg, 0.85, roi, 0.15, 0, roi)
         cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 1, cv2.LINE_AA)
 
         cv2.putText(
