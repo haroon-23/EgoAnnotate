@@ -60,3 +60,4 @@ hand_landmarker.task
 .pytest_cache/
 run_log.txt
 *.code-workspace
+panda_scene_cache*.xml
