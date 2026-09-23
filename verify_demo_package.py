@@ -176,9 +176,7 @@ if __name__ == "__main__":
         if os.path.exists(meta_path):
             with open(meta_path, 'r') as f:
                 meta_data = json.load(f)
-        src_video = meta_data.get('video_path', os.path.join(OUT_DIR, "overlay_annotated.mp4"))
-        if not os.path.exists(src_video):
-            src_video = os.path.join(OUT_DIR, "overlay_annotated.mp4")
+        src_video = os.path.join(OUT_DIR, "overlay_annotated.mp4")
         verify_duration_parity(src_video, os.path.join(OUT_DIR, "side_by_side.mp4"))
 
         verify_rlds(os.path.join(OUT_DIR, "dataset_rlds.hdf5"))

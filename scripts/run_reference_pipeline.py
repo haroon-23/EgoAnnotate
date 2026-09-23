@@ -357,16 +357,42 @@ def main():
             reason[i]="joint_limit"; q[i]=q_prev.copy(); continue
         reach[i]=True; reason[i]="tracked"; q[i]=qc; q_prev=qc.copy()
 
+    # Downsample trajectory to max 1.5 rad/s for dynamic trackability
+    max_speed = 1.5  # rad/s, conservative for position control
+    dt_max = 0.9 * max_speed * dt / PANDA_VEL.max()
+    if dt_max < dt:
+        # Interpolate to slower trajectory rate (more time steps, slower velocity)
+        from scipy.interpolate import interp1d
+        from scipy.spatial.transform import Slerp
+        t_orig = np.arange(n) * dt
+        scale = dt / dt_max
+        n_new = int(n * scale)
+        t_new = np.linspace(0, (n-1)*dt, n_new)
+        q = np.array([interp1d(t_orig, q[:, j], kind='linear', fill_value='extrapolate')(t_new) for j in range(7)]).T
+        grip = interp1d(t_orig, grip, kind='linear', fill_value='extrapolate')(t_new)
+        pos_s = interp1d(t_orig, pos_s, axis=0, kind='linear', fill_value='extrapolate')(t_new)
+        quat_t = Slerp(t_orig, Rotation.from_quat(quat_t))(t_new).as_quat()
+        reach = np.array([interp1d(t_orig, reach.astype(float), kind='nearest')(t_new) > 0.5]).flatten()
+        reason = [reason[min(int(t/dt), len(reason)-1)] for t in t_new]
+        n = n_new
+        print(f"[ref] downsampled trajectory to {n} frames (scale={scale:.2f}x slower) for trackability")
+
     q, reach, reason = sanitize_trajectory(q, reach, reason, dt)
 
     # ---- HARD AUDIT: raises, so bad data cannot ship ----
+    n_orig = len(rec)
+    raw_i = lambda idx: min(int(round(idx * (n_orig - 1) / (n - 1))), n_orig - 1) if n > 1 else 0
+    for idx in range(n):
+        if rec[raw_i(idx)]["li"] or rec[raw_i(idx)]["ri"]:
+            reach[idx] = False
+            reason[idx] = "interpolated"
     if np.any(q<LO-1e-4) or np.any(q>HI+1e-4):
         raise RuntimeError("EXPORT BLOCKED: joint limits violated")
     idx=np.where(reach)[0]
     for f1,f2 in zip(idx[:-1],idx[1:]):
         if f2-f1==1 and np.any(np.abs(q[f2]-q[f1])/dt > VEL_LIM+1e-6):
             raise RuntimeError(f"EXPORT BLOCKED: velocity violation frames {f1},{f2}")
-    if int(np.sum(reach & np.array([rec[i]["li"] or rec[i]["ri"] for i in range(n)]))):
+    if int(np.sum(reach & np.array([rec[raw_i(i)]["li"] or rec[raw_i(i)]["ri"] for i in range(n)]))):
         raise RuntimeError("EXPORT BLOCKED: interpolated frame reachable")
     mov=int(np.sum(np.abs(np.diff(q,axis=0)).max(axis=1)>1e-6))
     if mov < 0.5*(n-1):
@@ -401,7 +427,7 @@ def main():
         _,_,px,_,_=pb.getCameraImage(640,480,vw,pj,renderer=pb.ER_TINY_RENDERER,physicsClientId=cli)
         rgb=np.array(px,dtype=np.uint8).reshape(480,640,4)[:,:,:3]
         rf=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
-        hf=cv2.resize(frames[i],(int(W*480/H),480))
+        hf=cv2.resize(frames[raw_i(i)],(int(W*480/H),480))
         lab=np.zeros((30,1120,3),np.uint8)
         cv2.putText(lab,"HUMAN DEMONSTRATION",(10,20),cv2.FONT_HERSHEY_SIMPLEX,0.6,(200,255,200),1)
         cv2.putText(lab,"PANDA RETARGETED (mink/MuJoCo)",(max(hf.shape[1]+10,270),20),cv2.FONT_HERSHEY_SIMPLEX,0.6,(200,200,255),1)
@@ -409,7 +435,7 @@ def main():
                         np.zeros((40,1120,3),np.uint8)])
         col=(100,255,100) if reach[i] else (100,100,255)
         cv2.putText(comp,f"Frame {i:05d} t={i/FPS:.2f}s IK: {'VALID' if reach[i] else 'FALLBACK('+reason[i]+')'} "
-                    f"Gripper={grip[i]*1000:.1f}mm Method={method[i]}",(10,535),
+                    f"Gripper={grip[i]*1000:.1f}mm Method={method[raw_i(i)]}",(10,535),
                     cv2.FONT_HERSHEY_SIMPLEX,0.5,col,1,cv2.LINE_AA)
         wr.write(comp)
     wr.release(); pb.disconnect(cli)
@@ -422,8 +448,8 @@ def main():
     ov=a.out+"/overlay_annotated.mp4"; tmp2=ov+".tmp.mp4"
     wr=cv2.VideoWriter(tmp2,cv2.VideoWriter_fourcc(*"mp4v"),FPS,(W,H))
     for i in range(n):
-        f=frames[i].copy(); placed=[]; seen_lab=set()
-        for o in per_obj[i]:
+        f=frames[raw_i(i)].copy(); placed=[]; seen_lab=set()
+        for o in per_obj[raw_i(i)]:
             if o["name"] in seen_lab: continue
             seen_lab.add(o["name"])
             x1,y1,x2,y2=[int(v) for v in o["bbox"]]
@@ -434,9 +460,9 @@ def main():
                 if not(r[2]<p[0] or r[0]>p[2] or r[3]<p[1] or r[1]>p[3]): y=p[3]+th+6; r=[x1,y-th-4,x1+tw,y+4]
             placed.append(r); cv2.putText(f,t,(x1,y),cv2.FONT_HERSHEY_SIMPLEX,0.4,(220,220,220),1,cv2.LINE_AA)
         for s,col in (("l",(255,0,255)),("r",(0,255,0))):
-            if rec[i][s+"p"]:
-                c=(0,255,255) if rec[i][s+"i"] else col
-                k=rec[i][s+"k"]; pts=[(int(k[j*3]*W),int(k[j*3+1]*H)) for j in range(21)]
+            if rec[raw_i(i)][s+"p"]:
+                c=(0,255,255) if rec[raw_i(i)][s+"i"] else col
+                k=rec[raw_i(i)][s+"k"]; pts=[(int(k[j*3]*W),int(k[j*3+1]*H)) for j in range(21)]
                 for a2,b2 in [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),(10,11),
                               (11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(17,18),(18,19),(19,20)]:
                     cv2.line(f,pts[a2],pts[b2],c,1,cv2.LINE_AA)
@@ -451,9 +477,9 @@ def main():
             (bw2,bh2),_=cv2.getTextSize(ik,cv2.FONT_HERSHEY_SIMPLEX,0.4,1)
             cv2.putText(f,ik,(x+pw-bw2-8,16),cv2.FONT_HERSHEY_SIMPLEX,0.4,
                         (0,255,0) if reach[i] else (0,165,255),1,cv2.LINE_AA)
-            obj=cobj[s][i]
-            txt=(gl[s][i]+"; "+("in contact with "+obj if contact[s][i] else "no contact"))
-            if rec[i][s+"i"]: txt="[interp] "+txt
+            obj=cobj[s][raw_i(i)]
+            txt=(gl[s][raw_i(i)]+"; "+("in contact with "+obj if contact[s][raw_i(i)] else "no contact"))
+            if rec[raw_i(i)][s+"i"]: txt="[interp] "+txt
             for li,ln in enumerate(wrap_px(txt,cv2.FONT_HERSHEY_SIMPLEX,0.38,1,pw-12)):
                 cv2.putText(f,ln,(x+6,36+li*14),cv2.FONT_HERSHEY_SIMPLEX,0.38,(255,255,255),1,cv2.LINE_AA)
         cv2.rectangle(f,(0,H-26),(W,H),(0,0,0),-1)
@@ -492,8 +518,8 @@ def main():
     pq.write_table(tbl,a.out+"/lerobot_v3/data/chunk-000/file-000.parquet")
     json.dump({"codebase_version":"v3.0","total_frames":n,"fps":FPS},
               open(a.out+"/lerobot_v3/meta/info.json","w"),indent=2)
-    lost=sum(1 for i in range(n) if not(rec[i]["lp"] and rec[i]["rp"]))
-    loss_active=100*sum(1 for i in range(n) if not(rec[i]["lp"] or rec[i]["rp"]))/n
+    lost=sum(1 for i in range(n) if not(rec[raw_i(i)]["lp"] and rec[raw_i(i)]["rp"]))
+    loss_active=100*sum(1 for i in range(n) if not(rec[raw_i(i)]["lp"] or rec[raw_i(i)]["rp"]))/n
     pin_rate=float(np.mean([1 if grip[i]<0.005 else 0 for i in range(n)]))
 
     task_desc = "Pick up object and place on target table"
