@@ -268,6 +268,18 @@ def main():
 
     # ---- retarget targets: object-centric, smoothed ----
     import mink, mujoco
+    scale_file = os.path.join(a.out, "scale.json")
+    if not os.path.exists(scale_file) and os.path.exists("scale.json"):
+        scale_file = "scale.json"
+    if os.path.exists(scale_file):
+        with open(scale_file) as sf:
+            sdata = json.load(sf)
+        K = 1.0 / sdata["px_per_m"]
+        scale_method = "a4_plane"
+    else:
+        K = 0.6
+        scale_method = "anthropometry±15%"
+
     mj=mujoco.MjModel.from_xml_path(a.urdf)
     _c=["panda_link8","panda_hand","link8","panda_end_effector","ee_link","panda_link7"]
     ee=next((c for c in _c if mujoco.mj_name2id(mj,mujoco.mjtObj.mjOBJ_BODY,c)>=0),None)
@@ -279,7 +291,7 @@ def main():
     post=mink.PostureTask(mj,cost=1e-3)
     lim=mink.ConfigurationLimit(mj)
     vel_lim=mink.VelocityLimit(mj, {f"panda_joint{j+1}": 0.899*PANDA_VEL[j] for j in range(7)})
-    HOME=np.array([0.5,0.0,0.25]); K=0.6
+    HOME=np.array([0.5,0.0,0.25])
     pos_t=[]; quat_t=[]; present=[]
     for i in range(n):
         s="r" if rec[i]["rp"] else ("l" if rec[i]["lp"] else None)
@@ -481,8 +493,21 @@ def main():
     json.dump({"codebase_version":"v3.0","total_frames":n,"fps":FPS},
               open(a.out+"/lerobot_v3/meta/info.json","w"),indent=2)
     lost=sum(1 for i in range(n) if not(rec[i]["lp"] and rec[i]["rp"]))
+    loss_active=100*sum(1 for i in range(n) if not(rec[i]["lp"] or rec[i]["rp"]))/n
+    pin_rate=float(np.mean([1 if grip[i]<0.005 else 0 for i in range(n)]))
+
+    task_desc = "Pick up object and place on target table"
+    json.dump({"episode_id": os.path.basename(a.out), "video_path": os.path.abspath(a.video),
+               "task_description": task_desc, "num_frames": n, "duration_seconds": n/FPS,
+               "target_robot": "panda", "urdf": os.path.basename(a.urdf),
+               "ik": "mink/MuJoCo (daqp)", "scale_method": scale_method},
+              open(os.path.join(a.out, "metadata.json"), "w"), indent=2)
+
     json.dump({"total_frames":n,"reachable":int(reach.sum()),
                "pct_reachable":100*reach.sum()/n,"tracking_loss_pct":100*lost/n,
+               "tracking_loss_pct_active":loss_active,
+               "reason_histogram":{r:int((np.array(reason)==r).sum()) for r in set(reason)},
+               "gripper_pin_rate":float(pin_rate),"sanitizer":"export-side v1",
                "max_joint_speed_rad_s":float(np.max(np.abs(np.diff(q,axis=0)))/dt),
                "joint_limits":"enforced_by_solver_and_audited","ik":"mink/MuJoCo (daqp)"},
               open(a.out+"/summary.json","w"),indent=2)
