@@ -3,7 +3,7 @@
 ## Overview
 EgoAnnotate is an end-to-end video annotation pipeline that converts raw egocentric demonstration videos into structured datasets ready for training Vision-Language-Action (VLA) models and humanoid robot policies. Designed for robotics researchers and machine learning engineers, it automatically tracks hands in 3D, detects interacted objects, determines physical contacts, classifies grasp types, segments manipulation phases, generates semantic language annotations, and exports data into standardized formats. By bridging the gap between raw human demonstrations and robot learning frameworks, EgoAnnotate significantly accelerates data curation and policy training.
 
-> **Status Note:** Feasible trajectories provided; task-completion proof requires SAM2/RTMW upgrade (Phase B).
+> **Status Note:** Phase D blocked on replay-harness calibration (controller tracking + object placement); perception upgrade queued pending isolation.
 
 ## Features
 EgoAnnotate orchestrates a comprehensive 8-stage pipeline to process egocentric video inputs:
