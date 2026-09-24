@@ -1,0 +1,4 @@
+kind: humanoid
+urdf: data/urdfs/embodiments/g1_clean.urdf
+task_links: [{link: right_wrist_yaw_link, pos_cost: 1.0, ori_cost: 1.0}]
+velocity_limits: [2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6]

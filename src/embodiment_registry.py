@@ -1,0 +1,1 @@
+from retargeting.embodiment_registry import Adapter

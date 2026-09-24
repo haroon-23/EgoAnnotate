@@ -1,0 +1,16 @@
+kind: arm
+task_links:
+- link: panda_link7
+  ori_cost: 1.0
+  pos_cost: 1.0
+urdf: data/urdfs/panda.urdf
+velocity_limits:
+- 2.17
+- 2.17
+- 2.17
+- 2.17
+- 2.61
+- 2.61
+- 2.61
+- 2.61
+- 2.61
