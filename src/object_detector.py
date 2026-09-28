@@ -19,8 +19,13 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    from .gemini_client import (
+        GEMINI_AVAILABLE,
+        create_client,
+        resolve_model_name,
+        generate_text,
+        pil_to_part,
+    )
 except ImportError:
     GEMINI_AVAILABLE = False
 
@@ -36,7 +41,7 @@ RETRY_DELAY = 10
 class ObjectDetectorConfig:
     keyframes_per_video: int = 3
     bbox_keyframe_interval: int = 15
-    gemini_model: str = "gemini-1.5-pro-latest"
+    gemini_model: str = "gemini-3.8-flash"
     prompt: str = "Identify all objects in the frame. Respond in JSON format."
     # Grounding DINO settings (optional, can be overridden by pipeline config)
     grounding_dino_model: str = "google/owlvit-base-patch32"
@@ -78,7 +83,7 @@ class GeminiObjectDetector:
     
     def _init_model(self):
         if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-generativeai not installed.")
+            raise RuntimeError("google-genai not installed.")
 
         if not os.environ.get("GEMINI_API_KEY"):
             for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
@@ -98,17 +103,9 @@ class GeminiObjectDetector:
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiObjectDetector.")
 
-        genai.configure(api_key=api_key)
-        
-        model_name = self.config.gemini_model
-        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest", "gemini-1.5-pro-latest", "models/gemini-1.5-pro-latest"]:
-            model_name = "gemini-flash-lite-latest"
-            
-        if not model_name.startswith("models/"):
-            model_name = f"models/{model_name}"
-        
-        self._model = genai.GenerativeModel(model_name)
-        logger.debug("[ObjectDetector] Using Gemini: %s", model_name)
+        self._client = create_client(api_key)
+        self._model_name = resolve_model_name(self.config.gemini_model)
+        logger.debug("[ObjectDetector] Using Gemini: %s", self._model_name)
     
     def _init_grounding_dino(self):
         """Initialize Grounding DINO detector for bbox localization."""
@@ -351,8 +348,11 @@ class GeminiObjectDetector:
         last_error = None
         for attempt in range(MAX_RETRIES):
             try:
-                response = self._model.generate_content([prompt, pil_image], generation_config={"temperature": 0.1}, request_options={"timeout": 5.0})
-                return self._parse_response(response.text)
+                response_text = generate_text(
+                    self._client, self._model_name,
+                    [prompt, pil_to_part(pil_image)], temperature=0.1,
+                )
+                return self._parse_response(response_text)
             
             except Exception as e:
                 last_error = e

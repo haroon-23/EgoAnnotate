@@ -35,28 +35,8 @@ if not os.environ.get("GEMINI_API_KEY"):
 
 from src.pipeline import EgoAnnotatePipeline
 
-# Apply monkey patch to avoid Discovery API key checks
-try:
-    import google.generativeai.client as genai_client
-    import googleapiclient.discovery
-    import urllib.request
-
-    def patched_setup_discovery_api(self, metadata=()):
-        api_key = self._client_options.api_key
-        discovery_url = "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta"
-        try:
-            with urllib.request.urlopen(discovery_url) as response:
-                discovery_doc = response.read().decode("utf-8")
-        except Exception as e:
-            print(f"[Warning] Failed to fetch discovery doc: {e}")
-            raise
-        self._local.discovery_api = googleapiclient.discovery.build_from_document(
-            discovery_doc, developerKey=api_key
-        )
-
-    genai_client.FileServiceClient._setup_discovery_api = patched_setup_discovery_api
-except Exception as e:
-    print(f"Warning: Failed to apply Discovery API patch: {e}")
+# NOTE: the old google-generativeai Discovery-API monkeypatch was removed.
+# The google-genai SDK needs no Discovery API workaround.
 
 
 def run_export_only(export_rlds_val: str, config_path: str) -> None:

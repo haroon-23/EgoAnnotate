@@ -15,7 +15,7 @@ class TestGeminiLanguageGenerator(unittest.TestCase):
     def test_config_initialization(self):
         """Test default LanguageGeneratorConfig values."""
         config = LanguageGeneratorConfig()
-        self.assertEqual(config.gemini_model, "gemini-1.5-pro-latest")
+        self.assertEqual(config.gemini_model, "gemini-3.8-flash")
         self.assertIn("overall task", config.episode_prompt)
         self.assertIn("description", config.segment_prompt)
 
@@ -31,24 +31,22 @@ class TestGeminiLanguageGenerator(unittest.TestCase):
             if old_key is not None:
                 os.environ["GEMINI_API_KEY"] = old_key
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    @patch("google.generativeai.upload_file")
-    def test_generate_episode_description_success(self, mock_upload, mock_model, mock_configure):
+    @patch("src.language_generator.create_client")
+    @patch("src.language_generator.upload_video_file")
+    @patch("src.language_generator.generate_text")
+    def test_generate_episode_description_success(self, mock_generate_text, mock_upload_video, mock_create_client):
         """Test generating episode description and word truncation to 50 words."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
         
         # Mock file upload
         mock_file = MagicMock()
-        mock_file.state.name = "ACTIVE"
-        mock_upload.return_value = mock_file
+        mock_file.name = "files/mock123"
+        mock_upload_video.return_value = mock_file
         
         # Mock model response with >50 words
         long_response_text = "word " * 60
-        mock_response = MagicMock()
-        mock_response.text = long_response_text
-        generator.model.generate_content.return_value = mock_response
+        mock_generate_text.return_value = long_response_text
         
         result = generator.generate_episode_description("dummy_path.mp4")
         
@@ -56,26 +54,24 @@ class TestGeminiLanguageGenerator(unittest.TestCase):
         self.assertEqual(len(result.split()), 50)
         self.assertEqual(result, " ".join(["word"] * 50))
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    @patch("google.generativeai.upload_file")
-    def test_generate_segment_descriptions_success(self, mock_upload, mock_model, mock_configure):
+    @patch("src.language_generator.create_client")
+    @patch("src.language_generator.upload_video_file")
+    @patch("src.language_generator.generate_text")
+    def test_generate_segment_descriptions_success(self, mock_generate_text, mock_upload_video, mock_create_client):
         """Test segment descriptions parsing and formatting."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
         
         mock_file = MagicMock()
-        mock_file.state.name = "ACTIVE"
-        mock_upload.return_value = mock_file
+        mock_file.name = "files/mock123"
+        mock_upload_video.return_value = mock_file
         
         # Mock VLM returning standard "Segment X: description" output
         vlm_response = """
         Segment 1: picking up a metal spoon
         Segment 2: pouring hot water into a cup
         """
-        mock_response = MagicMock()
-        mock_response.text = vlm_response
-        generator.model.generate_content.return_value = mock_response
+        mock_generate_text.return_value = vlm_response
         
         segments = [
             ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left"),
@@ -87,22 +83,20 @@ class TestGeminiLanguageGenerator(unittest.TestCase):
         self.assertEqual(results[0], "picking up a metal spoon")
         self.assertEqual(results[1], "pouring hot water into a cup")
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    @patch("google.generativeai.upload_file")
-    def test_generate_segment_descriptions_fallback(self, mock_upload, mock_model, mock_configure):
+    @patch("src.language_generator.create_client")
+    @patch("src.language_generator.upload_video_file")
+    @patch("src.language_generator.generate_text")
+    def test_generate_segment_descriptions_fallback(self, mock_generate_text, mock_upload_video, mock_create_client):
         """Test fallback to '{name} the {object}' if segment parsing fails."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
         
         mock_file = MagicMock()
-        mock_file.state.name = "ACTIVE"
-        mock_upload.return_value = mock_file
+        mock_file.name = "files/mock123"
+        mock_upload_video.return_value = mock_file
         
         # Mock VLM returning malformed/empty response
-        mock_response = MagicMock()
-        mock_response.text = "invalid output format"
-        generator.model.generate_content.return_value = mock_response
+        mock_generate_text.return_value = "invalid output format"
         
         segments = [
             ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left", hands=["left"]),

@@ -7,8 +7,14 @@ from typing import List, Optional
 from dataclasses import dataclass
 
 try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    from .gemini_client import (
+        GEMINI_AVAILABLE,
+        create_client,
+        resolve_model_name,
+        generate_text,
+        upload_video_file,
+        delete_remote_file,
+    )
 except ImportError:
     GEMINI_AVAILABLE = False
 
@@ -23,7 +29,7 @@ VIDEO_UPLOAD_TIMEOUT = 30
 @dataclass
 class LanguageGeneratorConfig:
     """Configuration for the GeminiLanguageGenerator."""
-    gemini_model: str = "gemini-1.5-pro-latest"
+    gemini_model: str = "gemini-3.8-flash"
     episode_prompt: str = (
         "Summarize the overall task performed in this egocentric video in one concise sentence (e.g. 'cooking pasta' or 'assembling a table')."
     )
@@ -58,21 +64,15 @@ class GeminiLanguageGenerator:
     
     def _init_model(self):
         if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-generativeai not installed.")
+            raise RuntimeError("google-genai not installed.")
         
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiLanguageGenerator.")
         
-        genai.configure(api_key=api_key, transport='rest')
-        model_name = self.config.gemini_model
-        if model_name in ["gemini-1.5-flash", "gemini-flash-latest", "models/gemini-1.5-flash", "models/gemini-flash-latest", "gemini-1.5-pro-latest", "models/gemini-1.5-pro-latest"]:
-            model_name = "gemini-flash-lite-latest"
-            
-        if not model_name.startswith("models/"):
-            model_name = f"models/{model_name}"
-        self.model = genai.GenerativeModel(model_name)
-        print(f"[LanguageGenerator] Using {model_name}")
+        self._client = create_client(api_key)
+        self._model_name = resolve_model_name(self.config.gemini_model)
+        print(f"[LanguageGenerator] Using {self._model_name}")
     
     def generate_episode_description(self, video_path: str) -> str:
         """Generate one-sentence task description. Fast fallback on failure."""
@@ -138,28 +138,16 @@ class GeminiLanguageGenerator:
     def _call_with_video(self, video_path: Path, prompt: str) -> Optional[str]:
         for attempt in range(MAX_RETRIES):
             try:
-                video_file = genai.upload_file(str(video_path))
-                
-                waited = 0
-                while video_file.state.name == "PROCESSING" and waited < 5:
-                    time.sleep(1)
-                    waited += 1
-                    try:
-                        video_file = genai.get_file(video_file.name)
-                    except Exception:
-                        pass
-                
-                if video_file.state.name != "ACTIVE":
+                video_file = upload_video_file(self._client, str(video_path), timeout_s=10.0)
+
+                if video_file is None:
                     return None
-                
-                response = self.model.generate_content([video_file, prompt], generation_config={"temperature": 0.1}, request_options={"timeout": 5.0})
-                
-                try:
-                    genai.delete_file(video_file.name)
-                except Exception:
-                    pass
-                
-                return response.text if response and response.text else None
+
+                response_text = generate_text(self._client, self._model_name, [video_file, prompt], temperature=0.1)
+
+                delete_remote_file(self._client, video_file.name)
+
+                return response_text if response_text else None
             
             except Exception as e:
                 err = str(e).lower()

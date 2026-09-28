@@ -15,7 +15,7 @@ class TestGeminiActionSegmenter(unittest.TestCase):
     def test_config_initialization(self):
         """Test default ActionSegmenterConfig values."""
         config = ActionSegmenterConfig()
-        self.assertEqual(config.gemini_model, "gemini-1.5-pro-latest")
+        self.assertEqual(config.gemini_model, "gemini-3.8-flash")
         self.assertIn("temporal segments", config.prompt)
 
     def test_api_key_missing_raises_error(self):
@@ -30,9 +30,8 @@ class TestGeminiActionSegmenter(unittest.TestCase):
             if old_key is not None:
                 os.environ["GEMINI_API_KEY"] = old_key
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_time_parsing_formats(self, mock_model, mock_configure):
+    @patch("src.action_segmenter.create_client")
+    def test_time_parsing_formats(self, mock_create_client):
         """Test parsing of different time string formats."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         segmenter = GeminiActionSegmenter(ActionSegmenterConfig())
@@ -50,9 +49,8 @@ class TestGeminiActionSegmenter(unittest.TestCase):
         self.assertEqual(segmenter._parse_time(""), 0.0)
         self.assertEqual(segmenter._parse_time("invalid"), 0.0)
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_json_response(self, mock_model, mock_configure):
+    @patch("src.action_segmenter.create_client")
+    def test_parse_json_response(self, mock_create_client):
         """Test parsing of clean JSON response and markdown blocks."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         segmenter = GeminiActionSegmenter(ActionSegmenterConfig())
@@ -80,9 +78,8 @@ class TestGeminiActionSegmenter(unittest.TestCase):
         self.assertEqual(results[0].hand_used, "left")
         self.assertEqual(results[0].description, "picking up the silver spoon")
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_text_fallback(self, mock_model, mock_configure):
+    @patch("src.action_segmenter.create_client")
+    def test_parse_text_fallback(self, mock_create_client):
         """Test regex fallback parser on plain text descriptions."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         segmenter = GeminiActionSegmenter(ActionSegmenterConfig())
@@ -111,16 +108,15 @@ class TestGeminiActionSegmenter(unittest.TestCase):
         self.assertEqual(results[1].hand_used, "both")
         self.assertEqual(results[1].description, "pouring water into the bowl using both hands")
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    @patch("google.generativeai.upload_file")
-    def test_default_fallback_segment_on_failure(self, mock_upload, mock_model, mock_configure):
+    @patch("src.action_segmenter.create_client")
+    @patch("src.action_segmenter.upload_video_file")
+    def test_default_fallback_segment_on_failure(self, mock_upload_video, mock_create_client):
         """Test that single default segment is returned if upload/generation fails."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         segmenter = GeminiActionSegmenter(ActionSegmenterConfig())
         
         # Make upload raise an error to trigger fallback path
-        mock_upload.side_effect = Exception("Upload failed")
+        mock_upload_video.side_effect = Exception("Upload failed")
         
         results = segmenter.segment_video("dummy_path.mp4")
         self.assertEqual(len(results), 1)

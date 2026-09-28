@@ -16,7 +16,7 @@ class TestGeminiObjectDetector(unittest.TestCase):
         """Test default config values."""
         config = ObjectDetectorConfig()
         self.assertEqual(config.keyframes_per_video, 3)
-        self.assertEqual(config.gemini_model, "gemini-1.5-pro-latest")
+        self.assertEqual(config.gemini_model, "gemini-3.8-flash")
         self.assertIn("Identify all objects", config.prompt)
 
     def test_api_key_missing_raises_error(self):
@@ -27,21 +27,19 @@ class TestGeminiObjectDetector(unittest.TestCase):
                 GeminiObjectDetector(config)
             self.assertIn("GEMINI_API_KEY environment variable is not set", str(context.exception))
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_detector_initialization_success(self, mock_model, mock_configure):
+    @patch("src.object_detector.create_client")
+    def test_detector_initialization_success(self, mock_create_client):
         """Test detector instantiates successfully when API key is present."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         config = ObjectDetectorConfig()
         detector = GeminiObjectDetector(config)
-        
-        self.assertEqual(detector.config, config)
-        mock_configure.assert_called_once_with(api_key="mock-api-key-value")
-        mock_model.assert_called_once_with("models/gemini-flash-lite-latest")
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_json_response(self, mock_model, mock_configure):
+        self.assertEqual(detector.config, config)
+        mock_create_client.assert_called_once_with("mock-api-key-value")
+        self.assertEqual(detector._model_name, "gemini-3.8-flash")
+
+    @patch("src.object_detector.create_client")
+    def test_parse_json_response(self, mock_create_client):
         """Test parsing of a clean JSON list response."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         detector = GeminiObjectDetector(ObjectDetectorConfig())
@@ -63,9 +61,8 @@ class TestGeminiObjectDetector(unittest.TestCase):
         self.assertEqual(results[1].location_description, "on the stove burner")
         self.assertFalse(results[1].touched)
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_markdown_json_response(self, mock_model, mock_configure):
+    @patch("src.object_detector.create_client")
+    def test_parse_markdown_json_response(self, mock_create_client):
         """Test parsing of JSON response wrapped in markdown code blocks."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         detector = GeminiObjectDetector(ObjectDetectorConfig())
@@ -83,9 +80,8 @@ class TestGeminiObjectDetector(unittest.TestCase):
         self.assertEqual(results[0].location_description, "in the workbench tray")
         self.assertFalse(results[0].touched)
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_dict_wrapped_json_response(self, mock_model, mock_configure):
+    @patch("src.object_detector.create_client")
+    def test_parse_dict_wrapped_json_response(self, mock_create_client):
         """Test parsing of JSON response wrapped in a dictionary."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         detector = GeminiObjectDetector(ObjectDetectorConfig())
@@ -103,9 +99,8 @@ class TestGeminiObjectDetector(unittest.TestCase):
         self.assertEqual(results[0].location_description, "in the bowl")
         self.assertTrue(results[0].touched)
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_regex_fallback_response(self, mock_model, mock_configure):
+    @patch("src.object_detector.create_client")
+    def test_parse_regex_fallback_response(self, mock_create_client):
         """Test parsing fallback using regex on broken JSON structures."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         detector = GeminiObjectDetector(ObjectDetectorConfig())
@@ -121,9 +116,8 @@ class TestGeminiObjectDetector(unittest.TestCase):
         self.assertEqual(results[0].location_description, "on table desk")
         self.assertFalse(results[0].touched)
 
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    def test_parse_plain_text_line_fallback(self, mock_model, mock_configure):
+    @patch("src.object_detector.create_client")
+    def test_parse_plain_text_line_fallback(self, mock_create_client):
         """Test parsing fallback for plain text line lists."""
         os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
         detector = GeminiObjectDetector(ObjectDetectorConfig())

@@ -9,8 +9,14 @@ from typing import List, Optional
 from dataclasses import dataclass
 
 try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    from .gemini_client import (
+        GEMINI_AVAILABLE,
+        create_client,
+        resolve_model_name,
+        generate_text,
+        upload_video_file,
+        delete_remote_file,
+    )
 except ImportError:
     GEMINI_AVAILABLE = False
 
@@ -25,7 +31,7 @@ VIDEO_UPLOAD_TIMEOUT = 30  # seconds max wait for video processing
 @dataclass
 class ActionSegmenterConfig:
     """Configuration for the GeminiActionSegmenter."""
-    gemini_model: str = "gemini-1.5-pro-latest"
+    gemini_model: str = "gemini-3.8-flash"
     prompt: str = (
         "Analyze the actions performed in this egocentric video and segment it into contiguous temporal segments.\n"
         "For each segment, provide:\n"
@@ -59,23 +65,15 @@ class GeminiActionSegmenter:
     
     def _init_model(self):
         if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-generativeai not installed.")
+            raise RuntimeError("google-genai not installed.")
         
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiActionSegmenter.")
         
-        genai.configure(api_key=api_key)
-        model_name = self.config.gemini_model
-        if model_name == "gemini-1.5-flash":
-            model_name = "gemini-flash-latest"
-        elif model_name == "models/gemini-1.5-flash":
-            model_name = "models/gemini-flash-latest"
-            
-        if not model_name.startswith("models/") and model_name != "gemini-1.5-pro-latest":
-            model_name = f"models/{model_name}"
-        self._model = genai.GenerativeModel(model_name)
-        print(f"[ActionSegmenter] Using {model_name}")
+        self._client = create_client(api_key)
+        self._model_name = resolve_model_name(self.config.gemini_model)
+        print(f"[ActionSegmenter] Using {self._model_name}")
     
     def segment_video(self, video_path: str) -> List[ActionSegment]:
         """Segment video. Fast path with timeout."""
@@ -107,26 +105,15 @@ class GeminiActionSegmenter:
         for attempt in range(MAX_RETRIES):
             try:
                 print(f"[ActionSegmenter] Uploading video...")
-                video_file = genai.upload_file(str(video_path))
-                
-                # Wait with timeout
-                waited = 0
-                while video_file.state.name == "PROCESSING" and waited < VIDEO_UPLOAD_TIMEOUT:
-                    time.sleep(2)
-                    waited += 2
-                    try:
-                        video_file = genai.get_file(video_file.name)
-                    except Exception:
-                        pass
-                
-                if video_file.state.name != "ACTIVE":
-                    print(f"[ActionSegmenter] Upload timeout/failed: {video_file.state.name}")
+                video_file = upload_video_file(self._client, str(video_path), timeout_s=VIDEO_UPLOAD_TIMEOUT)
+
+                if video_file is None:
+                    print("[ActionSegmenter] Upload timeout/failed")
                     return None
                 
                 prompt = self.config.prompt or """Analyze this egocentric video. Segment into manipulation primitives with timestamps: approach, contact, grasp, manipulate, release, retreat, idle. For each: action name, start time, end time, object, hand. Format as JSON."""
                 
-                response = self._model.generate_content([video_file, prompt], generation_config={"temperature": 0.1})
-                response_text = response.text
+                response_text = generate_text(self._client, self._model_name, [video_file, prompt], temperature=0.1)
                 
                 # Try JSON parsing
                 segments = self._parse_json_response(response_text)
@@ -135,10 +122,7 @@ class GeminiActionSegmenter:
                     segments = self._parse_text_fallback(response_text)
                 
                 # Clean up
-                try:
-                    genai.delete_file(video_file.name)
-                except Exception:
-                    pass
+                delete_remote_file(self._client, video_file.name)
                 
                 if segments:
                     print(f"[ActionSegmenter] {len(segments)} segments found")

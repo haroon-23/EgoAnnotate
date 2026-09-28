@@ -376,10 +376,19 @@ def vlm_cross_check(
     Returns (agreements, disagreements, side_by_side_lines)
     """
     try:
-        import google.generativeai as genai
+        from src.gemini_client import (
+            GEMINI_AVAILABLE,
+            create_client,
+            resolve_model_name,
+            generate_text,
+            pil_to_part,
+        )
         from PIL import Image
     except ImportError:
-        print("  [VLM] google-generativeai or Pillow not installed — skipping.")
+        print("  [VLM] google-genai or Pillow not installed — skipping.")
+        return 0, 0, []
+    if not GEMINI_AVAILABLE:
+        print("  [VLM] google-genai not installed — skipping.")
         return 0, 0, []
 
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -405,9 +414,8 @@ def vlm_cross_check(
         print("  [VLM] GEMINI_API_KEY not found — skipping VLM cross-check.")
         return 0, 0, []
 
-    genai.configure(api_key=api_key, transport='rest')
-    model_name = "models/gemini-flash-lite-latest"
-    model = genai.GenerativeModel(model_name)
+    client = create_client(api_key)
+    model_name = resolve_model_name("models/gemini-flash-lite-latest")
 
     total = len(frames)
     sample_indices = list(np.linspace(0, total - 1, min(n_frames, total), dtype=int))
@@ -456,12 +464,9 @@ def vlm_cross_check(
 
         print(f"  [VLM] Sending frame {frame_idx} ({pil_img.width}x{pil_img.height}) to Gemini...")
         try:
-            response = model.generate_content(
-                [PROMPT, pil_img],
-                generation_config={"temperature": 0.1},
-                request_options={"timeout": 10.0},
-            )
-            vlm_answer = response.text.strip()
+            vlm_answer = generate_text(
+                client, model_name, [PROMPT, pil_to_part(pil_img)], temperature=0.1
+            ).strip()
             print(f"  [VLM] Gemini response: {vlm_answer}")
         except Exception as e:
             print(f"  [VLM] Frame {frame_idx}: API error: {e}")
