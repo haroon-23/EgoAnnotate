@@ -72,7 +72,7 @@ def _make_mp4(path: Path, n_frames: int = 4, w: int = 64, h: int = 48, fps: floa
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     try:
         for i in range(n_frames):
-            writer.write(np.full((h, w, 3), i * 40, dtype=np.uint8))
+            writer.write(np.full((h, w, 3), (i * 40) % 256, dtype=np.uint8))
     finally:
         writer.release()
 

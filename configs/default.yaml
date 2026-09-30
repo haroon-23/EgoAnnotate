@@ -83,3 +83,20 @@ export:
   chunk_size: 1000
   camera: "observation.images.ego"
   fps: 30                        # fallback when video has no fps tag
+
+# Phase B: merge per-episode lerobot_v3/ exports into one training dataset.
+# scripts/merge_lerobot.py is also standalone-runnable (see --help).
+merge:
+  output_subdir: "merged_lerobot_v3"  # relative to the pipeline output_dir
+  chunk_size: 1000                    # frames per data chunk (own setting)
+
+# Phase B: ACT CPU smoke-train (scripts/train_act_smoke.py). Wiring proof —
+# not a good policy. Real policy quality is Phase D/E.
+training:
+  chunk_size: 16     # ACT action chunk length k (8-32)
+  steps: 50
+  batch_size: 8
+  lr: 1.0e-4
+  seed: 0
+  image_size: 96     # frames resized to image_size x image_size
+  kl_beta: 10.0      # ACT paper KL weight

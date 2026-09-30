@@ -108,6 +108,40 @@ Validate any export with:
 python scripts/validate_lerobot_export.py <episode_dir>/lerobot_v3
 ```
 
+### 3. Merged training dataset (Phase B)
+Merge per-episode `lerobot_v3/` exports into one training dataset — concatenated
+frame tables (global `index` 0..M-1, per-episode `frame_index`), deduped tasks,
+repacked data chunks, videos copied 1:1, and `meta/stats.json` **recomputed
+pooled** over all frames. The merge refuses loudly on mixed export modes,
+differing feature schemas, or mixed `robot_type`; mixed fps warns and keeps
+per-episode fps.
+
+```bash
+# Standalone:
+python scripts/merge_lerobot.py <ep1/lerobot_v3> [<ep2/lerobot_v3> ...] \
+    -o data/output/merged_lerobot_v3
+# ...or scan an output dir:  python scripts/merge_lerobot.py --scan data/output -o data/output/merged_lerobot_v3
+
+# As a post-export hook (default off):
+python scripts/run.py --export-lerobot --merge-lerobot
+```
+
+### 4. ACT CPU smoke-train (Phase B)
+A vendored minimal ACT (CVAE latent-16 + 2-layer transformer + tiny CNN,
+`~0.8M` params, no `lerobot` package dependency) trains on the merged dataset
+on CPU. This is a **wiring proof** — real bytes → normalized tensors →
+decreasing imitation loss → saved checkpoint — not a good policy.
+
+```bash
+python scripts/train_act_smoke.py --data data/output/merged_lerobot_v3 --steps 50
+# writes runs/smoke/{loss_curve.json, config.json, policy.pt}
+```
+
+Success criteria (exit 1 otherwise): mean loss of the last 10 steps
+< 0.9 × mean of the first 10, no NaN/Inf anywhere, and a no-grad rollout
+returning `(B, k, D)` action chunks. Smoke-train defaults live in the
+`training:` section of `configs/default.yaml`; merge settings in `merge:`.
+
 ---
 
 ## Compatibility Guide

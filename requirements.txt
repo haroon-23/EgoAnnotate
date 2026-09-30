@@ -14,7 +14,8 @@ google-genai>=1.0
 
 # Grounding DINO for zero-shot object detection
 transformers>=4.30.0
-torch>=2.0.0
+torch>=2.0.0  # CPU-only wheel on Intel Mac; required only for training (Phase B+).
+              # Install: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # Data export formats
 pandas>=2.0.0

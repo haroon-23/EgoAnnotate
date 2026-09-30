@@ -113,6 +113,41 @@ def run_lerobot_export_only(export_lerobot_val: str, config_path: str) -> None:
             sys.exit(1)
 
 
+def run_merge_lerobot_only(config_path: str) -> None:
+    """Merge all per-episode lerobot_v3 exports under output_dir (Phase B)."""
+    import yaml
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from merge_lerobot import find_lerobot_exports, merge_lerobot_datasets
+
+    output_dir = "data/output"
+    subdir = "merged_lerobot_v3"
+    chunks_size = 1000
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+            pipe_cfg = config.get("pipeline", {})
+            output_dir = pipe_cfg.get("output_dir", config.get("output_dir", "data/output"))
+            merge_cfg = config.get("merge") or {}
+            subdir = merge_cfg.get("output_subdir", subdir)
+            chunks_size = int(merge_cfg.get("chunk_size", chunks_size))
+        except Exception as e:
+            print(f"Warning: Failed to load merge config {config_path}: {e}")
+
+    ep_dirs = find_lerobot_exports(output_dir)
+    if not ep_dirs:
+        print(f"No lerobot_v3 exports found under {output_dir}; nothing to merge.")
+        return
+    out = Path(output_dir) / subdir
+    print(f"Merging {len(ep_dirs)} episode export(s) -> {out} ...")
+    try:
+        merge_lerobot_datasets(ep_dirs, out, chunks_size=chunks_size)
+        print(f"Merged dataset written to {out}")
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Merge refused: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="EgoAnnotate VLA Pipeline - CLI tool to sample and annotate egocentric videos."
@@ -154,6 +189,15 @@ def main() -> None:
         help="Export annotated dataset to LeRobot v2.1 format. Optionally specify a single episode_id; otherwise, scans and exports all.",
     )
 
+    parser.add_argument(
+        "--merge-lerobot",
+        action="store_true",
+        default=False,
+        help="After LeRobot export, merge all per-episode lerobot_v3 exports into "
+             "one training dataset (uses the merge: section of the config). "
+             "Standalone merge is also available via scripts/merge_lerobot.py.",
+    )
+
     args = parser.parse_args()
 
     # Collect all video paths
@@ -183,6 +227,8 @@ def main() -> None:
         if args.export_lerobot is not None:
             # Standalone LeRobot export mode
             run_lerobot_export_only(args.export_lerobot, args.config)
+            if args.merge_lerobot:
+                run_merge_lerobot_only(args.config)
             sys.exit(0)
         elif args.export_rlds is not None:
             # Standalone RLDS export mode
@@ -256,6 +302,11 @@ def main() -> None:
                             print(f"    Saved: {lerobot_path.relative_to(output_dir)}")
                         except Exception as e:
                             print(f"Error exporting LeRobot for '{ep.episode_id}': {e}", file=sys.stderr)
+
+            # Post-run merge into one training dataset if requested (Phase B)
+            if args.merge_lerobot:
+                print("\nMerging per-episode LeRobot exports...")
+                run_merge_lerobot_only(args.config)
 
             
             print("=" * 60 + "\n")
