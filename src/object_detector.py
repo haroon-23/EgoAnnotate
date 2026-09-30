@@ -31,6 +31,25 @@ except ImportError:
 
 from .datatypes import ObjectAnnotation
 from .grounding_detector import GroundingDINODetector, GroundingDINOConfig, create_grounding_detector
+from .perception.detector import Detector2D, bbox_to_location_description
+
+
+class _Detector2DAdapter:
+    """Adapt the Phase-C :class:`Detector2D` interface to this module's legacy contract.
+
+    Lets :class:`GeminiObjectDetector` use whichever backend the pipeline
+    configured (``perception.detector_backend``) without changing the bbox
+    stage logic below.
+    """
+
+    def __init__(self, detector_2d: Detector2D):
+        self._det = detector_2d
+
+    def detect(self, image: np.ndarray, object_names: List[str]) -> List[ObjectAnnotation]:
+        return self._det.detect_annotations(image, object_names)
+
+    def _bbox_to_location(self, bbox: np.ndarray) -> str:
+        return bbox_to_location_description(bbox)
 
 
 MAX_RETRIES = 6
@@ -74,12 +93,28 @@ class GeminiObjectDetector:
     2. Grounding DINO provides precise bounding boxes for each object (spatial)
     """
     
-    def __init__(self, config: ObjectDetectorConfig):
+    def __init__(self, config: ObjectDetectorConfig, detector_2d: Optional[Detector2D] = None):
+        """Initialize the two-stage detector.
+
+        Args:
+            config: ObjectDetectorConfig with Gemini + bbox-stage settings.
+            detector_2d: Optional Phase-C detector (built by the pipeline from
+                the ``perception:`` config section). When provided it replaces
+                the internally-built OWL-ViT detector for bbox localization;
+                when None (or unavailable) the legacy self-build path is used.
+        """
         self.config = config
         self._model = None
         self._grounding_detector = None
         self._init_model()
-        self._init_grounding_dino()
+        if detector_2d is not None:
+            self._grounding_detector = _Detector2DAdapter(detector_2d)
+            logger.debug(
+                "[ObjectDetector] Using injected Phase-C detector backend: %s",
+                detector_2d.backend_name,
+            )
+        else:
+            self._init_grounding_dino()
     
     def _init_model(self):
         if not GEMINI_AVAILABLE:

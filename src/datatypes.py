@@ -102,6 +102,12 @@ class ObjectAnnotation:
         bbox: Optional bounding box as ``[x_min, y_min, x_max, y_max]``
             in normalised coordinates.
         state: Object state, e.g. ``"idle"``, ``"grasped"``, ``"moving"``.
+        position_3d: Optional 3D position ``[x, y, z]`` in meters, camera frame
+            (Phase C: from ``localize_objects_3d``; ``None`` when depth or
+            intrinsics were unavailable).
+        mask_rle: Optional COCO-style RLE mask dict
+            ``{"size": [h, w], "counts": [...]}`` (Phase C: SAM 2 box-prompted
+            mask; ``None`` when SAM 2 was disabled/unavailable).
     """
 
     name: str
@@ -109,6 +115,8 @@ class ObjectAnnotation:
     touched: bool
     bbox: Optional[np.ndarray] = None  # shape (4,)
     state: str = "idle"
+    position_3d: Optional[np.ndarray] = None  # shape (3,), meters, camera frame
+    mask_rle: Optional[Dict[str, Any]] = None  # COCO-style RLE dict
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -118,6 +126,10 @@ class ObjectAnnotation:
             "touched": self.touched,
             "bbox": self.bbox.tolist() if self.bbox is not None else None,
             "state": self.state,
+            "position_3d": (
+                self.position_3d.tolist() if self.position_3d is not None else None
+            ),
+            "mask_rle": self.mask_rle,
         }
 
     @classmethod
@@ -128,12 +140,19 @@ class ObjectAnnotation:
             if data.get("bbox") is not None
             else None
         )
+        position_3d = (
+            np.asarray(data["position_3d"], dtype=np.float64)
+            if data.get("position_3d") is not None
+            else None
+        )
         return cls(
             name=str(data["name"]),
             location_description=str(data["location_description"]),
             touched=bool(data["touched"]),
             bbox=bbox,
             state=str(data.get("state", "idle")),
+            position_3d=position_3d,
+            mask_rle=data.get("mask_rle"),
         )
 
 

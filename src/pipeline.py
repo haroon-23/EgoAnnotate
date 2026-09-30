@@ -20,10 +20,17 @@ from .contact_detector import ContactDetector, ContactDetectorConfig
 from .dataset_exporter import DatasetExporter, ExporterConfig
 from .datatypes import ActionSegment, AnnotatedEpisode, AnnotationFrame
 from .grasp_classifier import GraspClassifier, GraspClassifierConfig
-from .grounding_detector import GroundingDINOConfig
 from .hand_tracker import HandTracker, HandTrackerConfig
 from .language_generator import GeminiLanguageGenerator, LanguageGeneratorConfig
 from .object_detector import GeminiObjectDetector, ObjectDetectorConfig
+from .perception.depth import (
+    DepthConfig,
+    create_depth_estimator,
+    localize_objects_3d,
+)
+from .perception.detector import Detector2DConfig, create_detector_2d
+from .perception.pnp_pose import CameraIntrinsics, refine_poses_pnp
+from .perception.sam2_segmenter import Sam2Config, create_sam2_segmenter, encode_mask_rle
 from .retargeting import (
     Retargeter,
     RetargetingConfig,
@@ -35,60 +42,7 @@ from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segmen
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
 
-try:
-    from src.perception.grounding_dino_detector import GroundingDINODetector
-except ImportError:
-    try:
-        from .perception.grounding_dino_detector import GroundingDINODetector
-    except ImportError:
-        GroundingDINODetector = None
-
-try:
-    from src.perception.unidepth_estimator import UniDepthEstimator
-except ImportError:
-    try:
-        from .perception.unidepth_estimator import UniDepthEstimator
-    except ImportError:
-        UniDepthEstimator = None
-
-try:
-    from src.retargeting.mujoco_ik_solver import MuJoCoIKSolver
-except ImportError:
-    try:
-        from .retargeting.mujoco_ik_solver import MuJoCoIKSolver
-    except ImportError:
-        MuJoCoIKSolver = None
-
 logger = logging.getLogger(__name__)
-
-
-def run_pipeline(video_path: str, output_dir: str = "data/output", config_path: str = "configs/default.yaml"):
-    """Main pipeline function supporting open-source perception and physics components."""
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Configuration file not found at: {config_path}")
-
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    # Initialize open-source components
-    if GroundingDINODetector is not None:
-        print("Initializing Grounding DINO detector...")
-        object_detector = GroundingDINODetector()
-    
-    if UniDepthEstimator is not None:
-        print("Initializing UniDepth estimator...")
-        depth_estimator = UniDepthEstimator()
-
-    urdf_path = (config.get("retargeting") or {}).get("target_urdf_path", "models/panda.urdf")
-    ee_link = (config.get("retargeting") or {}).get("end_effector_link", "panda_hand")
-
-    if MuJoCoIKSolver is not None and os.path.exists(urdf_path):
-        print("Initializing MuJoCo IK solver...")
-        ik_solver = MuJoCoIKSolver(urdf_path=urdf_path, ee_link_name=ee_link)
-
-    pipeline = EgoAnnotatePipeline(config_path=config_path)
-    return pipeline.process_video(video_path)
-
 
 
 class EgoAnnotatePipeline:
@@ -127,6 +81,35 @@ class EgoAnnotatePipeline:
         self.hand_tracker = HandTracker(ht_config)
 
         # 3. GeminiObjectDetector
+        # Phase C: the 2D bbox backend is chosen via the `perception:` section
+        # (`detector_backend: "owlvit"` default; `"grounding_dino"` opt-in).
+        # The legacy `grounding_dino:` section still works as an alias and
+        # fills in settings the `perception:` section does not override.
+        perception_raw = self.config.get("perception") or {}
+        gd_legacy = self.config.get("grounding_dino") or {}
+        det_config = Detector2DConfig(
+            backend=str(perception_raw.get("detector_backend", "owlvit")),
+            model_name=str(
+                perception_raw.get("owlvit_model", gd_legacy.get("model_name", "google/owlvit-base-patch32"))
+            ),
+            confidence_threshold=float(
+                perception_raw.get("confidence_threshold", gd_legacy.get("confidence_threshold", 0.3))
+            ),
+            box_threshold=float(
+                perception_raw.get("box_threshold", gd_legacy.get("box_threshold", 0.30))
+            ),
+            text_threshold=float(
+                perception_raw.get("text_threshold", gd_legacy.get("text_threshold", 0.25))
+            ),
+            grounding_dino_weights=str(
+                perception_raw.get("grounding_dino_weights", "models/groundingdino_swint_ogc.pth")
+            ),
+            grounding_dino_config=str(
+                perception_raw.get("grounding_dino_config", "models/GroundingDINO_SwinT_OGC.py")
+            ),
+        )
+        self.detector_2d = create_detector_2d(det_config)  # None when unavailable
+
         # Support "object_detection" (new) or "object_detector" (old)
         od_cfg = self.config.get("object_detection") or self.config.get("object_detector") or {}
         gemini_cfg = self.config.get("gemini") or {}
@@ -146,7 +129,33 @@ class EgoAnnotatePipeline:
             grounding_dino_box_threshold=float(gd_cfg.get("box_threshold", 0.3)),
             grounding_dino_text_threshold=float(gd_cfg.get("text_threshold", 0.25)),
         )
-        self.object_detector = GeminiObjectDetector(od_config)
+        self.object_detector = GeminiObjectDetector(od_config, detector_2d=self.detector_2d)
+
+        # 3b. Phase C optional perception: SAM 2 masks, metric depth, PnP.
+        # All three degrade gracefully (warn-and-continue) when unavailable.
+        sam2_raw = self.config.get("sam2") or {}
+        sam2_config = Sam2Config(
+            enabled=bool(sam2_raw.get("enabled", False)),
+            checkpoint=str(sam2_raw.get("checkpoint", "models/sam2.1_hiera_tiny.pt")),
+            config=str(sam2_raw.get("config", sam2_raw.get("config_name", "sam2_hiera_t"))),
+            device=str(sam2_raw.get("device", "cpu")),
+        )
+        self.sam2 = create_sam2_segmenter(sam2_config)  # None unless enabled+available
+
+        depth_raw = self.config.get("depth") or {}
+        depth_config = DepthConfig(
+            backend=str(depth_raw.get("backend", "unidepth")),
+            model_path=str(depth_raw.get("model_path", "models/unidepth_v1.onnx")),
+            keyframe_only=bool(depth_raw.get("keyframe_only", True)),
+        )
+        self.depth_estimator = create_depth_estimator(depth_config)
+
+        # Camera intrinsics: null fields -> None -> 3D/PnP stages skip with a warning.
+        # Contact/grasp semantics stay 2D (depth-informed contact is future work).
+        self.intrinsics = CameraIntrinsics.from_dict(self.config.get("camera"))
+
+        pnp_raw = self.config.get("pnp_refinement") or {}
+        self.pnp_enabled = bool(pnp_raw.get("enabled", True))
 
         # 4. ContactDetector
         # Support "contact_detection" (new) or "contact_detector" (old)
@@ -268,6 +277,16 @@ class EgoAnnotatePipeline:
         print("  9. DatasetExporter")
         if self.enable_retargeting:
             print(" 10. Retargeter (Human-to-Robot Kinematic Retargeting)")
+        # Phase C optional perception (None/degraded backends are skipped silently here;
+        # each factory already logged why).
+        if self.detector_2d is not None:
+            print(f"  P. 2D detector backend: {self.detector_2d.backend_name}")
+        if self.sam2 is not None:
+            print("  P. SAM 2 masks: enabled")
+        if self.depth_estimator is not None and self.depth_estimator.is_available():
+            print(f"  P. Metric depth backend: {self.depth_estimator.backend_name}")
+        if self.pnp_enabled and self.intrinsics is not None:
+            print("  P. PnP hand-pose refinement: enabled")
         print("=" * 50 + "\n")
 
     def process_video(self, video_path: str, episode_id: Optional[str] = None) -> AnnotatedEpisode:
@@ -311,6 +330,11 @@ class EgoAnnotatePipeline:
         )
         print(f"[Pipeline] Object bboxes populated via Grounding DINO for {len(per_frame_objects)} frames")
 
+        # Stage 3b (Phase C): 3D object localization on detection keyframes.
+        # Attaches metric position_3d (+ optional SAM 2 mask_rle) to keyframe
+        # ObjectAnnotations. Skipped gracefully without depth/intrinsics.
+        self._localize_objects_3d(video_name, image_paths, per_frame_objects)
+
         # Stage 4-5: Contact & Grasp State per Frame
         frames = []
         for i, path in enumerate(image_paths):
@@ -343,6 +367,22 @@ class EgoAnnotatePipeline:
 
         # Stage 5b: Temporal Grasp Majority Voting & Hold Inheritance
         self.grasp_classifier.smooth_sequence(frames)
+
+        # Stage 5c (Phase C): PnP hand-pose refinement — metric wrist translation
+        # per hand via solvePnPRansac against the anthropometric hand model.
+        # Per-frame failures fall back to the existing estimates (never raises).
+        if self.pnp_enabled:
+            if self.intrinsics is None:
+                logger.warning(
+                    "[Pipeline] pnp_refinement.enabled=true but camera intrinsics "
+                    "are null — skipping PnP refinement. Fill in the 'camera:' "
+                    "section of the config to enable it."
+                )
+            else:
+                frame_hw = self._probe_frame_resolution(image_paths)
+                if frame_hw is not None:
+                    fh, fw = frame_hw
+                    refine_poses_pnp(frames, self.intrinsics, fw, fh, enabled=True)
 
         # Build signal timelines for segmentation and compute episode dwell counts
         left_contact_timeline = [f.left_contact for f in frames]
@@ -506,6 +546,123 @@ class EgoAnnotatePipeline:
         print("=" * 50 + "\n")
 
         return episode
+
+    @staticmethod
+    def _probe_frame_resolution(image_paths: List[str]) -> Optional[tuple]:
+        """Return ``(h, w)`` of the extracted frames hand landmarks are normalized to."""
+        for p in image_paths:
+            img = cv2.imread(p)
+            if img is not None:
+                return img.shape[:2]
+        return None
+
+    def _localize_objects_3d(
+        self,
+        video_name: str,
+        image_paths: List[str],
+        per_frame_objects: List[List],
+    ) -> None:
+        """Phase-C 3D object localization on detection keyframes.
+
+        For each keyframe: estimate metric depth (cached to
+        ``<output>/<episode>/depth/depth_<idx>.npy`` as float16 when
+        ``depth.keyframe_only``), optionally predict SAM 2 masks, then attach
+        ``position_3d`` (meters, camera frame) and ``mask_rle`` to the keyframe
+        ``ObjectAnnotation`` objects in place. Never raises: any failure skips
+        the 3D pass with a warning, leaving 2D annotations intact.
+        """
+        try:
+            depth_est = getattr(self, "depth_estimator", None)
+            if depth_est is None or not depth_est.is_available():
+                return
+            if self.intrinsics is None:
+                logger.warning(
+                    "[Pipeline] Metric depth is available but camera intrinsics "
+                    "are null — skipping 3D object localization. Fill in the "
+                    "'camera:' section of the config to enable it."
+                )
+                return
+
+            from .perception.detector import Detection  # local: keep import light
+
+            interval = max(1, int(self.object_detector.config.bbox_keyframe_interval))
+            keyframes = list(range(0, len(image_paths), interval))
+            if keyframes and keyframes[-1] != len(image_paths) - 1:
+                keyframes.append(len(image_paths) - 1)
+
+            depth_dir = Path(self.dataset_exporter.output_path) / video_name / "depth"
+            n_localized = 0
+            for idx in keyframes:
+                img = cv2.imread(image_paths[idx])
+                if img is None:
+                    continue
+                try:
+                    import numpy as _np
+
+                    depth_map = depth_est.estimate_depth(img)
+                except Exception as e:
+                    logger.warning(
+                        "[Pipeline] Depth estimation failed on keyframe %d: %s "
+                        "— skipping remaining 3D localization.",
+                        idx,
+                        e,
+                    )
+                    break
+                if depth_est.config.keyframe_only:
+                    depth_dir.mkdir(parents=True, exist_ok=True)
+                    _np.save(
+                        depth_dir / f"depth_{idx:06d}.npy",
+                        _np.asarray(depth_map, dtype=_np.float16),
+                    )
+
+                objs = per_frame_objects[idx] if idx < len(per_frame_objects) else []
+                detections: List[Detection] = []
+                det_obj_idx: List[int] = []
+                for j, obj in enumerate(objs):
+                    if obj.bbox is not None:
+                        detections.append(
+                            Detection(
+                                bbox_xyxy_norm=_np.asarray(obj.bbox, dtype=_np.float32),
+                                label=obj.name,
+                                score=1.0,
+                            )
+                        )
+                        det_obj_idx.append(j)
+                if not detections:
+                    continue
+
+                masks = None
+                sam2 = getattr(self, "sam2", None)
+                if sam2 is not None:
+                    try:
+                        masks = sam2.predict_masks(
+                            img, [d.bbox_xyxy_norm for d in detections]
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[Pipeline] SAM 2 masking failed on keyframe %d: %s "
+                            "— continuing box-only for this episode.",
+                            idx,
+                            e,
+                        )
+                        self.sam2 = None
+
+                points = localize_objects_3d(
+                    detections, depth_map, self.intrinsics, masks
+                )
+                for di, oi in enumerate(det_obj_idx):
+                    if points[di] is not None:
+                        objs[oi].position_3d = points[di]
+                        n_localized += 1
+                    if masks is not None and masks[di] is not None:
+                        objs[oi].mask_rle = encode_mask_rle(masks[di])
+            if n_localized:
+                print(
+                    f"[Pipeline] 3D localization: {n_localized} object positions "
+                    f"attached across {len(keyframes)} keyframes"
+                )
+        except Exception as e:
+            logger.warning("[Pipeline] 3D object localization skipped: %s", e)
 
     def _generate_proof_video(
         self,

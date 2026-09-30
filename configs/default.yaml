@@ -57,6 +57,51 @@ grounding_dino:
   box_threshold: 0.1
   text_threshold: 0.1
 
+# Phase C perception. The legacy `grounding_dino:` section above still works as
+# an alias: settings it defines fill in anything the `perception:` section below
+# does not override.
+perception:
+  detector_backend: "owlvit"   # "owlvit" (default, installed) | "grounding_dino" (opt-in)
+  # Real Grounding DINO (IDEA-Research, SwinT_OGC) — only used when
+  # detector_backend is "grounding_dino". NOTE: this is NOT OpenMMLab's
+  # MM-Grounding-DINO (mmcv/mmdet has no usable macOS-Intel wheels, so the
+  # MM variant is uninstallable on the 2017 Intel Mac dev machine).
+  grounding_dino_weights: "models/groundingdino_swint_ogc.pth"
+  grounding_dino_config: "models/GroundingDINO_SwinT_OGC.py"
+  box_threshold: 0.30
+  text_threshold: 0.25
+
+# Phase C: SAM 2 box-prompted masks. Off by default — even the tiny checkpoint
+# is tens of seconds per image on old Intel CPUs. Run on keyframes only.
+sam2:
+  enabled: false
+  checkpoint: "models/sam2.1_hiera_tiny.pt"
+  config: "sam2_hiera_t"   # yaml path, or a name resolved inside the sam2 package
+  device: "cpu"
+
+# Phase C: metric depth. "unidepth" needs models/unidepth_v1.onnx (manual
+# download, see README); "none" is an explicit no-depth choice (not an error).
+depth:
+  backend: "unidepth"
+  model_path: "models/unidepth_v1.onnx"
+  keyframe_only: true   # estimate on detection keyframes, cache float16 .npy to <episode>/depth/
+
+# Phase C: pinhole intrinsics (pixels) for the processed frame resolution.
+# Null = unknown -> 3D back-projection and PnP refinement skip with a warning.
+# Contact/grasp semantics stay 2D regardless (depth-informed contact is future work).
+camera:
+  fx: null
+  fy: null
+  cx: null
+  cy: null
+
+# Phase C: PnP hand-pose refinement (pure cv2/numpy, no heavy deps).
+# Recovers metric wrist translation from MediaPipe landmarks + the 0.090 m
+# anthropometric hand reference. Needs `camera:` intrinsics; per-frame failures
+# fall back to the existing estimates.
+pnp_refinement:
+  enabled: true
+
 output:
   format: "json"
   include_image_bytes: false

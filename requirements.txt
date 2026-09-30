@@ -31,3 +31,16 @@ imageio[ffmpeg]
 # Retargeting: robot simulation and URDF parsing
 pybullet>=3.2.5
 urdfpy>=0.0.22
+
+# Optional — Phase C perception (CPU-only, 2017 Intel Mac).
+# Everything below is import-guarded: `pip install -r requirements.txt` (base)
+# works without any of these, and the pipeline degrades gracefully.
+# onnxruntime>=1.17.0            # UniDepth ONNX backend (macOS x86_64 wheels exist)
+# sam2>=1.0                      # SAM 2 (pip; CPU inference works but slow; needs torch>=2.5.1)
+# Grounding DINO (IDEA-Research, SwinT_OGC) has no PyPI package; install with:
+#   pip install --no-build-isolation -e git+https://github.com/IDEA-Research/GroundingDINO.git
+# (torch must be pre-installed; without CUDA the _C extension is skipped and
+# CPU inference still works). Weights (~170MB, manual download, no auto-download):
+#   https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+# NOTE: this is deliberately NOT OpenMMLab's MM-Grounding-DINO — mmcv/mmdet has
+# no usable macOS-Intel wheels, so the MM variant is uninstallable on this dev machine.

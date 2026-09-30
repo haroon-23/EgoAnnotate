@@ -1,222 +1,101 @@
-"""Zero-shot object detection for real bounding boxes.
+"""Back-compatibility shim for the OWL-ViT detector.
 
-Uses OWL-ViT (owlvit-base-patch32) for zero-shot object detection
-to localize objects in egocentric video frames. OWL-ViT is compatible
-with transformers 4.37.0 and torch 2.2.2, unlike Grounding DINO which
-requires newer versions.
+The detector that historically lived here (misnamed ``GroundingDINODetector`` —
+it is OWL-ViT under the hood, not Grounding DINO) now lives in
+:mod:`src.perception.detector` as :class:`OwlViTDetector`. This module keeps the
+old import path, class name, config name, factory, and ``detect()`` signature
+working. New code should import from ``src.perception`` instead.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import List, Optional
 
-import cv2
 import numpy as np
+
 from .datatypes import ObjectAnnotation
+from .perception.detector import (
+    Detector2DConfig,
+    OwlViTDetector,
+    bbox_to_location_description,
+)
+
 logger = logging.getLogger(__name__)
 
-try:
-    import torch
-    from transformers import AutoProcessor, OwlViTForObjectDetection
-    OWL_VIT_AVAILABLE = True
-except ImportError:
-    OWL_VIT_AVAILABLE = False
-    logger.warning(
-        "transformers or torch not installed. OWL-ViT will not be available. "
-        "Install via: pip install transformers>=4.30.0 torch>=2.0.0"
-    )
+# Legacy name: this config always configured OWL-ViT (model_name defaults to
+# "google/owlvit-base-patch32"), never the real Grounding DINO.
+GroundingDINOConfig = Detector2DConfig
 
 
-@dataclass
-class GroundingDINOConfig:
-    """Configuration for OWL-ViT Detector (kept name for API compatibility)."""
-    model_name: str = "google/owlvit-base-patch32"
-    confidence_threshold: float = 0.3
-    box_threshold: float = 0.3
-    text_threshold: float = 0.25
-    device: str = "auto"  # "auto", "cpu", "cuda"
+class GroundingDINODetector(OwlViTDetector):
+    """Legacy name for :class:`OwlViTDetector` (kept for API compatibility).
 
-
-class GroundingDINODetector:
-    """Zero-shot object detection using OWL-ViT (API compatible with Grounding DINO).
-    
-    Takes an image and a list of object names (text prompts) and returns
-    bounding boxes for each detected object in normalized [0, 1] coordinates.
+    Despite the name, this backend is OWL-ViT. For the real Grounding DINO
+    (IDEA-Research) backend use ``src.perception.create_detector_2d`` with
+    ``backend="grounding_dino"``.
     """
-    
-    def __init__(self, config: GroundingDINOConfig):
-        """Initialize the OWL-ViT detector.
-        
-        Args:
-            config: GroundingDINOConfig with model settings
-        """
-        self.config = config
-        self._processor = None
-        self._model = None
-        self._device = self._resolve_device()
-        self._init_model()
-    
-    def _resolve_device(self) -> str:
-        """Determine the device to use."""
-        if self.config.device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return self.config.device
-    
-    def _init_model(self) -> None:
-        """Load the OWL-ViT model and processor."""
-        if not OWL_VIT_AVAILABLE:
-            logger.warning("OWL-ViT unavailable - transformers not installed")
-            return
-        
-        try:
-            logger.info(f"Loading OWL-ViT model: {self.config.model_name} on {self._device}")
-            self._processor = AutoProcessor.from_pretrained(self.config.model_name)
-            self._model = OwlViTForObjectDetection.from_pretrained(
-                self.config.model_name
-            ).to(self._device)
-            self._model.eval()
-            logger.info("OWL-ViT model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load OWL-ViT model: {e}")
-            self._processor = None
-            self._model = None
-    
-    def is_available(self) -> bool:
-        """Check if the model is loaded and ready."""
-        return self._model is not None and self._processor is not None
-    
+
     def detect(
         self,
         image: np.ndarray,
         object_names: List[str],
         threshold: Optional[float] = None,
     ) -> List[ObjectAnnotation]:
-        """Detect objects in an image using OWL-ViT.
-        
+        """Detect objects; returns :class:`ObjectAnnotation` (legacy contract).
+
         Args:
-            image: Input image as numpy array (BGR or RGB, HxWx3)
-            object_names: List of object names to search for (text prompts)
-            threshold: Optional confidence threshold override.
-            
-        Returns:
-            List of ObjectAnnotation with populated bbox in normalized [0, 1] coordinates
+            image: Input image as numpy array (BGR or RGB, HxWx3).
+            object_names: List of object names to search for (text prompts).
+            threshold: Optional per-call confidence-threshold override.
         """
-        if not self.is_available():
-            logger.warning("OWL-ViT not available, returning empty list")
-            return []
-        
-        if not object_names:
-            return []
-        
-        confidence_thresh = self.config.confidence_threshold if threshold is None else threshold
-        
-        # Convert BGR to RGB if needed
-        if image.shape[2] == 3:
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Route through OwlViTDetector.detect (the real implementation), NOT
+        # through detect_annotations -> self.detect, which would recurse into
+        # this override forever.
+        if threshold is not None:
+            prev = self.config.confidence_threshold
+            self.config.confidence_threshold = float(threshold)
+            try:
+                dets = super().detect(image, object_names)
+            finally:
+                self.config.confidence_threshold = prev
         else:
-            image_rgb = image
-        
-        # Prepare text prompts - OWL-ViT expects list of text queries
-        text_prompts = object_names
-        
-        try:
-            # Process inputs
-            inputs = self._processor(
-                images=image_rgb,
-                text=text_prompts,
-                return_tensors="pt"
-            ).to(self._device)
-            
-            # Run inference
-            with torch.no_grad():
-                outputs = self._model(**inputs)
-            
-            # Post-process
-            target_sizes = torch.tensor([image_rgb.shape[:2]]).to(self._device)
-            results = self._processor.post_process_object_detection(
-                outputs,
-                threshold=confidence_thresh,
-                target_sizes=target_sizes
-            )[0]
-            
-            # Convert results to ObjectAnnotation list
-            annotations = []
-            for box, score, label_idx in zip(results["boxes"], results["scores"], results["labels"]):
-                if score < confidence_thresh:
-                    continue
-                
-                # Map label index to object name
-                label = text_prompts[label_idx.item()] if label_idx.item() < len(text_prompts) else "unknown"
-                
-                # Box is in [x_min, y_min, x_max, y_max] in pixel coordinates
-                # Convert to normalized [0, 1]
-                h, w = image_rgb.shape[:2]
-                bbox_norm = np.array([
-                    box[0].item() / w,
-                    box[1].item() / h,
-                    box[2].item() / w,
-                    box[3].item() / h
-                ], dtype=np.float32)
-                
-                # Clamp to [0, 1]
-                bbox_norm = np.clip(bbox_norm, 0.0, 1.0)
-                
-                annotations.append(ObjectAnnotation(
-                    name=label,
-                    location_description=self._bbox_to_location(bbox_norm),
-                    touched=False,  # Will be determined by contact detector
-                    bbox=bbox_norm,
-                    state="idle"
-                ))
-            
-            return annotations
-            
-        except Exception as e:
-            logger.error(f"OWL-ViT detection failed: {e}")
-            return []
-    
+            dets = super().detect(image, object_names)
+        return [
+            ObjectAnnotation(
+                name=d.label,
+                location_description=bbox_to_location_description(d.bbox_xyxy_norm),
+                touched=False,
+                bbox=np.asarray(d.bbox_xyxy_norm, dtype=np.float32),
+                state="idle",
+            )
+            for d in dets
+        ]
+
+    # Kept because src/object_detector.py calls this private helper.
     def _bbox_to_location(self, bbox: np.ndarray) -> str:
-        """Convert normalized bbox to rough location description."""
-        x_min, y_min, x_max, y_max = bbox
-        cx = (x_min + x_max) / 2
-        cy = (y_min + y_max) / 2
-        
-        # Horizontal position
-        if cx < 0.33:
-            h_pos = "left"
-        elif cx < 0.66:
-            h_pos = "center"
-        else:
-            h_pos = "right"
-        
-        # Vertical position
-        if cy < 0.33:
-            v_pos = "top"
-        elif cy < 0.66:
-            v_pos = "middle"
-        else:
-            v_pos = "bottom"
-        
-        return f"{v_pos}-{h_pos}"
+        return bbox_to_location_description(bbox)
 
 
-def create_grounding_detector(config: Optional[GroundingDINOConfig] = None) -> Optional[GroundingDINODetector]:
-    """Factory function to create GroundingDINODetector with graceful degradation.
-    
-    Returns None if model cannot be loaded (instead of raising).
-    """
+def create_grounding_detector(
+    config: Optional[GroundingDINOConfig] = None,
+) -> Optional[GroundingDINODetector]:
+    """Factory with graceful degradation (returns None, never raises)."""
     if config is None:
         config = GroundingDINOConfig()
-    
     try:
         detector = GroundingDINODetector(config)
-        if detector.is_available():
-            return detector
-        else:
-            logger.warning("OWL-ViT detector created but model not loaded")
-            return None
     except Exception as e:
-        logger.warning(f"Failed to create OWL-ViT detector: {e}")
+        logger.warning("Failed to create OWL-ViT detector: %s", e)
         return None
+    if detector.is_available():
+        return detector
+    logger.warning("OWL-ViT detector created but model not loaded")
+    return None
+
+
+__all__ = [
+    "GroundingDINOConfig",
+    "GroundingDINODetector",
+    "create_grounding_detector",
+]

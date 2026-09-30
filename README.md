@@ -144,6 +144,59 @@ returning `(B, k, D)` action chunks. Smoke-train defaults live in the
 
 ---
 
+---
+
+## Phase C: Perception (open-source detectors, metric depth, PnP)
+
+Phase C adds a unified, CPU-only perception layer in `src/perception/` that
+gracefully degrades when heavy dependencies are missing
+(`import src.perception` never raises):
+
+| Component | Default | Opt-in |
+|---|---|---|
+| 2D detector (`detector_backend`) | **OWL-ViT** (`google/owlvit-base-patch32`, installed) | Real Grounding DINO (IDEA-Research, SwinT_OGC) |
+| SAM 2 box-prompted masks | off (`sam2.enabled: false`) | `models/sam2.1_hiera_tiny.pt` |
+| Metric depth | **UniDepth ONNX** (`models/unidepth_v1.onnx`), keyframes only | `depth.backend: "none"` (explicit no-depth) |
+| Hand PnP refinement | on (pure OpenCV/numpy, no extra deps) | needs `camera:` intrinsics, else skips with a warning |
+
+Detections are localized to 3D (`ObjectAnnotation.position_3d`, camera frame,
+meters) and can carry COCO-style RLE masks (`mask_rle`); MediaPipe hand poses
+are refined to metric wrist translation via EPnP + RANSAC using the 0.090 m
+anthropometric wrist→MCP reference (`src/retargeting/metric_calibration.py`).
+Contact/grasp semantics stay 2D — depth-informed contact is future work.
+
+### Why IDEA-Research Grounding DINO, not MM-Grounding-DINO
+
+The OpenMMLab variant (MM-GDINO) requires `mmcv`/`mmdet`, which ship **no usable
+macOS-Intel wheels** — it is uninstallable on the 2017 Intel Mac dev machine.
+The IDEA-Research release works CPU-only without mmcv. This is a deliberate,
+permanent decision: do not "upgrade" to the MM variant.
+
+### Manual weight downloads (no auto-download anywhere — by design)
+
+```bash
+mkdir -p models
+# Grounding DINO SwinT_OGC (~170 MB) + config:
+#   https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+#   -> models/groundingdino_swint_ogc.pth
+#   GroundingDINO_SwinT_OGC.py (from the repo) -> models/GroundingDINO_SwinT_OGC.py
+# UniDepth V1 ONNX:
+#   https://huggingface.co/ibaiGorordo/ONNX-UniDepth-V1 -> models/unidepth_v1.onnx
+# SAM 2.1 hiera-tiny:
+#   https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
+
+# Optional installs (base requirements.txt works without all of these):
+pip install onnxruntime          # UniDepth backend (macOS x86_64 wheels exist)
+pip install sam2                 # slow on old Intel CPUs; keyframes only
+# Grounding DINO (no PyPI package; torch must be pre-installed):
+pip install --no-build-isolation -e git+https://github.com/IDEA-Research/GroundingDINO.git
+```
+
+Set `perception.detector_backend: "grounding_dino"`, `sam2.enabled: true`, or
+`depth.backend: "unidepth"` in `configs/default.yaml` to enable each backend.
+Missing weights/deps produce a loud warning naming the exact URL — never a
+silent wrong result.
+
 ## Compatibility Guide
 
 | Downstream Target | Recommended Export Format | Contents |
