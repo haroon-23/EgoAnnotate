@@ -78,7 +78,7 @@ Generates an `episode_rlds.hdf5` file containing:
 - 8D proprioception vector (`observation/proprioception`)
 - Standardized actions (`action`) and flags (`is_first`, `is_last`, `is_terminal`)
 
-### 2. LeRobot v2.1 Format
+### 2. LeRobot v3.0 Format
 Ideal for training policies using the Hugging Face LeRobot suite, OpenPI, ACT, Diffusion Policy, or Pi0.
 
 ```bash
@@ -89,10 +89,24 @@ python scripts/run.py --export-lerobot my_video
 python scripts/run.py --export-lerobot
 ```
 
-Generates a `lerobot_v2/` directory housing:
-- `meta/info.json` – Metadata description and features mapping
-- `data/chunk-000/episode_000000.parquet` – Structured state, action, and timestamp tables
-- `videos/chunk-000/observation.image/episode_000000.mp4` – Encoded video stream with relative references in the Parquet tables
+Two export modes are selected via `export.mode` in `configs/default.yaml`:
+
+| Mode | `observation.state` / `action` | Use for |
+|------|-------------------------------|---------|
+| `human` (default) | 24D human motion: wrist translation (3) + wrist rotation (6) + gripper (1) + hand joints (14); action = downstream pose deltas | VL training on human demonstrations |
+| `robot` | 8D robot-native **absolute** joint positions `[j1..j7 (rad), gripper_m (m)]` for `export.target_embodiment`; `action[t] = state[t+1]` | ACT / diffusion-policy / VLA training. Episodes whose HDF5 lacks `observation/robot_joint_angles` (no retargeting ran) are **excluded, never zero-padded**. |
+
+Generates a `lerobot_v3/` directory housing:
+- `meta/info.json` – v3.0 metadata, feature spec, path *templates*, `splits`, fps
+- `meta/stats.json` – per-feature stats (min/max/mean/std/count/q01/q99)
+- `meta/episodes/chunk-000/file-000.parquet` – per-episode rows with stats + video lookups
+- `data/chunk-000/file-000.parquet` – state/action/timestamp/index tables (`timestamp = frame_index / fps`)
+- `videos/observation.images.ego/chunk-000/file-000.mp4` – transcoded H.264 capture video (source read from `metadata.json → video_path`; the annotated overlay video is never used as training video)
+
+Validate any export with:
+```bash
+python scripts/validate_lerobot_export.py <episode_dir>/lerobot_v3
+```
 
 ---
 
@@ -100,7 +114,7 @@ Generates a `lerobot_v2/` directory housing:
 
 | Downstream Target | Recommended Export Format | Contents |
 |-------------------|---------------------------|----------|
-| **LeRobot / OpenPI / ACT / Pi0** | LeRobot v2.1 (`--export-lerobot`) | Compact Parquet tables with relative paths to MP4 shards. |
+| **LeRobot / OpenPI / ACT / Pi0** | LeRobot v3.0 (`--export-lerobot`, `export.mode` in `configs/default.yaml`) | Parquet tables + MP4 shards; `human` 24D mode or `robot` 8D absolute-joint mode. |
 | **OpenVLA / EgoVLA** | RLDS HDF5 (`--export-rlds`) | Flat HDF5 structure containing raw matrix arrays. |
 | **TensorFlow Datasets** | RLDS HDF5 (`--export-rlds`) | Intermediate format easily converted into TFRecords. |
 

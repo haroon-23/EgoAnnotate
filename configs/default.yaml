@@ -67,3 +67,19 @@ retargeting:
   enable: true
   config_path: "configs/retargeting_franka.yaml"
   save_proof_video: true
+
+# LeRobot export (Phase A task 2). Two modes:
+#   human = 24D human motion (wrist pose + hand pose + gripper) — vision-language
+#           training on human demonstration trajectories.
+#   robot = 8D robot-native absolute joint positions + gripper (j1..j7 rad,
+#           gripper_m) for the target embodiment in `target_embodiment` — for
+#           ACT / diffusion-policy / VLA training. Episodes whose HDF5 lacks
+#           `observation/robot_joint_angles` (no retargeting ran) are EXCLUDED
+#           from robot-mode exports — never zero-padded.
+export:
+  mode: "human"
+  target_embodiment: "franka"   # must match a robot in the embodiment registry
+  action_convention: "absolute_joint_positions"  # do not change
+  chunk_size: 1000
+  camera: "observation.images.ego"
+  fps: 30                        # fallback when video has no fps tag

@@ -220,6 +220,7 @@ class EgoAnnotatePipeline:
             include_image_bytes=include_bytes,
             save_viz_video=save_viz,
             save_overlay_video=save_overlay,
+            lerobot_export_mode=(self.config.get("export") or {}).get("mode", "human"),
         )
         self.dataset_exporter = DatasetExporter(exp_config)
 

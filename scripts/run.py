@@ -39,6 +39,22 @@ from src.pipeline import EgoAnnotatePipeline
 # The google-genai SDK needs no Discovery API workaround.
 
 
+def _read_export_mode(config_path: str) -> str:
+    """Read export.mode from the YAML config (Phase A task 2 wiring)."""
+    try:
+        import yaml
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+            mode = (config.get("export") or {}).get("mode", "human")
+            if mode in ("human", "robot"):
+                return mode
+            print(f"Warning: unknown export.mode '{mode}' in {config_path}, using 'human'.")
+    except Exception as e:
+        print(f"Warning: failed to read export mode from {config_path}: {e}")
+    return "human"
+
+
 def run_export_only(export_rlds_val: str, config_path: str) -> None:
     import yaml
     from src.rlds_exporter import export_to_rlds, export_all_episodes
@@ -82,13 +98,15 @@ def run_lerobot_export_only(export_lerobot_val: str, config_path: str) -> None:
         except Exception as e:
             print(f"Warning: Failed to load config {config_path}, using default output_dir: {e}")
             
+    export_lerobot_mode = _read_export_mode(config_path)
+
     if export_lerobot_val == "":
-        print("Scanning output directory for all episodes to export to LeRobot...")
-        export_all_lerobot(output_dir)
+        print(f"Scanning output directory for all episodes to export to LeRobot (mode={export_lerobot_mode})...")
+        export_all_lerobot(output_dir, export_mode=export_lerobot_mode)
     else:
-        print(f"Exporting episode '{export_lerobot_val}' to LeRobot...")
+        print(f"Exporting episode '{export_lerobot_val}' to LeRobot (mode={export_lerobot_mode})...")
         try:
-            export_to_lerobot(export_lerobot_val, output_dir)
+            export_to_lerobot(export_lerobot_val, output_dir, export_mode=export_lerobot_mode)
             print(f"Successfully exported '{export_lerobot_val}' to LeRobot format.")
         except Exception as e:
             print(f"Error exporting LeRobot for '{export_lerobot_val}': {e}", file=sys.stderr)
@@ -220,20 +238,21 @@ def main() -> None:
 
             # Post-run LeRobot export if requested
             if args.export_lerobot is not None:
-                print("\nRunning post-pipeline LeRobot format export...")
+                export_mode = _read_export_mode(args.config)
+                print(f"\nRunning post-pipeline LeRobot format export (mode={export_mode})...")
                 from src.lerobot_exporter import export_to_lerobot
                 
                 if args.export_lerobot != "":
                     print(f"  - Exporting specific episode '{args.export_lerobot}' to LeRobot...")
                     try:
-                        export_to_lerobot(args.export_lerobot, output_dir)
+                        export_to_lerobot(args.export_lerobot, output_dir, export_mode=export_mode)
                     except Exception as e:
                         print(f"Error exporting LeRobot for '{args.export_lerobot}': {e}", file=sys.stderr)
                 else:
                     for ep in successful_episodes:
                         print(f"  - Exporting episode '{ep.episode_id}' to LeRobot...")
                         try:
-                            lerobot_path = export_to_lerobot(ep.episode_id, output_dir)
+                            lerobot_path = export_to_lerobot(ep.episode_id, output_dir, export_mode=export_mode)
                             print(f"    Saved: {lerobot_path.relative_to(output_dir)}")
                         except Exception as e:
                             print(f"Error exporting LeRobot for '{ep.episode_id}': {e}", file=sys.stderr)

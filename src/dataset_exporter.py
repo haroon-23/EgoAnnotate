@@ -33,6 +33,7 @@ class ExporterConfig:
     include_image_bytes: bool = False
     save_viz_video: bool = True          # Internal 224x224 debug HUD → debug_hud_preview.mp4
     save_overlay_video: bool = True      # Client-facing native-res → overlay_annotated.mp4
+    lerobot_export_mode: str = "human"   # "human" (24D) or "robot" (8D joint+gripper)
 
 
 class DatasetExporter:
@@ -245,6 +246,7 @@ class DatasetExporter:
             lerobot_path = export_to_lerobot(
                 episode_id=episode.episode_id,
                 output_dir=str(self.output_path),
+                export_mode=self.config.lerobot_export_mode,
             )
             print(f"[Exporter] LeRobot v3.0 dataset saved: {lerobot_path}")
         except Exception as e:
