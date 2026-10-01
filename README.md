@@ -154,7 +154,7 @@ gracefully degrades when heavy dependencies are missing
 
 | Component | Default | Opt-in |
 |---|---|---|
-| 2D detector (`detector_backend`) | **OWL-ViT** (`google/owlvit-base-patch32`, installed) | Real Grounding DINO (IDEA-Research, SwinT_OGC) |
+| 2D detector (`detector_backend`) | **OWL-ViT** (`google/owlvit-base-patch32`, installed) | Real Grounding DINO (IDEA-Research, SwinT_OGC) · LocateAnything-3B (research-only) |
 | SAM 2 box-prompted masks | off (`sam2.enabled: false`) | `models/sam2.1_hiera_tiny.pt` |
 | Metric depth | **UniDepth ONNX** (`models/unidepth_v1.onnx`), keyframes only | `depth.backend: "none"` (explicit no-depth) |
 | Hand PnP refinement | on (pure OpenCV/numpy, no extra deps) | needs `camera:` intrinsics, else skips with a warning |
@@ -180,6 +180,9 @@ mkdir -p models
 #   https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
 #   -> models/groundingdino_swint_ogc.pth
 #   GroundingDINO_SwinT_OGC.py (from the repo) -> models/GroundingDINO_SwinT_OGC.py
+# LocateAnything-3B (~7.8 GB; NVIDIA non-commercial, research-only weights):
+#   https://huggingface.co/nvidia/LocateAnything-3B -> models/locate-anything-3b/
+#   (snapshot the repo files into that dir; no auto-download)
 # UniDepth V1 ONNX:
 #   https://huggingface.co/ibaiGorordo/ONNX-UniDepth-V1 -> models/unidepth_v1.onnx
 # SAM 2.1 hiera-tiny:
@@ -192,10 +195,28 @@ pip install sam2                 # slow on old Intel CPUs; keyframes only
 pip install --no-build-isolation -e git+https://github.com/IDEA-Research/GroundingDINO.git
 ```
 
-Set `perception.detector_backend: "grounding_dino"`, `sam2.enabled: true`, or
-`depth.backend: "unidepth"` in `configs/default.yaml` to enable each backend.
-Missing weights/deps produce a loud warning naming the exact URL — never a
-silent wrong result.
+Set `perception.detector_backend: "grounding_dino"` or `"locate_anything"`,
+`sam2.enabled: true`, or `depth.backend: "unidepth"` in `configs/default.yaml`
+to enable each backend. Missing weights/deps produce a loud warning naming the
+exact URL — never a silent wrong result.
+
+### LocateAnything-3B (opt-in research backend)
+
+NVIDIA's open-vocabulary visual grounding VLM (MoonViT + Qwen2.5-3B, Parallel
+Box Decoding). Given an image and a text query it emits
+`<box> x1, y1, x2, y2 </box>` tokens with coordinates in [0, 1000] —
+deterministic to parse, no JSON repair needed. It is the pipeline's **accuracy
+oracle** for cluttered scenes: stronger grounding than OWL-ViT exactly where
+the pipeline is weakest. Enable with
+`perception.detector_backend: "locate_anything"` after the manual download
+(`https://huggingface.co/nvidia/LocateAnything-3B` -> `models/locate-anything-3b/`).
+
+Caveats, stated plainly: the weights are **NVIDIA non-commercial,
+research-only** — eval/research use, never the shipped commercial default
+(OWL-ViT keeps that role). Off-CUDA the model runs in slow autoregressive mode
+(tens of seconds per frame on old Intel CPUs — offline annotation only), and
+upstream pins `transformers==4.57.1` with `trust_remote_code=True` (the backend
+warns, not fails, on other 4.x versions).
 
 ## Phase D: VLM dual backend (Gemini + local SmolVLM)
 

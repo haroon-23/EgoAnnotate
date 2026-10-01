@@ -40,6 +40,7 @@ def test_lazy_exports_resolve(minimal_env):
         OwlViTDetector,
         GroundingDinoDetector,
         GroundingDINODetector,
+        LocateAnythingDetector,
         create_detector_2d,
         bbox_to_location_description,
         DepthEstimator,
@@ -76,6 +77,7 @@ def test_factories_degrade_gracefully(minimal_env):
     # No heavy deps -> factories return None / unavailable objects, never raise.
     assert create_detector_2d(Detector2DConfig(backend="owlvit")) is None
     assert create_detector_2d(Detector2DConfig(backend="grounding_dino")) is None
+    assert create_detector_2d(Detector2DConfig(backend="locate_anything")) is None
 
     depth = create_depth_estimator(DepthConfig(backend="unidepth"))
     assert depth.is_available() is False

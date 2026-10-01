@@ -23,6 +23,7 @@ _LAZY_EXPORTS = {
     "Detector2DConfig": "src.perception.detector",
     "OwlViTDetector": "src.perception.detector",
     "GroundingDinoDetector": "src.perception.detector",
+    "LocateAnythingDetector": "src.perception.detector",
     "create_detector_2d": "src.perception.detector",
     "bbox_to_location_description": "src.perception.detector",
     # NOTE: "GroundingDINODetector" here is the REAL Grounding DINO

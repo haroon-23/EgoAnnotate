@@ -82,7 +82,7 @@ grounding_dino:
 # an alias: settings it defines fill in anything the `perception:` section below
 # does not override.
 perception:
-  detector_backend: "owlvit"   # "owlvit" (default, installed) | "grounding_dino" (opt-in)
+  detector_backend: "owlvit"   # "owlvit" (default, installed) | "grounding_dino" (opt-in) | "locate_anything" (opt-in, research-only)
   # Real Grounding DINO (IDEA-Research, SwinT_OGC) — only used when
   # detector_backend is "grounding_dino". NOTE: this is NOT OpenMMLab's
   # MM-Grounding-DINO (mmcv/mmdet has no usable macOS-Intel wheels, so the
@@ -91,6 +91,13 @@ perception:
   grounding_dino_config: "models/GroundingDINO_SwinT_OGC.py"
   box_threshold: 0.30
   text_threshold: 0.25
+  # NVIDIA LocateAnything-3B — only used when detector_backend is
+  # "locate_anything". Open-vocab visual grounding VLM (MoonViT + Qwen2.5-3B);
+  # the pipeline's accuracy oracle for cluttered scenes.
+  # LICENSE: NVIDIA non-commercial, research-only weights — eval/research use,
+  # not the commercial default (OWL-ViT stays the commercial path).
+  # Manual download, no auto-download: https://huggingface.co/nvidia/LocateAnything-3B
+  locate_anything_weights: "models/locate-anything-3b"
 
 # Phase C: SAM 2 box-prompted masks. Off by default — even the tiny checkpoint
 # is tens of seconds per image on old Intel CPUs. Run on keyframes only.

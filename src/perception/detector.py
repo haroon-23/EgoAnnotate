@@ -7,6 +7,10 @@ Backends
   ``src/grounding_detector.py``). Installed, working, no weight download.
 * ``"grounding_dino"`` — :class:`GroundingDinoDetector`, the real Grounding DINO
   (IDEA-Research, SwinT_OGC). Opt-in; needs a manual weight download.
+* ``"locate_anything"`` — :class:`LocateAnythingDetector`, NVIDIA's
+  LocateAnything-3B open-vocabulary grounding VLM. Opt-in research backend
+  (non-commercial weights); needs a manual weight download. Serves as the
+  pipeline's accuracy oracle on cluttered scenes.
 
   NOTE on "MM-Grounding-DINO": the standing plan once named OpenMMLab's
   MM-Grounding-DINO, but its mmcv/mmdet dependency has no usable macOS-Intel
@@ -27,11 +31,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
+from PIL import Image
 
 from ..datatypes import ObjectAnnotation
 
@@ -75,6 +81,36 @@ GROUNDING_DINO_CONFIG_URL = (
     "groundingdino/config/GroundingDINO_SwinT_OGC.py"
 )
 
+# NVIDIA LocateAnything-3B (no auto-download — fail loud with this URL).
+# LICENSE CAVEAT: NVIDIA non-commercial, research-only weights. This backend
+# is the pipeline's accuracy oracle for eval/research; OWL-ViT stays the
+# commercial default.
+LOCATE_ANYTHING_MODEL_ID = "nvidia/LocateAnything-3B"
+LOCATE_ANYTHING_WEIGHTS_URL = "https://huggingface.co/nvidia/LocateAnything-3B"
+
+try:
+    import transformers as _transformers_la  # noqa: F401  (version checked at runtime)
+    _LOCATE_ANYTHING_IMPORT_OK = True
+except ImportError:  # pragma: no cover - depends on installed env
+    _LOCATE_ANYTHING_IMPORT_OK = False
+    logger.debug("transformers not installed — LocateAnything backend unavailable.")
+
+
+def _locate_anything_transformers_status() -> Tuple[bool, str, bool]:
+    """Return ``(import_ok, version_str, matches_upstream_pin)``.
+
+    Upstream pins ``transformers==4.57.1`` (5.x breaks its custom modeling
+    code). We warn — never hard-fail — on other versions, since the dev
+    machine may carry a different 4.x for the Phase-D local VLM.
+    """
+    try:
+        import transformers
+
+        ver = getattr(transformers, "__version__", "unknown")
+    except ImportError:
+        return False, "not installed", False
+    return True, ver, ver.startswith("4.57.")
+
 
 # ---------------------------------------------------------------------------
 # Interface
@@ -94,8 +130,9 @@ class Detection:
 class Detector2DConfig:
     """Configuration for :func:`create_detector_2d`.
 
-    ``backend``: ``"owlvit"`` (default, installed) or ``"grounding_dino"``
-    (opt-in, needs manual weight download).
+    ``backend``: ``"owlvit"`` (default, installed), ``"grounding_dino"``
+    (opt-in, needs manual weight download), or ``"locate_anything"``
+    (opt-in research backend, needs manual weight download).
     """
 
     backend: str = "owlvit"
@@ -107,6 +144,9 @@ class Detector2DConfig:
     text_threshold: float = 0.25
     grounding_dino_weights: str = "models/groundingdino_swint_ogc.pth"
     grounding_dino_config: str = "models/GroundingDINO_SwinT_OGC.py"
+    # LocateAnything (NVIDIA, opt-in research backend) settings
+    locate_anything_weights: str = "models/locate-anything-3b"
+    locate_anything_max_new_tokens: int = 256
     device: str = "auto"  # "auto", "cpu", "cuda"
 
 
@@ -134,7 +174,7 @@ class Detector2D:
     def _resolve_device(self, device: str) -> str:
         if device != "auto":
             return device
-        if _OWL_VIT_IMPORT_OK or _GDINO_IMPORT_OK:
+        if _OWL_VIT_IMPORT_OK or _GDINO_IMPORT_OK or _LOCATE_ANYTHING_IMPORT_OK:
             try:
                 import torch as _t
 
@@ -471,6 +511,240 @@ class GroundingDinoDetector(Detector2D):
 
 
 # ---------------------------------------------------------------------------
+# LocateAnything output parsing
+# ---------------------------------------------------------------------------
+
+_LA_BOX_RE = re.compile(r"<box>(.*?)</box>", re.DOTALL | re.IGNORECASE)
+_LA_INT_RE = re.compile(r"-?\d+")
+
+
+def parse_locate_anything_boxes(text: str) -> List[np.ndarray]:
+    """Parse LocateAnything ``<box>`` token spans into normalized [0, 1] xyxy boxes.
+
+    The model emits coordinates as integers in [0, 1000]; each is divided by
+    1000 and clipped to [0, 1] (corner order is normalized too, in case the
+    model emits ``x2 < x1``). Point spans (``<box> x, y </box>``, 2 ints)
+    carry no box geometry and are ignored. Malformed spans and empty input
+    yield no boxes — never raises.
+    """
+    boxes: List[np.ndarray] = []
+    if not text:
+        return boxes
+    for match in _LA_BOX_RE.finditer(text):
+        nums = [int(n) for n in _LA_INT_RE.findall(match.group(1))]
+        if len(nums) == 4:
+            x1, y1, x2, y2 = (n / 1000.0 for n in nums)
+            x_lo, x_hi = min(x1, x2), max(x1, x2)
+            y_lo, y_hi = min(y1, y2), max(y1, y2)
+            boxes.append(
+                np.clip(
+                    np.array([x_lo, y_lo, x_hi, y_hi], dtype=np.float32),
+                    0.0,
+                    1.0,
+                )
+            )
+        elif len(nums) == 2:
+            logger.debug(
+                "LocateAnything point token ignored (no box geometry): %s",
+                match.group(0)[:64],
+            )
+        else:
+            logger.debug(
+                "LocateAnything malformed <box> span ignored: %s",
+                match.group(0)[:64],
+            )
+    return boxes
+
+
+# ---------------------------------------------------------------------------
+# LocateAnything backend (NVIDIA, opt-in research)
+# ---------------------------------------------------------------------------
+
+
+class LocateAnythingDetector(Detector2D):
+    """NVIDIA LocateAnything-3B open-vocabulary visual grounding (opt-in).
+
+    MoonViT + Qwen2.5-3B-Instruct with Parallel Box Decoding: given an image
+    and a text query it emits ``<box> x1, y1, x2, y2 </box>`` tokens with
+    coordinates in [0, 1000]. Stronger than OWL-ViT on cluttered scenes, so it
+    serves as the pipeline's accuracy oracle — but note the caveats:
+
+    * LICENSE: NVIDIA **non-commercial, research-only** weights. Eval/research
+      use; OWL-ViT stays the commercial default.
+    * Slow: off-CUDA it runs in autoregressive ``slow`` mode — tens of seconds
+      per frame on old Intel CPUs. Offline annotation only.
+    * Upstream pins ``transformers==4.57.1`` (5.x breaks its custom modeling
+      code) and requires ``trust_remote_code=True``.
+
+    Lazy: importing this module and constructing the class never touch the
+    weights. The model loads on first :meth:`is_available` / :meth:`detect`.
+    Missing transformers/weights → ``is_available()`` False, factory ``None``.
+
+    One query per label (mirrors OWL-ViT semantics; more reliable than a
+    multi-category single shot on a 3B model). The model emits no confidence
+    scores, so every parsed box gets ``score=1.0``.
+    """
+
+    backend_name = "locate_anything"
+
+    def __init__(self, config: Optional[Detector2DConfig] = None):
+        super().__init__(config)
+        self._processor = None
+        self._tokenizer = None
+        self._model = None
+
+    # -- lazy model ------------------------------------------------------
+    def _ensure_model(self) -> bool:
+        """Load the model on first use. Returns True when ready."""
+        if self._model is not None:
+            return True
+        if not _LOCATE_ANYTHING_IMPORT_OK:
+            self._warn_once(
+                "la-no-transformers",
+                "LocateAnything backend requested but 'transformers' is not "
+                "installed. Upstream pins transformers==4.57.1: "
+                "pip install 'transformers==4.57.1'. (falling back to no detector).",
+            )
+            return False
+        _ok, ver, ver_ok = _locate_anything_transformers_status()
+        if not ver_ok:
+            self._warn_once(
+                "la-version",
+                "LocateAnything upstream pins transformers==4.57.1 (5.x breaks "
+                "its custom modeling code); detected %s. Continuing anyway — "
+                "inference may fail.",
+                ver,
+            )
+        weights = self.config.locate_anything_weights
+        if not weights or not os.path.isdir(weights):
+            self._warn_once(
+                "la-weights",
+                "LocateAnything weights not found at '%s'. Download manually "
+                "(no auto-download): %s -> '%s/' — then set "
+                "'perception.locate_anything_weights' in configs/default.yaml. "
+                "(falling back to no detector).",
+                weights,
+                LOCATE_ANYTHING_WEIGHTS_URL,
+                weights,
+            )
+            return False
+        try:
+            from transformers import AutoModel, AutoProcessor, AutoTokenizer
+            import torch as _t
+
+            logger.info(
+                "Loading LocateAnything-3B weights: %s on %s (slow CPU mode)",
+                weights,
+                self._device,
+            )
+            # trust_remote_code=True is required by upstream (custom Eagle
+            # modeling code); local_files_only=True enforces the project
+            # no-auto-download rule — a partial dir fails loud instead of
+            # silently fetching from the Hub.
+            self._processor = AutoProcessor.from_pretrained(
+                weights, trust_remote_code=True, local_files_only=True
+            )
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                weights, trust_remote_code=True, local_files_only=True
+            )
+            self._model = AutoModel.from_pretrained(
+                weights,
+                torch_dtype=_t.bfloat16 if self._device == "cuda" else _t.float32,
+                trust_remote_code=True,
+                local_files_only=True,
+                attn_implementation="sdpa",  # magi backend is CUDA-only
+            )
+            self._model.to(self._device)
+            self._model.eval()
+            logger.info("LocateAnything-3B model loaded successfully")
+        except Exception as e:
+            logger.error("Failed to load LocateAnything-3B model: %s", e)
+            self._processor = None
+            self._tokenizer = None
+            self._model = None
+        return self._model is not None
+
+    def is_available(self) -> bool:
+        return self._ensure_model()
+
+    # -- detection ---------------------------------------------------------
+    def _generate_text(self, image_pil: Image.Image, label: str) -> str:
+        """Run one grounding query; returns raw decoded text ("" on failure)."""
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_pil},
+                        {
+                            "type": "text",
+                            "text": (
+                                "Please provide the bounding box of the "
+                                f"<ref>{label}</ref>."
+                            ),
+                        },
+                    ],
+                }
+            ]
+            chat_text = self._processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self._processor(
+                text=[chat_text], images=[image_pil], return_tensors="pt"
+            )
+            inputs = {
+                k: (v.to(self._device) if hasattr(v, "to") else v)
+                for k, v in inputs.items()
+            }
+            import torch as _t
+
+            with _t.no_grad():
+                out = self._model.generate(
+                    **inputs,
+                    max_new_tokens=self.config.locate_anything_max_new_tokens,
+                    do_sample=False,
+                )
+            input_len = inputs["input_ids"].shape[-1]
+            # skip_special_tokens=False keeps the <box> coordinate tokens.
+            text = self._processor.batch_decode(
+                out[:, input_len:], skip_special_tokens=False
+            )[0]
+            return text if isinstance(text, str) else ""
+        except Exception as e:
+            logger.error("LocateAnything query failed for %r: %s", label, e)
+            return ""
+
+    def detect(self, image_bgr: np.ndarray, prompts: List[str]) -> List[Detection]:
+        import cv2
+
+        if not self.is_available():
+            self._warn_once(
+                "la-unavailable", "LocateAnything not available, returning empty list"
+            )
+            return []
+        if not prompts:
+            return []
+        image_rgb = (
+            cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            if image_bgr.shape[2] == 3
+            else image_bgr
+        )
+        pil_image = Image.fromarray(np.ascontiguousarray(image_rgb))
+        detections: List[Detection] = []
+        for prompt in prompts:
+            label = (prompt or "").strip()
+            if not label:
+                continue
+            text = self._generate_text(pil_image, label)
+            for box in parse_locate_anything_boxes(text):
+                # The model emits no confidence scores.
+                detections.append(
+                    Detection(bbox_xyxy_norm=box, label=label, score=1.0)
+                )
+        return detections
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -489,10 +763,12 @@ def create_detector_2d(config: Optional[Detector2DConfig] = None) -> Optional[De
         detector: Detector2D = OwlViTDetector(cfg)
     elif backend in ("grounding_dino", "groundingdino", "gdino"):
         detector = GroundingDinoDetector(cfg)
+    elif backend in ("locate_anything", "locate-anything", "locateanything"):
+        detector = LocateAnythingDetector(cfg)
     else:
         raise ValueError(
             f"Unknown detector backend {cfg.backend!r}; "
-            "expected 'owlvit' or 'grounding_dino'."
+            "expected 'owlvit', 'grounding_dino' or 'locate_anything'."
         )
     if detector.is_available():
         logger.info("2D detector backend ready: %s", detector.backend_name)

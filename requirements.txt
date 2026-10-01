@@ -49,3 +49,12 @@ urdfpy>=0.0.22
 #   https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct -> models/smolvlm-500m-instruct/
 # NOTE: this is deliberately NOT OpenMMLab's MM-Grounding-DINO — mmcv/mmdet has
 # no usable macOS-Intel wheels, so the MM variant is uninstallable on this dev machine.
+
+# Optional — LocateAnything-3B open-vocab grounding VLM (research-only weights).
+# transformers>=4.30.0 and torch>=2.0.0 are already listed above, so this adds
+# ZERO new dependencies — only a manual weight download:
+#   https://huggingface.co/nvidia/LocateAnything-3B -> models/locate-anything-3b/
+# Upstream pins transformers==4.57.1 (5.x breaks its custom modeling code);
+# the backend warns (does not fail) on other 4.x versions, and requires
+# trust_remote_code=True. LICENSE: NVIDIA non-commercial, research-only —
+# eval/research use, not the commercial default.
