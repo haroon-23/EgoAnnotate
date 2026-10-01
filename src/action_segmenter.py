@@ -1,24 +1,22 @@
-"""Temporal action segmentation using Gemini Vision API."""
-import os
+"""Temporal action segmentation using a VLM backend (Phase D dual backend)."""
 import time
 import re
-import json
 import cv2
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
 
-try:
-    from .gemini_client import (
-        GEMINI_AVAILABLE,
-        create_client,
-        resolve_model_name,
-        generate_text,
-        upload_video_file,
-        delete_remote_file,
-    )
-except ImportError:
-    GEMINI_AVAILABLE = False
+# Phase D: VLM dual backend (gemini default, local SmolVLM opt-in).
+from .vlm_backend import (
+    VLMBackend,
+    VLMRequest,
+    ensure_api_key_from_dotenv,
+    parse_json_strict,
+    resolve_stage_backend,
+)
+
+# Legacy behavior: pick up GEMINI_API_KEY from .env at import time.
+ensure_api_key_from_dotenv()
 
 from .datatypes import ActionSegment
 
@@ -32,6 +30,11 @@ VIDEO_UPLOAD_TIMEOUT = 30  # seconds max wait for video processing
 class ActionSegmenterConfig:
     """Configuration for the GeminiActionSegmenter."""
     gemini_model: str = "gemini-3.8-flash"
+    # Phase D: VLM backend for this stage ("gemini" | "local" | None).
+    # None -> the pipeline's global `vlm.backend` (default "gemini"; the
+    # video stages keep the gemini default because they rely on native
+    # video understanding).
+    vlm_backend: Optional[str] = None
     prompt: str = (
         "Analyze the actions performed in this egocentric video and segment it into contiguous temporal segments.\n"
         "For each segment, provide:\n"
@@ -57,23 +60,18 @@ class ActionSegmenterConfig:
 
 class GeminiActionSegmenter:
     """Segments video into manipulation primitives."""
-    
-    def __init__(self, config: ActionSegmenterConfig):
+
+    def __init__(self, config: ActionSegmenterConfig, vlm: Optional[VLMBackend] = None):
         self.config = config
         self._model = None
-        self._init_model()
-    
-    def _init_model(self):
-        if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-genai not installed.")
-        
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiActionSegmenter.")
-        
-        self._client = create_client(api_key)
-        self._model_name = resolve_model_name(self.config.gemini_model)
-        print(f"[ActionSegmenter] Using {self._model_name}")
+        # Phase D: VLM backend. Injected by the pipeline, or resolved here
+        # (strict — raises with the legacy messages when unavailable).
+        self._vlm: VLMBackend = (
+            vlm
+            if vlm is not None
+            else resolve_stage_backend(config.vlm_backend, config.gemini_model)
+        )
+        print(f"[ActionSegmenter] Using VLM backend: {self._vlm.name}")
     
     def segment_video(self, video_path: str) -> List[ActionSegment]:
         """Segment video. Fast path with timeout."""
@@ -104,31 +102,43 @@ class GeminiActionSegmenter:
     def _try_video_upload(self, video_path: Path) -> Optional[List[ActionSegment]]:
         for attempt in range(MAX_RETRIES):
             try:
-                print(f"[ActionSegmenter] Uploading video...")
-                video_file = upload_video_file(self._client, str(video_path), timeout_s=VIDEO_UPLOAD_TIMEOUT)
+                print(f"[ActionSegmenter] Querying VLM (backend={self._vlm.name})...")
 
-                if video_file is None:
-                    print("[ActionSegmenter] Upload timeout/failed")
-                    return None
-                
                 prompt = self.config.prompt or """Analyze this egocentric video. Segment into manipulation primitives with timestamps: approach, contact, grasp, manipulate, release, retreat, idle. For each: action name, start time, end time, object, hand. Format as JSON."""
-                
-                response_text = generate_text(self._client, self._model_name, [video_file, prompt], temperature=0.1)
-                
-                # Try JSON parsing
-                segments = self._parse_json_response(response_text)
+
+                # Phase D: the backend owns video handling — Gemini uploads the
+                # file natively, the local backend samples timestamped stills.
+                response_text = self._vlm.generate(
+                    VLMRequest(
+                        video_path=str(video_path),
+                        prompt=prompt,
+                        temperature=0.1,
+                        video_upload_timeout_s=VIDEO_UPLOAD_TIMEOUT,
+                    )
+                ).text
+
+                # Output contract: strict JSON -> one repair re-prompt -> regex fallback.
+                parsed = parse_json_strict(
+                    response_text,
+                    repair_fn=lambda rp: self._vlm.generate(
+                        VLMRequest(prompt=rp, max_new_tokens=256, temperature=0.1)
+                    ).text,
+                    expect="JSON list",
+                )
+                segments = self._segments_from_parsed(parsed) if parsed is not None else []
                 if not segments:
                     # Fallback to regex text parsing
                     segments = self._parse_text_fallback(response_text)
-                
-                # Clean up
-                delete_remote_file(self._client, video_file.name)
-                
+
                 if segments:
                     print(f"[ActionSegmenter] {len(segments)} segments found")
                     return segments
                 return None
-            
+
+            except RuntimeError:
+                # Fatal backend errors (auth, missing weights, upload failure)
+                # propagate immediately — never retried.
+                raise
             except Exception as e:
                 err = str(e).lower()
                 
@@ -175,59 +185,52 @@ class GeminiActionSegmenter:
             return 0.0
             
     def _parse_json_response(self, text: str) -> List[ActionSegment]:
-        """Attempt to parse the response text as a JSON list of segments."""
-        text = text.strip()
-        try:
-            cleaned = text
-            # Extract JSON block between markdown markers or brackets
-            json_match = re.search(r'```(?:json)?\n(.*?)\n```', text, re.DOTALL)
-            if json_match:
-                cleaned = json_match.group(1).strip()
-            else:
-                start_idx = text.find('[')
-                end_idx = text.rfind(']')
-                if start_idx != -1 and end_idx != -1:
-                    cleaned = text[start_idx:end_idx+1]
-            
-            data = json.loads(cleaned)
-            segment_list = []
-            if isinstance(data, list):
-                segment_list = data
-            elif isinstance(data, dict):
-                # Search for lists inside dictionary values
-                for val in data.values():
-                    if isinstance(val, list):
-                        segment_list = val
-                        break
-            
-            segments = []
-            for item in segment_list:
-                if isinstance(item, dict):
-                    name = item.get("name") or "manipulate"
-                    start_str = str(item.get("start_time") or "0.0")
-                    end_str = str(item.get("end_time") or "10.0")
-                    object_name = item.get("object_name") or "unknown"
-                    hand_used = item.get("hand_used") or "right"
-                    description = item.get("description") or ""
-                    
-                    start_time = self._parse_time(start_str)
-                    end_time = self._parse_time(end_str)
-                    
-                    segments.append(
-                        ActionSegment(
-                            name=str(name).strip(),
-                            start_time=start_time,
-                            end_time=end_time,
-                            object_name=str(object_name).strip(),
-                            hand_used=str(hand_used).strip().lower(),
-                            description=str(description).strip(),
-                        )
+        """Attempt to parse the response text as a JSON list of segments.
+
+        Pure function (no repair re-prompt); the live path in
+        :meth:`_try_video_upload` adds the repair hook.
+        """
+        parsed = parse_json_strict(text, repair_fn=None)
+        if parsed is None:
+            return []
+        return self._segments_from_parsed(parsed)
+
+    def _segments_from_parsed(self, data) -> List[ActionSegment]:
+        """Build ActionSegments from a parsed JSON value."""
+        segment_list = []
+        if isinstance(data, list):
+            segment_list = data
+        elif isinstance(data, dict):
+            # Search for lists inside dictionary values
+            for val in data.values():
+                if isinstance(val, list):
+                    segment_list = val
+                    break
+
+        segments = []
+        for item in segment_list:
+            if isinstance(item, dict):
+                name = item.get("name") or "manipulate"
+                start_str = str(item.get("start_time") or "0.0")
+                end_str = str(item.get("end_time") or "10.0")
+                object_name = item.get("object_name") or "unknown"
+                hand_used = item.get("hand_used") or "right"
+                description = item.get("description") or ""
+
+                start_time = self._parse_time(start_str)
+                end_time = self._parse_time(end_str)
+
+                segments.append(
+                    ActionSegment(
+                        name=str(name).strip(),
+                        start_time=start_time,
+                        end_time=end_time,
+                        object_name=str(object_name).strip(),
+                        hand_used=str(hand_used).strip().lower(),
+                        description=str(description).strip(),
                     )
-            if segments:
-                return segments
-        except Exception:
-            pass
-        return []
+                )
+        return segments
         
     def _parse_text_fallback(self, text: str) -> List[ActionSegment]:
         """Parse structured text lines using regex matching fallback."""

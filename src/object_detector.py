@@ -5,9 +5,7 @@ Two-stage approach:
 2. Grounding DINO localizes each object with REAL bounding boxes (spatial precision)
 """
 import logging
-import os
 import time
-import json
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -18,20 +16,21 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-try:
-    from .gemini_client import (
-        GEMINI_AVAILABLE,
-        create_client,
-        resolve_model_name,
-        generate_text,
-        pil_to_part,
-    )
-except ImportError:
-    GEMINI_AVAILABLE = False
-
 from .datatypes import ObjectAnnotation
 from .grounding_detector import GroundingDINODetector, GroundingDINOConfig, create_grounding_detector
 from .perception.detector import Detector2D, bbox_to_location_description
+# Phase D: VLM dual backend (gemini default, local SmolVLM opt-in).
+from .vlm_backend import (
+    VLMBackend,
+    VLMRequest,
+    build_repair_prompt,
+    ensure_api_key_from_dotenv,
+    parse_json_strict,
+    resolve_stage_backend,
+)
+
+# Legacy behavior: pick up GEMINI_API_KEY from .env at import time.
+ensure_api_key_from_dotenv()
 
 
 class _Detector2DAdapter:
@@ -67,22 +66,9 @@ class ObjectDetectorConfig:
     grounding_dino_confidence: float = 0.3
     grounding_dino_box_threshold: float = 0.3
     grounding_dino_text_threshold: float = 0.25
-
-
-# Auto-load GEMINI_API_KEY from .env at module import if not already in environment
-if not os.environ.get("GEMINI_API_KEY"):
-    for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
-        if env_path.exists():
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("GEMINI_API_KEY="):
-                        val = line.split("=", 1)[1].strip("'\"")
-                        if val:
-                            os.environ["GEMINI_API_KEY"] = val
-                            break
-            if os.environ.get("GEMINI_API_KEY"):
-                break
+    # Phase D: VLM backend for this stage ("gemini" | "local" | None).
+    # None -> the pipeline's global `vlm.backend` (default "gemini").
+    vlm_backend: Optional[str] = None
 
 
 class GeminiObjectDetector:
@@ -93,20 +79,32 @@ class GeminiObjectDetector:
     2. Grounding DINO provides precise bounding boxes for each object (spatial)
     """
     
-    def __init__(self, config: ObjectDetectorConfig, detector_2d: Optional[Detector2D] = None):
+    def __init__(self, config: ObjectDetectorConfig, detector_2d: Optional[Detector2D] = None,
+                 vlm: Optional[VLMBackend] = None):
         """Initialize the two-stage detector.
 
         Args:
-            config: ObjectDetectorConfig with Gemini + bbox-stage settings.
+            config: ObjectDetectorConfig with VLM + bbox-stage settings.
             detector_2d: Optional Phase-C detector (built by the pipeline from
                 the ``perception:`` config section). When provided it replaces
                 the internally-built OWL-ViT detector for bbox localization;
                 when None (or unavailable) the legacy self-build path is used.
+            vlm: Optional Phase-D VLM backend (built by the pipeline from the
+                ``vlm:`` config section). When None, the backend is resolved
+                from ``config.vlm_backend`` (strict: raises like the old
+                ``_init_model`` when unavailable).
         """
         self.config = config
         self._model = None
         self._grounding_detector = None
-        self._init_model()
+        # Phase D: VLM backend. Injected by the pipeline, or resolved here
+        # (strict — raises with the legacy messages when unavailable).
+        self._vlm: VLMBackend = (
+            vlm
+            if vlm is not None
+            else resolve_stage_backend(config.vlm_backend, config.gemini_model)
+        )
+        logger.debug("[ObjectDetector] Using VLM backend: %s", self._vlm.name)
         if detector_2d is not None:
             self._grounding_detector = _Detector2DAdapter(detector_2d)
             logger.debug(
@@ -115,32 +113,6 @@ class GeminiObjectDetector:
             )
         else:
             self._init_grounding_dino()
-    
-    def _init_model(self):
-        if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-genai not installed.")
-
-        if not os.environ.get("GEMINI_API_KEY"):
-            for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
-                if env_path.exists():
-                    with open(env_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line.startswith("GEMINI_API_KEY="):
-                                val = line.split("=", 1)[1].strip("'\"")
-                                if val:
-                                    os.environ["GEMINI_API_KEY"] = val
-                                    break
-                    if os.environ.get("GEMINI_API_KEY"):
-                        break
-
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiObjectDetector.")
-
-        self._client = create_client(api_key)
-        self._model_name = resolve_model_name(self.config.gemini_model)
-        logger.debug("[ObjectDetector] Using Gemini: %s", self._model_name)
     
     def _init_grounding_dino(self):
         """Initialize Grounding DINO detector for bbox localization."""
@@ -188,9 +160,11 @@ class GeminiObjectDetector:
                 pil_image.thumbnail((1024, 1024))
             
             # Let the exception propagate up, do NOT catch and ignore!
-            objects = self._call_gemini_fast(pil_image)
+            objects = self._call_vlm_fast(pil_image)
             all_objects.extend(objects)
-            time.sleep(10)
+            # Gemini quota pacing only — the local backend needs no such delay.
+            if self._vlm.name == "gemini":
+                time.sleep(10)
         
         cap.release()
         
@@ -376,28 +350,50 @@ class GeminiObjectDetector:
         )
         return per_frame_results
     
-    def _call_gemini_fast(self, pil_image: Image.Image) -> List[ObjectAnnotation]:
-        """Call Gemini with strict retry limits. Fast fail on fatal errors."""
+    def _call_vlm_fast(self, pil_image: Image.Image) -> List[ObjectAnnotation]:
+        """Call the VLM backend with strict retry limits. Fast fail on fatal errors.
+
+        Output contract: strict JSON parse -> one repair re-prompt -> the
+        legacy regex fallbacks. Identical retry/fatal semantics as before.
+        """
         prompt = self.config.prompt or """Analyze this egocentric video frame. List ALL objects the hands are interacting with or could interact with. For each: name, location (top-left/center/bottom-right), touched (yes/no). Format as JSON list. Example: [{"name":"red_cup","location":"center","touched":true}]"""
-        
+
         last_error = None
         for attempt in range(MAX_RETRIES):
             try:
-                response_text = generate_text(
-                    self._client, self._model_name,
-                    [prompt, pil_to_part(pil_image)], temperature=0.1,
-                )
-                return self._parse_response(response_text)
-            
+                response_text = self._vlm.generate(
+                    VLMRequest(images=[pil_image], prompt=prompt, temperature=0.1)
+                ).text
+                # Output contract: strict JSON extraction, then one repair
+                # re-prompt for 500M chatter, then the legacy regex fallbacks
+                # (all inside _parse_response). None when everything fails.
+                annotations = self._parse_response(response_text)
+                if not annotations:
+                    repaired = self._vlm.generate(
+                        VLMRequest(
+                            images=[pil_image],
+                            prompt=build_repair_prompt(response_text, "a JSON list"),
+                            max_new_tokens=128, temperature=0.1,
+                        )
+                    ).text
+                    annotations = self._parse_response(repaired or "")
+                if annotations:
+                    return annotations
+                return None
+
+            except RuntimeError:
+                # Fatal backend errors (auth, missing weights) propagate
+                # immediately — never retried.
+                raise
             except Exception as e:
                 last_error = e
                 err = str(e).lower()
-                
+
                 # FATAL: wrong model, auth failure — fail immediately
                 if any(k in err for k in ["404", "not found", "no longer available", "invalid model", "api key not valid", "permission denied"]):
-                    logger.error("[FATAL] Gemini API fatal error: %s", e)
-                    raise RuntimeError(f"Gemini API call failed with fatal error: {e}") from e
-                
+                    logger.error("[FATAL] VLM API fatal error: %s", e)
+                    raise RuntimeError(f"VLM API call failed with fatal error: {e}") from e
+
                 # Rate limit — short wait then retry
                 if any(k in err for k in ["rate limit", "quota", "429", "resource exhausted"]):
                     wait = RETRY_DELAY * (attempt + 1)
@@ -406,52 +402,48 @@ class GeminiObjectDetector:
                 else:
                     logger.warning("[RETRY] Attempt %d/%d failed: %s", attempt + 1, MAX_RETRIES, e)
                     time.sleep(RETRY_DELAY)
-        
-        raise RuntimeError(f"Gemini VLM API Call failed after {MAX_RETRIES} attempts. Last error: {last_error}")
-        
-        return []
+
+        raise RuntimeError(f"VLM API call failed after {MAX_RETRIES} attempts. Last error: {last_error}")
     
     def _parse_response(self, text: str) -> List[ObjectAnnotation]:
+        """Legacy parse entry point (kept for compatibility).
+
+        Strict JSON extraction first, then the regex fallbacks. The live
+        call path (:meth:`_call_vlm_fast`) additionally runs one repair
+        re-prompt between the two.
+        """
         if not text:
             return []
-        
-        text_clean = text.strip()
-        
-        # 1. Extract JSON from markdown if wrapped
-        m = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', text_clean, re.DOTALL)
-        if m:
-            text_clean = m.group(1)
-        elif text_clean.startswith("```"):
-            text_clean = re.sub(r"^```(?:json)?\n", "", text_clean)
-            text_clean = re.sub(r"\n```$", "", text_clean)
-        
-        text_clean = text_clean.strip()
-        
-        # 2. Try JSON parsing
-        try:
-            data = json.loads(text_clean)
-            object_list = []
-            if isinstance(data, list):
-                object_list = data
-            elif isinstance(data, dict):
-                # Search for any list value inside the dict
-                for val in data.values():
-                    if isinstance(val, list):
-                        object_list = val
-                        break
-            
-            annotations = []
-            for item in object_list:
-                if isinstance(item, dict):
-                    name = item.get("name", item.get("object", item.get("label", "unknown")))
-                    loc = item.get("location", item.get("location_description", "unknown"))
-                    touched = bool(item.get("touched", False))
-                    annotations.append(ObjectAnnotation(name=name, location_description=loc, touched=touched))
+        parsed = parse_json_strict(text, repair_fn=None)
+        if parsed is not None:
+            annotations = self._annotations_from_parsed(parsed)
             if annotations:
                 return annotations
-        except json.JSONDecodeError:
-            pass
-        
+        return self._parse_response_fallbacks(text)
+
+    def _annotations_from_parsed(self, data) -> List[ObjectAnnotation]:
+        """Build ObjectAnnotations from a parsed JSON value (old level 2)."""
+        object_list = []
+        if isinstance(data, list):
+            object_list = data
+        elif isinstance(data, dict):
+            # Search for any list value inside the dict
+            for val in data.values():
+                if isinstance(val, list):
+                    object_list = val
+                    break
+
+        annotations = []
+        for item in object_list:
+            if isinstance(item, dict):
+                name = item.get("name", item.get("object", item.get("label", "unknown")))
+                loc = item.get("location", item.get("location_description", "unknown"))
+                touched = bool(item.get("touched", False))
+                annotations.append(ObjectAnnotation(name=name, location_description=loc, touched=touched))
+        return annotations
+
+    def _parse_response_fallbacks(self, text: str) -> List[ObjectAnnotation]:
+        """Regex fallbacks for non-JSON model output (old levels 3-4)."""
         # 3. Fallback: regex search for JSON-like lines in broken JSON
         annotations = []
         for line in text.split("\n"):

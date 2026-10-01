@@ -16,6 +16,7 @@ hand_tracking:
 object_detection:
   keyframes_per_video: 3
   bbox_keyframe_interval: 15
+  # vlm_backend: "local"  # Phase D opt-in: use the local SmolVLM backend for this stage
   prompt: |
     Analyze this egocentric video frame. List ALL objects that the person's hands are interacting with or could interact with. For each object, provide name, location in frame, and whether touched. Format as JSON list.
 
@@ -42,6 +43,7 @@ signal_segmentation:
 # VLM-based segment labeling (Gemini)
 segment_labeling:
   # Uses gemini.model from above
+  # vlm_backend: "local"  # Phase D opt-in: use the local SmolVLM backend for this stage
 
 language_annotation:
   episode_prompt: "Describe the physical task in this video in one sentence. Be specific. Return ONLY the sentence."
@@ -50,6 +52,25 @@ language_annotation:
 gemini:
   model: "gemini-3.8-flash"
   api_key: null  # Set via GEMINI_API_KEY env var
+
+# Phase D: VLM dual backend. `backend: "gemini"` (default, production) or
+# `"local"` (SmolVLM-500M-Instruct via transformers, CPU-only, offline/dev).
+# Each stage also accepts its own `vlm_backend:` override ("gemini"|"local"):
+# `local` is allowed for object_detection and segment_labeling; the video
+# stages (action segmentation, language annotation) keep the `gemini` default
+# because they rely on native video understanding.
+vlm:
+  backend: "gemini"
+  # --- local backend (SmolVLM-500M-Instruct, CPU) ---
+  local_model: "HuggingFaceTB/SmolVLM-500M-Instruct"
+  local_weights: "models/smolvlm-500m-instruct"  # manual download; NO auto-download (Phase C rule)
+  device: "cpu"
+  max_new_tokens: 256
+  temperature: 0.1
+  video_frames: 8        # stills sampled to replace Gemini video upload
+  timeout_s: 300         # old-Intel CPU inference is slow; fail loud, don't hang
+  # --- fallback policy ---
+  on_unavailable: "degrade"  # "degrade" = existing per-stage fallbacks; never silently wrong
 
 grounding_dino:
   model_name: "google/owlvit-base-patch32"

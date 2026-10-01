@@ -197,6 +197,51 @@ Set `perception.detector_backend: "grounding_dino"`, `sam2.enabled: true`, or
 Missing weights/deps produce a loud warning naming the exact URL — never a
 silent wrong result.
 
+## Phase D: VLM dual backend (Gemini + local SmolVLM)
+
+Phase D adds a `VLMBackend` abstraction in `src/vlm_backend.py` (mirroring the
+Phase-C `Detector2D` pattern): `VLMRequest`/`VLMResponse` dataclasses, a
+`VLMBackend` protocol (`name`, `is_available()`, `generate()`), and
+`create_vlm_backend(cfg)` which returns a working backend or `None` — never
+raises.
+
+| Backend | Default for | Notes |
+|---|---|---|
+| **`gemini`** (`gemini-3.8-flash`) | everything (production) | Native video understanding via Files-API upload for the video stages |
+| **`local`** (SmolVLM-500M-Instruct, transformers, CPU-only) | opt-in via `vlm.backend` or per-stage `vlm_backend` | Offline/dev; ~2 GB RAM; zero new deps (transformers + torch already required) |
+
+All four VLM stages (`GeminiObjectDetector`, `GeminiActionSegmenter`,
+`SegmentLabeler`, `GeminiLanguageGenerator` — names kept as thin aliases)
+accept an injected backend; the pipeline builds it from the `vlm:` section of
+`configs/default.yaml`. Per-stage `vlm_backend: "local"` overrides the global
+default — allowed for `object_detection` and `segment_labeling`; the video
+stages (`action_segmenter`, `language_generator`) keep the `gemini` default
+because they rely on native video understanding. Under `local`, a video is
+replaced by `vlm.video_frames` (default 8) evenly-sampled stills with
+timestamp-prefixed prompts (`Frame 3 of 8, t≈2.1s`).
+
+Because a 500M local VLM will not obey JSON schemas reliably, Phase D adds a
+shared output-contract layer: strict JSON extraction → one repair re-prompt
+("Reply with ONLY the JSON…") → each stage's existing regex fallbacks. Parsing
+stays in the stages; the backend only returns raw text.
+
+### Manual weight download (no auto-download anywhere — by design)
+
+```bash
+mkdir -p models
+# SmolVLM-500M-Instruct (~1 GB):
+#   https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct -> models/smolvlm-500m-instruct/
+```
+
+Then set `vlm.backend: "local"` (or per-stage `vlm_backend: "local"`) in
+`configs/default.yaml`. Missing weights / missing `transformers` fail loud
+with the URL above. A manual smoke check (Mac only, skipped when the weights
+dir is absent): `python scripts/check_local_vlm.py --weights models/smolvlm-500m-instruct`.
+
+Expect tens of seconds per call on the 2017 Intel CPU — `local` is the
+offline/dev backend; `gemini` stays the production default. `vlm.timeout_s`
+(default 300) fails loud instead of hanging.
+
 ## Compatibility Guide
 
 | Downstream Target | Recommended Export Format | Contents |

@@ -1,34 +1,31 @@
-"""Segment labeling using VLM (Gemini).
+"""Segment labeling using a VLM backend (Phase D dual backend).
 
 Takes pre-computed CandidateSegments from SignalSegmenter and labels each
-with an action category using Gemini Vision. Does NOT derive boundaries —
-only labels existing segments.
+with an action category. Does NOT derive boundaries — only labels existing
+segments.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
-import re
-import json
 import cv2
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional
 
 from PIL import Image
 
-try:
-    from .gemini_client import (
-        GEMINI_AVAILABLE,
-        create_client,
-        resolve_model_name,
-        generate_text,
-        pil_to_part,
-    )
-except ImportError:
-    GEMINI_AVAILABLE = False
+# Phase D: VLM dual backend (gemini default, local SmolVLM opt-in).
+from .vlm_backend import (
+    VLMBackend,
+    VLMRequest,
+    ensure_api_key_from_dotenv,
+    parse_json_strict,
+    resolve_stage_backend,
+)
+
+# Legacy behavior: pick up GEMINI_API_KEY from .env at import time.
+ensure_api_key_from_dotenv()
 
 from .datatypes import ActionSegment, CandidateSegment
 
@@ -43,6 +40,9 @@ VIDEO_UPLOAD_TIMEOUT = 30
 class SegmentLabelerConfig:
     """Configuration for the SegmentLabeler."""
     gemini_model: str = "gemini-3.8-flash"
+    # Phase D: VLM backend for this stage ("gemini" | "local" | None).
+    # None -> the pipeline's global `vlm.backend` (default "gemini").
+    vlm_backend: Optional[str] = None
     prompt_template: str = (
         "You are labeling a segment from an egocentric manipulation video.\n\n"
         "Segment info:\n"
@@ -78,38 +78,19 @@ def build_instruction(segment_name: str, object_name: str, hands: list[str]) -> 
 
 
 class SegmentLabeler:
-    """Labels pre-computed segments with action categories using Gemini."""
-    
-    def __init__(self, config: SegmentLabelerConfig):
+    """Labels pre-computed segments with action categories using a VLM backend."""
+
+    def __init__(self, config: SegmentLabelerConfig, vlm: Optional[VLMBackend] = None):
         self.config = config
         self._model = None
-        self._init_model()
-    
-    def _init_model(self):
-        if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-genai not installed.")
-        
-        if not os.environ.get("GEMINI_API_KEY"):
-            for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
-                if env_path.exists():
-                    with open(env_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line.startswith("GEMINI_API_KEY="):
-                                val = line.split("=", 1)[1].strip("'\"")
-                                if val:
-                                    os.environ["GEMINI_API_KEY"] = val
-                                    break
-                    if os.environ.get("GEMINI_API_KEY"):
-                        break
-
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set.")
-        
-        self._client = create_client(api_key)
-        self._model_name = resolve_model_name(self.config.gemini_model)
-        print(f"[SegmentLabeler] Using {self._model_name}")
+        # Phase D: VLM backend. Injected by the pipeline, or resolved here
+        # (strict — raises with the legacy messages when unavailable).
+        self._vlm: VLMBackend = (
+            vlm
+            if vlm is not None
+            else resolve_stage_backend(config.vlm_backend, config.gemini_model)
+        )
+        print(f"[SegmentLabeler] Using VLM backend: {self._vlm.name}")
     
     def label_segments(
         self,
@@ -175,17 +156,17 @@ class SegmentLabeler:
             transition_type=seg.transition_type,
         )
         
-        # Call Gemini with retries
+        # Call the VLM backend with retries
         try:
-            result = self._call_gemini_with_retry(keyframe, prompt)
+            result = self._call_vlm_with_retry(keyframe, prompt)
         except Exception as e:
-            logger.warning(f"Gemini call exception for segment {seg.start_time}-{seg.end_time}: {e}, using default")
+            logger.warning(f"VLM call exception for segment {seg.start_time}-{seg.end_time}: {e}, using default")
             result = None
-        
+
         if result is None:
-            logger.warning(f"Gemini call failed for segment {seg.start_time}-{seg.end_time}, using default")
+            logger.warning(f"VLM call failed for segment {seg.start_time}-{seg.end_time}, using default")
             return self._default_label(seg)
-        
+
         return result
     
     def _extract_keyframe(self, video_path: str, seg: CandidateSegment) -> Optional[Image.Image]:
@@ -217,27 +198,46 @@ class SegmentLabeler:
         
         return pil_image
     
-    def _call_gemini_with_retry(self, image: Image.Image, prompt: str) -> Optional[dict]:
-        """Call Gemini with retry logic."""
-        
+    def _call_vlm_with_retry(self, image: Image.Image, prompt: str) -> Optional[dict]:
+        """Call the VLM backend with retry logic.
+
+        Output contract: strict JSON parse -> one repair re-prompt; failure
+        returns None and the caller falls back to the heuristic default label.
+        """
+
         for attempt in range(MAX_RETRIES):
             try:
-                response_text = generate_text(
-                    self._client, self._model_name,
-                    [prompt, pil_to_part(image)], temperature=0.1,
+                response_text = self._vlm.generate(
+                    VLMRequest(images=[image], prompt=prompt, temperature=0.1)
+                ).text
+                parsed = parse_json_strict(
+                    response_text,
+                    repair_fn=lambda rp: self._vlm.generate(
+                        VLMRequest(
+                            images=[image], prompt=rp,
+                            max_new_tokens=128, temperature=0.1,
+                        )
+                    ).text,
+                    expect="JSON object",
                 )
-                return self._parse_response(response_text)
-            
+                if parsed is None:
+                    return None
+                return self._validate_label_dict(parsed)
+
+            except RuntimeError:
+                # Fatal backend errors (auth, missing weights) propagate
+                # immediately — never retried.
+                raise
             except Exception as e:
                 err = str(e).lower()
-                
+
                 # Fatal or network unreachable errors
-                if any(k in err for k in ["404", "not found", "no longer available", 
+                if any(k in err for k in ["404", "not found", "no longer available",
                                           "invalid model", "api key not valid", "permission denied",
                                           "dns", "could not contact dns", "address lookup failed"]):
                     logger.error(f"[FATAL/NETWORK UNREACHABLE] {e}")
                     return None
-                
+
                 # Rate limit
                 if any(k in err for k in ["rate limit", "quota", "429", "resource exhausted"]):
                     wait = RETRY_DELAY * (attempt + 1)
@@ -246,46 +246,38 @@ class SegmentLabeler:
                 else:
                     print(f"[RETRY] {attempt+1}/{MAX_RETRIES}: {e}")
                     time.sleep(RETRY_DELAY)
-                
+
                 if attempt == MAX_RETRIES - 1:
                     print(f"[FAILED] Segment labeling failed after retries")
                     return None
-        
+
         return None
     
     def _parse_response(self, text: str) -> Optional[dict]:
-        """Parse Gemini response for action label and description."""
+        """Parse VLM response for action label and description (pure; no repair).
+
+        The live path (:meth:`_call_vlm_with_retry`) adds one repair re-prompt
+        before giving up.
+        """
         if not text:
             return None
-        
-        text = text.strip()
-        
-        # Try JSON parsing
-        try:
-            # Extract JSON from markdown if wrapped
-            m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-            if m:
-                text = m.group(1)
-            elif text.startswith("```"):
-                text = re.sub(r"^```(?:json)?\n", "", text)
-                text = re.sub(r"\n```$", "", text)
-            
-            data = json.loads(text.strip())
-            
-            action = data.get("action", "unlabeled").strip().lower()
-            desc = data.get("description", "").strip()
-            
-            # Validate action
-            valid_actions = {"approach", "contact", "grasp", "manipulate", "release", "retreat", "idle"}
-            if action not in valid_actions:
-                action = "unlabeled"
-            
-            return {"action": action, "description": desc}
-        
-        except json.JSONDecodeError:
-            pass
-        
-        return None
+        parsed = parse_json_strict(text, repair_fn=None)
+        if parsed is None or not isinstance(parsed, dict):
+            return None
+        return self._validate_label_dict(parsed)
+
+    @staticmethod
+    def _validate_label_dict(data: dict) -> dict:
+        """Validate a parsed label dict against the 7-category schema."""
+        action = str(data.get("action", "unlabeled")).strip().lower()
+        desc = str(data.get("description", "")).strip()
+
+        # Validate action
+        valid_actions = {"approach", "contact", "grasp", "manipulate", "release", "retreat", "idle"}
+        if action not in valid_actions:
+            action = "unlabeled"
+
+        return {"action": action, "description": desc}
     
     def _default_label(self, seg: CandidateSegment) -> dict:
         """Generate a default label based on signal properties."""
@@ -314,13 +306,16 @@ class SegmentLabeler:
         }
 
 
-def create_segment_labeler(config: Optional[SegmentLabelerConfig] = None) -> Optional[SegmentLabeler]:
+def create_segment_labeler(
+    config: Optional[SegmentLabelerConfig] = None,
+    vlm: Optional[VLMBackend] = None,
+) -> Optional[SegmentLabeler]:
     """Factory function with graceful degradation."""
     if config is None:
         config = SegmentLabelerConfig()
-    
+
     try:
-        return SegmentLabeler(config)
+        return SegmentLabeler(config, vlm=vlm)
     except Exception as e:
         logger.warning(f"Failed to create SegmentLabeler: {e}")
         return None

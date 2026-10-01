@@ -1,114 +1,126 @@
+"""Tests for the GeminiLanguageGenerator (Phase D: VLM backend injected as a fake)."""
 import os
-import unittest
-from unittest.mock import MagicMock, patch
 import sys
+from pathlib import Path
+from unittest.mock import patch
 
-# Add parent directory to path to allow import from src
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.datatypes import ActionSegment
 from src.language_generator import GeminiLanguageGenerator, LanguageGeneratorConfig
+from src.vlm_backend import VLMRequest, VLMResponse
 
 
-class TestGeminiLanguageGenerator(unittest.TestCase):
+class FakeVLMBackend:
+    """In-memory VLMBackend: canned text, records requests."""
 
-    def test_config_initialization(self):
-        """Test default LanguageGeneratorConfig values."""
-        config = LanguageGeneratorConfig()
-        self.assertEqual(config.gemini_model, "gemini-3.8-flash")
-        self.assertIn("overall task", config.episode_prompt)
-        self.assertIn("description", config.segment_prompt)
+    name = "fake"
 
-    def test_api_key_missing_raises_error(self):
-        """Test that ValueError is raised if GEMINI_API_KEY environment variable is missing."""
-        old_key = os.environ.pop("GEMINI_API_KEY", None)
-        try:
-            config = LanguageGeneratorConfig()
-            with self.assertRaises(ValueError) as context:
-                GeminiLanguageGenerator(config)
-            self.assertIn("GEMINI_API_KEY environment variable is not set", str(context.exception))
-        finally:
-            if old_key is not None:
-                os.environ["GEMINI_API_KEY"] = old_key
+    def __init__(self, text=""):
+        self._text = text
+        self.requests = []
 
-    @patch("src.language_generator.create_client")
-    @patch("src.language_generator.upload_video_file")
-    @patch("src.language_generator.generate_text")
-    def test_generate_episode_description_success(self, mock_generate_text, mock_upload_video, mock_create_client):
-        """Test generating episode description and word truncation to 50 words."""
-        os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
-        generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
-        
-        # Mock file upload
-        mock_file = MagicMock()
-        mock_file.name = "files/mock123"
-        mock_upload_video.return_value = mock_file
-        
-        # Mock model response with >50 words
-        long_response_text = "word " * 60
-        mock_generate_text.return_value = long_response_text
-        
-        result = generator.generate_episode_description("dummy_path.mp4")
-        
-        # Verify result is truncated to exactly 50 words
-        self.assertEqual(len(result.split()), 50)
-        self.assertEqual(result, " ".join(["word"] * 50))
+    def is_available(self):
+        return True
 
-    @patch("src.language_generator.create_client")
-    @patch("src.language_generator.upload_video_file")
-    @patch("src.language_generator.generate_text")
-    def test_generate_segment_descriptions_success(self, mock_generate_text, mock_upload_video, mock_create_client):
-        """Test segment descriptions parsing and formatting."""
-        os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
-        generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
-        
-        mock_file = MagicMock()
-        mock_file.name = "files/mock123"
-        mock_upload_video.return_value = mock_file
-        
-        # Mock VLM returning standard "Segment X: description" output
-        vlm_response = """
-        Segment 1: picking up a metal spoon
-        Segment 2: pouring hot water into a cup
-        """
-        mock_generate_text.return_value = vlm_response
-        
-        segments = [
-            ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left"),
-            ActionSegment(name="pour", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right")
-        ]
-        
-        results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0], "picking up a metal spoon")
-        self.assertEqual(results[1], "pouring hot water into a cup")
-
-    @patch("src.language_generator.create_client")
-    @patch("src.language_generator.upload_video_file")
-    @patch("src.language_generator.generate_text")
-    def test_generate_segment_descriptions_fallback(self, mock_generate_text, mock_upload_video, mock_create_client):
-        """Test fallback to '{name} the {object}' if segment parsing fails."""
-        os.environ["GEMINI_API_KEY"] = "mock-api-key-value"
-        generator = GeminiLanguageGenerator(LanguageGeneratorConfig())
-        
-        mock_file = MagicMock()
-        mock_file.name = "files/mock123"
-        mock_upload_video.return_value = mock_file
-        
-        # Mock VLM returning malformed/empty response
-        mock_generate_text.return_value = "invalid output format"
-        
-        segments = [
-            ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left", hands=["left"]),
-            ActionSegment(name="place_down", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right", hands=["right"])
-        ]
-        
-        results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
-        self.assertEqual(len(results), 2)
-        # Should fallback to formatted names
-        self.assertEqual(results[0], "pick_up spoon with left hand")
-        self.assertEqual(results[1], "place_down cup with right hand")
+    def generate(self, request):
+        self.requests.append(request)
+        return VLMResponse(text=self._text, backend="fake", latency_s=0.01)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _make_generator(text="", **cfg_kwargs):
+    return GeminiLanguageGenerator(LanguageGeneratorConfig(**cfg_kwargs),
+                                   vlm=FakeVLMBackend(text))
+
+
+# ---------------------------------------------------------------------------
+# Error contract (unchanged)
+# ---------------------------------------------------------------------------
+
+
+def test_api_key_missing_raises_error():
+    """Test that ValueError is raised if GEMINI_API_KEY environment variable is missing."""
+    with patch.dict(os.environ, {}, clear=True):
+        with patch.object(Path, "exists", return_value=False):
+            with pytest.raises(ValueError, match="GEMINI_API_KEY environment variable is not set"):
+                GeminiLanguageGenerator(LanguageGeneratorConfig())
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+def test_config_initialization():
+    config = LanguageGeneratorConfig()
+    assert config.gemini_model == "gemini-3.8-flash"
+    assert "overall task" in config.episode_prompt
+    assert "description" in config.segment_prompt
+
+
+# ---------------------------------------------------------------------------
+# Generation (fake backend)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_episode_description_success():
+    """Test generating episode description and word truncation to 50 words."""
+    long_response_text = "word " * 60
+    fake = FakeVLMBackend(long_response_text)
+    generator = GeminiLanguageGenerator(LanguageGeneratorConfig(), vlm=fake)
+
+    result = generator.generate_episode_description("dummy_path.mp4")
+
+    assert len(result.split()) == 50
+    assert result == " ".join(["word"] * 50)
+    req = fake.requests[0]
+    assert isinstance(req, VLMRequest)
+    assert req.video_path == "dummy_path.mp4"
+    assert req.video_upload_timeout_s == 10.0
+
+
+def test_generate_segment_descriptions_success():
+    """Test segment descriptions parsing and formatting."""
+    vlm_response = """
+    Segment 1: picking up a metal spoon
+    Segment 2: pouring hot water into a cup
+    """
+    generator = _make_generator(vlm_response)
+
+    segments = [
+        ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left"),
+        ActionSegment(name="pour", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right")
+    ]
+
+    results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
+    assert len(results) == 2
+    assert results[0] == "picking up a metal spoon"
+    assert results[1] == "pouring hot water into a cup"
+
+
+def test_generate_segment_descriptions_fallback():
+    """Test fallback to '{name} the {object}' if segment parsing fails."""
+    generator = _make_generator("invalid output format")
+
+    segments = [
+        ActionSegment(name="pick_up", start_time=2.5, end_time=5.0, object_name="spoon", hand_used="left", hands=["left"]),
+        ActionSegment(name="place_down", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right", hands=["right"])
+    ]
+
+    results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
+    assert len(results) == 2
+    assert results[0] == "pick_up spoon with left hand"
+    assert results[1] == "place_down cup with right hand"
+
+
+def test_generate_episode_description_failure_returns_fallback():
+    """Backend failure -> the 'manipulating object' fallback."""
+    class Boom(FakeVLMBackend):
+        def generate(self, request):
+            raise RuntimeError("boom")
+
+    generator = GeminiLanguageGenerator(LanguageGeneratorConfig(), vlm=Boom(""))
+    result = generator.generate_episode_description("dummy_path.mp4")
+    assert result == "manipulating object"

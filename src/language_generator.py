@@ -1,22 +1,20 @@
-"""Natural language instruction generation using Gemini Vision API."""
-import os
+"""Natural language instruction generation using a VLM backend (Phase D dual backend)."""
 import time
 import re
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
 
-try:
-    from .gemini_client import (
-        GEMINI_AVAILABLE,
-        create_client,
-        resolve_model_name,
-        generate_text,
-        upload_video_file,
-        delete_remote_file,
-    )
-except ImportError:
-    GEMINI_AVAILABLE = False
+# Phase D: VLM dual backend (gemini default, local SmolVLM opt-in).
+from .vlm_backend import (
+    VLMBackend,
+    VLMRequest,
+    ensure_api_key_from_dotenv,
+    resolve_stage_backend,
+)
+
+# Legacy behavior: pick up GEMINI_API_KEY from .env at import time.
+ensure_api_key_from_dotenv()
 
 from .datatypes import ActionSegment
 
@@ -30,6 +28,11 @@ VIDEO_UPLOAD_TIMEOUT = 30
 class LanguageGeneratorConfig:
     """Configuration for the GeminiLanguageGenerator."""
     gemini_model: str = "gemini-3.8-flash"
+    # Phase D: VLM backend for this stage ("gemini" | "local" | None).
+    # None -> the pipeline's global `vlm.backend` (default "gemini"; the
+    # video stages keep the gemini default because they rely on native
+    # video understanding).
+    vlm_backend: Optional[str] = None
     episode_prompt: str = (
         "Summarize the overall task performed in this egocentric video in one concise sentence (e.g. 'cooking pasta' or 'assembling a table')."
     )
@@ -38,41 +41,20 @@ class LanguageGeneratorConfig:
     )
 
 
-# Auto-load GEMINI_API_KEY from .env at module import if not already in environment
-if not os.environ.get("GEMINI_API_KEY"):
-    for env_path in [Path(__file__).resolve().parent.parent / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
-        if env_path.exists():
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("GEMINI_API_KEY="):
-                        val = line.split("=", 1)[1].strip("'\"")
-                        if val:
-                            os.environ["GEMINI_API_KEY"] = val
-                            break
-            if os.environ.get("GEMINI_API_KEY"):
-                break
-
-
 class GeminiLanguageGenerator:
     """Generates natural language descriptions."""
     
-    def __init__(self, config: LanguageGeneratorConfig):
+    def __init__(self, config: LanguageGeneratorConfig, vlm: Optional[VLMBackend] = None):
         self.config = config
         self.model = None
-        self._init_model()
-    
-    def _init_model(self):
-        if not GEMINI_AVAILABLE:
-            raise RuntimeError("google-genai not installed.")
-        
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use GeminiLanguageGenerator.")
-        
-        self._client = create_client(api_key)
-        self._model_name = resolve_model_name(self.config.gemini_model)
-        print(f"[LanguageGenerator] Using {self._model_name}")
+        # Phase D: VLM backend. Injected by the pipeline, or resolved here
+        # (strict — raises with the legacy messages when unavailable).
+        self._vlm: VLMBackend = (
+            vlm
+            if vlm is not None
+            else resolve_stage_backend(config.vlm_backend, config.gemini_model)
+        )
+        print(f"[LanguageGenerator] Using VLM backend: {self._vlm.name}")
     
     def generate_episode_description(self, video_path: str) -> str:
         """Generate one-sentence task description. Fast fallback on failure."""
@@ -90,7 +72,7 @@ class GeminiLanguageGenerator:
                     result = " ".join(words[:50])
                 return result
         except Exception as e:
-            print(f"[LanguageGenerator] Gemini call failed ({e}), using default task description")
+            print(f"[LanguageGenerator] VLM call failed ({e}), using default task description")
         
         return "manipulating object"
     
@@ -120,7 +102,7 @@ class GeminiLanguageGenerator:
                         desc = match.group(2).strip()
                         descriptions_map[seg_num] = desc
         except Exception as e:
-            print(f"[LanguageGenerator] Gemini call failed for segment descriptions ({e}), using default fallback")
+            print(f"[LanguageGenerator] VLM call failed for segment descriptions ({e}), using default fallback")
         
         # Build final descriptions list, falling back to build_instruction
         descriptions = []
@@ -138,17 +120,23 @@ class GeminiLanguageGenerator:
     def _call_with_video(self, video_path: Path, prompt: str) -> Optional[str]:
         for attempt in range(MAX_RETRIES):
             try:
-                video_file = upload_video_file(self._client, str(video_path), timeout_s=10.0)
-
-                if video_file is None:
-                    return None
-
-                response_text = generate_text(self._client, self._model_name, [video_file, prompt], temperature=0.1)
-
-                delete_remote_file(self._client, video_file.name)
+                # Phase D: the backend owns video handling — Gemini uploads the
+                # file natively, the local backend samples timestamped stills.
+                response_text = self._vlm.generate(
+                    VLMRequest(
+                        video_path=str(video_path),
+                        prompt=prompt,
+                        temperature=0.1,
+                        video_upload_timeout_s=10.0,
+                    )
+                ).text
 
                 return response_text if response_text else None
-            
+
+            except RuntimeError:
+                # Fatal backend errors (auth, missing weights, upload failure)
+                # propagate immediately — never retried.
+                raise
             except Exception as e:
                 err = str(e).lower()
                 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -41,6 +42,7 @@ from .retargeting import (
 from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler, build_instruction
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
 from .video_processor import VideoProcessor
+from .vlm_backend import VLMBackend, VLMBackendConfig, create_vlm_backend
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,22 @@ class EgoAnnotatePipeline:
         # Support "object_detection" (new) or "object_detector" (old)
         od_cfg = self.config.get("object_detection") or self.config.get("object_detector") or {}
         gemini_cfg = self.config.get("gemini") or {}
+        # Phase D: VLM dual backend. Global default from `vlm:`; each stage may
+        # override with its own `vlm_backend` key ("gemini" | "local").
+        vlm_raw = self.config.get("vlm") or {}
+        self.vlm_config = VLMBackendConfig(
+            backend=str(vlm_raw.get("backend", "gemini")),
+            gemini_model=str(gemini_cfg.get("model", "gemini-3.8-flash")),
+            gemini_api_key=vlm_raw.get("gemini_api_key") or gemini_cfg.get("api_key"),
+            local_model=str(vlm_raw.get("local_model", "HuggingFaceTB/SmolVLM-500M-Instruct")),
+            local_weights=str(vlm_raw.get("local_weights", "models/smolvlm-500m-instruct")),
+            device=str(vlm_raw.get("device", "cpu")),
+            max_new_tokens=int(vlm_raw.get("max_new_tokens", 256)),
+            temperature=float(vlm_raw.get("temperature", 0.1)),
+            video_frames=int(vlm_raw.get("video_frames", 8)),
+            timeout_s=float(vlm_raw.get("timeout_s", 300)),
+            on_unavailable=str(vlm_raw.get("on_unavailable", "degrade")),
+        )
         # Grounding DINO config
         gd_cfg = self.config.get("grounding_dino") or {}
         od_prompt = od_cfg.get(
@@ -129,7 +147,11 @@ class EgoAnnotatePipeline:
             grounding_dino_box_threshold=float(gd_cfg.get("box_threshold", 0.3)),
             grounding_dino_text_threshold=float(gd_cfg.get("text_threshold", 0.25)),
         )
-        self.object_detector = GeminiObjectDetector(od_config, detector_2d=self.detector_2d)
+        self.object_detector = GeminiObjectDetector(
+            od_config,
+            detector_2d=self.detector_2d,
+            vlm=self._vlm_for_stage(od_cfg, required=True),
+        )
 
         # 3b. Phase C optional perception: SAM 2 masks, metric depth, PnP.
         # All three degrade gracefully (warn-and-continue) when unavailable.
@@ -200,7 +222,9 @@ class EgoAnnotatePipeline:
         sl_config = SegmentLabelerConfig(
             gemini_model=gemini_cfg.get("model", sl_cfg.get("gemini_model", "gemini-1.5-flash")),
         )
-        self.segment_labeler = create_segment_labeler(sl_config)
+        self.segment_labeler = create_segment_labeler(
+            sl_config, vlm=self._vlm_for_stage(sl_cfg, required=False)
+        )
 
         # 9. GeminiLanguageGenerator
         # Support "language_annotation" (new) or "language_generator" (old)
@@ -210,7 +234,9 @@ class EgoAnnotatePipeline:
             episode_prompt=lg_cfg.get("episode_prompt", LanguageGeneratorConfig.episode_prompt),
             segment_prompt=lg_cfg.get("segment_prompt", LanguageGeneratorConfig.segment_prompt),
         )
-        self.language_generator = GeminiLanguageGenerator(lg_config)
+        self.language_generator = GeminiLanguageGenerator(
+            lg_config, vlm=self._vlm_for_stage(lg_cfg, required=True)
+        )
 
         # 9. DatasetExporter
         # Support "output" (new) or "exporter" (old)
@@ -275,6 +301,8 @@ class EgoAnnotatePipeline:
         print("  7. GeminiActionSegmenter")
         print("  8. GeminiLanguageGenerator")
         print("  9. DatasetExporter")
+        # Phase D: show which VLM backend each stage actually got.
+        print(f"  V. VLM backend (global default): {self.vlm_config.backend}")
         if self.enable_retargeting:
             print(" 10. Retargeter (Human-to-Robot Kinematic Retargeting)")
         # Phase C optional perception (None/degraded backends are skipped silently here;
@@ -288,6 +316,37 @@ class EgoAnnotatePipeline:
         if self.pnp_enabled and self.intrinsics is not None:
             print("  P. PnP hand-pose refinement: enabled")
         print("=" * 50 + "\n")
+
+    def _vlm_for_stage(self, stage_cfg: dict, required: bool) -> Optional[VLMBackend]:
+        """Resolve the VLM backend for one pipeline stage (Phase D).
+
+        A per-stage ``vlm_backend`` key overrides the global ``vlm.backend``.
+        Returns ``None`` when unavailable (stages with their own fallbacks
+        degrade); raises for required stages so the pipeline fails loud at
+        startup, exactly like the old stage constructors did.
+        """
+        override = stage_cfg.get("vlm_backend") if isinstance(stage_cfg, dict) else None
+        cfg = replace(self.vlm_config, backend=str(override)) if override else self.vlm_config
+        backend = create_vlm_backend(cfg)
+        if backend is None and required:
+            hint = (
+                "download the SmolVLM weights manually from "
+                "https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct"
+                if cfg.backend == "local"
+                else "install google-genai and set GEMINI_API_KEY"
+            )
+            raise RuntimeError(
+                f"No VLM backend available for stage (vlm.backend={cfg.backend!r}). {hint}."
+            )
+        if backend is None:
+            logger.warning(
+                "[pipeline] No VLM backend available (vlm.backend=%r); "
+                "stage will use its degraded fallback.",
+                cfg.backend,
+            )
+        else:
+            logger.debug("[pipeline] Stage VLM backend: %s", backend.name)
+        return backend
 
     def process_video(self, video_path: str, episode_id: Optional[str] = None) -> AnnotatedEpisode:
         """Process a single video through all pipeline stages, exporting and saving telemetry HUD video.
