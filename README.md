@@ -263,6 +263,46 @@ Expect tens of seconds per call on the 2017 Intel CPU — `local` is the
 offline/dev backend; `gemini` stays the production default. `vlm.timeout_s`
 (default 300) fails loud instead of hanging.
 
+## Phase E: Physics-verified Episode 1 (mink IK, weld grasp, gated verifier)
+
+Phase E makes one episode *dynamically proven* instead of just kinematically
+plausible. The old `scripts/physics_replay.py` relied on friction to lift
+(measured 0.017 m < 0.02 m — friction luck, not a grasp). Phase E replaces
+that with weld grasps and a gate that only sets a label, never drops data.
+
+| Piece | What it is |
+|---|---|
+| `src/retargeting/mink_ik.py` | `MinkIKSolver` — opt-in IK backend behind the `IKSolver` interface (`solve_sequence` / `print_summary` / context manager). Wraps the `mink` library (differential IK, Apache-2.0). QP solver fallback chain: configured → `daqp` → library default; degrades to unavailable instead of raising. |
+| `src/retargeting/weld_grasp.py` | Pure-numpy grasp-window detection (`find_grasp_windows`): reachable + gripper closed + EE near object, min 6 contiguous frames. |
+| `src/retargeting/episode_verifier.py` | `EpisodeVerifier` — library version of the `physics_replay.py` protocol: M1 tracking gate (strict `< 0.15` rad), then per-window weld trials (object welded to the EE via a MuJoCo equality, lift + slip measured). `passed` = AND of all checks. |
+| `scripts/hero_clip.py` | Side-by-side H.264 hero clip (human video \| MuJoCo weld replay + HUD). **Refuses (exit 2)** unless the report passed. Renderer chain: `mujoco.renderer` → PyBullet → 2D skeleton. |
+| Stage 9b (pipeline) | After export, replays the HDF5 in MuJoCo and writes `physics_verification.json` + sets `episode.physics_verified`. On failure the episode is **kept** — only the label is withheld. |
+
+Config (`configs/default.yaml`, `retargeting:` section; `configs/retargeting_franka.yaml`):
+
+```yaml
+retargeting:
+  # ik_backend: "pybullet" (default) | "mink"   (in retargeting_franka.yaml, under robot:)
+  physics_verify:
+    enable: false              # opt-in; default off
+    tracking_err_rad_max: 0.15
+    lift_min_m: 0.02
+    grasp_proximity_m: 0.09
+    min_reachable_pct: 50.0
+```
+
+```bash
+pip install mujoco mink        # no weight downloads; the URDF is enough
+python scripts/hero_clip.py --hdf5 <episode_rlds.hdf5> \
+    --report <physics_verification.json> --video <source.mp4> \
+    --urdf <robot.urdf> --out hero_clip.mp4
+```
+
+Notes: MuJoCo parses the URDF directly (`MjModel.from_xml_path`); its URDF
+importer discards `<limit effort/velocity>`, so the verifier sets actuator
+gains explicitly (same KP/KV as `physics_replay.py`). `scripts/physics_replay.py`
+is untouched as the reference CLI.
+
 ## Compatibility Guide
 
 | Downstream Target | Recommended Export Format | Contents |

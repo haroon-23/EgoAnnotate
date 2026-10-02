@@ -3,6 +3,7 @@ Branch: build/product-v1 | Authoritative artifact: data/output/reference_v2 | Ti
 VERIFIED: trajectory downsampled 1.93x to 1409 frames (max speed 1.5 rad/s); reachable 1044/1409 (74.1%);
 tracking loss 27.5%; sanitizer + pre-export assertion enforce limits/velocity at export;
 147 tests pass; visualizer ROI blending 42.4 FPS; GDINO keyframe cache live.
+PHASE E (built, not yet run on hardware): mink opt-in IK backend (retargeting.ik_backend; QP fallback quadprog->daqp->default), weld-grasp semantics (src/retargeting/weld_grasp.py), gated EpisodeVerifier (M1 tracking gate + per-window weld trials; Stage 9b sets physics_verified label, never drops episodes), scripts/hero_clip.py (refuses unless report passed). Tier stays STRESS_APPENDIX until a Mac run with mujoco installed produces the first physics-verified episode.
 PHASE C COMPLETE (v1.2-phaseC): Config-driven retargeting adapter registry (src/retargeting/embodiment_registry.py) and multi-embodiment retargeter (scripts/retarget_multi.py) supporting Franka arm, Unitree H1 upper-body humanoid, Unitree G1 upper-body humanoid, and Allegro 4-finger dexterous hand.
 MULTI-EMBODIMENT MANIFEST (reference_v2, 1409 frames):
   - franka_arm: 1044/1409 reachable, mean FK residual 0.434m (nq=9, arm)

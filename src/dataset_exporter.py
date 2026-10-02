@@ -185,9 +185,55 @@ class DatasetExporter:
             "num_frames": episode.num_frames,
             "duration_seconds": episode.duration_seconds,
             "target_robot": episode.target_robot,
+            "physics_verified": bool(episode.physics_verified),
+            "physics_report_path": episode.physics_report_path,
         }
         with open(episode_dir / "metadata.json", "w") as f:
             json.dump(meta, f, indent=2)
+
+    def persist_physics_verification(
+        self, episode: AnnotatedEpisode, episode_dir: Path
+    ) -> None:
+        """Persist Stage-9b physics-verification labels set after export.
+
+        The verifier runs after :meth:`export_episode` (the HDF5 must exist
+        first), so its labels are written back into ``metadata.json`` and the
+        RLDS HDF5 root attributes here. Never raises — a persistence failure
+        is logged loudly but must not lose the episode or its report.
+        """
+        episode_dir = Path(episode_dir)
+        meta_path = episode_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception as exc:
+                logger.warning(
+                    "[Exporter] Could not re-read metadata.json (%s); "
+                    "physics labels kept in memory only.", exc)
+                meta = None
+            if meta is not None:
+                meta["physics_verified"] = bool(episode.physics_verified)
+                meta["physics_report_path"] = episode.physics_report_path
+                meta_path.write_text(json.dumps(meta, indent=2))
+        try:
+            import h5py
+        except ImportError:
+            logger.warning(
+                "[Exporter] h5py missing; physics labels not written to HDF5.")
+            return
+        rlds_path = episode_dir / "episode_rlds.hdf5"
+        if not rlds_path.exists():
+            logger.warning(
+                "[Exporter] %s missing; physics labels not written to HDF5.",
+                rlds_path.name)
+            return
+        try:
+            with h5py.File(str(rlds_path), "r+") as hf:
+                hf.attrs["physics_verified"] = bool(episode.physics_verified)
+                if episode.physics_report_path:
+                    hf.attrs["physics_report_path"] = str(episode.physics_report_path)
+        except Exception as exc:  # noqa: BLE001 - persistence must not kill the pipeline
+            logger.warning("[Exporter] Could not write physics attrs to HDF5 (%s).", exc)
 
     def _export_segments(self, episode: AnnotatedEpisode, episode_dir: Path) -> None:
         """Export temporal action segments list."""

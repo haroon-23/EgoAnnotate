@@ -544,6 +544,9 @@ class AnnotatedEpisode:
         num_frames: Total number of annotated frames.
         duration_seconds: Video duration in seconds.
         target_robot: Target embodiment for action retargeting.
+        physics_verified: True iff the Phase-E physics verifier passed every
+            check for this episode (Stage 9b gate; default False).
+        physics_report_path: Path to physics_verification.json when set.
     """
 
     episode_id: str
@@ -554,6 +557,8 @@ class AnnotatedEpisode:
     num_frames: int
     duration_seconds: float
     target_robot: str = "humanoid_generic"
+    physics_verified: bool = False
+    physics_report_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -566,6 +571,8 @@ class AnnotatedEpisode:
             "num_frames": self.num_frames,
             "duration_seconds": self.duration_seconds,
             "target_robot": self.target_robot,
+            "physics_verified": bool(self.physics_verified),
+            "physics_report_path": self.physics_report_path,
         }
 
     @classmethod
@@ -584,6 +591,8 @@ class AnnotatedEpisode:
             num_frames=int(data["num_frames"]),
             duration_seconds=float(data["duration_seconds"]),
             target_robot=str(data.get("target_robot", "humanoid_generic")),
+            physics_verified=bool(data.get("physics_verified", False)),
+            physics_report_path=data.get("physics_report_path"),
         )
 
     def save_json(self, path: str | Path) -> None:

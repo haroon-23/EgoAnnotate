@@ -15,6 +15,15 @@ IMPORTANT MODELING CAVEATS — read before using outputs:
 from .urdf_loader import URDFLoader, RobotKinematics
 from .pose_mapper import PoseMapper, PoseMapperConfig, TargetPose
 from .ik_solver import IKSolver, IKSolverConfig, IKResult
+from .mink_ik import MinkIKSolver, MinkIKConfig
+from .weld_grasp import WeldGraspConfig, GraspWindow, find_grasp_windows
+from .episode_verifier import (
+    EpisodeVerifier,
+    VerifierConfig,
+    CheckResult,
+    VerificationReport,
+)
+from .retargeter import Retargeter, RetargetingConfig, RetargetingResult, create_ik_solver
 from .gripper_mapper import (
     GripperMapper,
     GripperMapperConfig,
@@ -23,7 +32,6 @@ from .gripper_mapper import (
     opening_from_finger_joint,
     finger_joint_from_opening,
 )
-from .retargeter import Retargeter, RetargetingConfig, RetargetingResult
 from .trajectory_smoother import TrajectorySmoother, TrajectorySmootherConfig
 from .metric_calibration import MetricCalibrator, MetricCalibrationConfig, MetricCalibrationResult
 
@@ -36,6 +44,16 @@ __all__ = [
     "IKSolver",
     "IKSolverConfig",
     "IKResult",
+    "MinkIKSolver",
+    "MinkIKConfig",
+    "WeldGraspConfig",
+    "GraspWindow",
+    "find_grasp_windows",
+    "EpisodeVerifier",
+    "VerifierConfig",
+    "CheckResult",
+    "VerificationReport",
+    "create_ik_solver",
     "GripperMapper",
     "GripperMapperConfig",
     "GripperCommand",

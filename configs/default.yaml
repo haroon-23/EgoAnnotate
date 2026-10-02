@@ -140,6 +140,17 @@ retargeting:
   enable: true
   config_path: "configs/retargeting_franka.yaml"
   save_proof_video: true
+  # Phase E: physics verification gate (Stage 9b; opt-in, default off).
+  # Replays the exported episode HDF5 in MuJoCo with weld-grasp trials and
+  # sets the physics_verified label (+ physics_verification.json). Episodes
+  # are NEVER dropped — a failed gate only withholds the label.
+  # Needs: pip install mujoco  (no weight downloads; the URDF is enough)
+  physics_verify:
+    enable: false
+    tracking_err_rad_max: 0.15  # M1 gate: mean max|q - q_cmd| over reachable frames
+    lift_min_m: 0.02            # per-window trial: minimum object lift
+    grasp_proximity_m: 0.09     # 2D EE-to-object distance required at grasp frame
+    min_reachable_pct: 50.0     # minimum % of kinematically reachable frames
 
 # LeRobot export (Phase A task 2). Two modes:
 #   human = 24D human motion (wrist pose + hand pose + gripper) — vision-language

@@ -36,8 +36,9 @@ from .retargeting import (
     Retargeter,
     RetargetingConfig,
     PoseMapper,
-    IKSolver,
     GripperMapper,
+    create_ik_solver,
+    MinkIKConfig,
 )
 from .segment_labeler import SegmentLabeler, SegmentLabelerConfig, create_segment_labeler, build_instruction
 from .signal_segmenter import SignalSegmenter, SignalSegmenterConfig
@@ -279,6 +280,8 @@ class EgoAnnotatePipeline:
                             "gripper_joint_names",
                             ["panda_finger_joint1", "panda_finger_joint2"],
                         ),
+                        ik_backend=ret_cfg.get("ik_backend", "pybullet"),
+                        mink_ik=MinkIKConfig(**(ret_cfg.get("mink_ik") or {})),
                     )
                 self.retargeter = Retargeter(r_config)
                 logger.info("Retargeting stage enabled.")
@@ -289,6 +292,47 @@ class EgoAnnotatePipeline:
                 )
                 self.enable_retargeting = False
                 self.retargeter = None
+
+        # 10b. Physics verification gate (Phase E, Stage 9b; opt-in, default off).
+        # Runs AFTER export: replays the exported HDF5 in MuJoCo with weld-grasp
+        # trials and sets the physics_verified label. Never drops episodes.
+        pv_cfg = ret_cfg.get("physics_verify") or {}
+        self.physics_verify_enabled = bool(pv_cfg.get("enable", False))
+        self.episode_verifier = None
+        if self.physics_verify_enabled:
+            if not self.enable_retargeting:
+                logger.warning(
+                    "[Pipeline] physics_verify enabled but retargeting is disabled — "
+                    "the exported HDF5 will lack robot fields and verification "
+                    "will fail loudly per episode."
+                )
+            try:
+                from .retargeting.episode_verifier import EpisodeVerifier, VerifierConfig
+                self.episode_verifier = EpisodeVerifier(
+                    VerifierConfig(
+                        tracking_err_rad_max=float(pv_cfg.get("tracking_err_rad_max", 0.15)),
+                        lift_min_m=float(pv_cfg.get("lift_min_m", 0.02)),
+                        grasp_proximity_m=float(pv_cfg.get("grasp_proximity_m", 0.09)),
+                        min_reachable_pct=float(pv_cfg.get("min_reachable_pct", 50.0)),
+                        urdf_path=(self.retargeter.config.urdf_path
+                                   if self.retargeter is not None else None),
+                        ee_link_name=(self.retargeter.config.end_effector_link
+                                      if self.retargeter is not None else "panda_link8"),
+                    )
+                )
+                if not self.episode_verifier.is_available():
+                    logger.warning(
+                        "[Pipeline] physics_verify enabled but mujoco is not installed — "
+                        "verification will report failure (never a silent pass)."
+                    )
+                else:
+                    logger.info("[Pipeline] Physics verification gate enabled.")
+            except Exception as e:
+                logger.warning(
+                    "[Pipeline] Failed to initialize EpisodeVerifier (%s). "
+                    "Physics verification will be skipped.", e,
+                )
+                self.episode_verifier = None
 
         print("\n" + "=" * 50)
         print("EGO ANNOTATE initialized with stages:")
@@ -542,7 +586,13 @@ class EgoAnnotatePipeline:
             target_robot_name = kin.robot_name
 
             target_poses = PoseMapper(self.retargeter.config.pose_mapper).map_frames(frames)
-            with IKSolver(kin, self.retargeter.config.ik_solver) as solver:
+            with create_ik_solver(
+                self.retargeter.config.ik_backend,
+                kin,
+                self.retargeter.config.end_effector_link,
+                self.retargeter.config.ik_solver,
+                self.retargeter.config.mink_ik,
+            ) as solver:
                 ik_results = solver.solve_sequence(target_poses)
             gripper_mapper = GripperMapper(kin, self.retargeter.config.gripper_mapper)
             gripper_commands = gripper_mapper.map_frames(frames)
@@ -593,6 +643,12 @@ class EgoAnnotatePipeline:
         # Stage 10: Export Episode
         self.dataset_exporter.export_episode(episode)
 
+        # Stage 9b: Physics verification gate (Phase E; opt-in, default off).
+        # Replays the exported HDF5 in MuJoCo with weld-grasp trials and sets
+        # the physics_verified label. On ANY failure the episode is KEPT —
+        # the verifier gates only the label, never the data.
+        self._maybe_verify_physics(episode)
+
         print("\n" + "=" * 50)
         print("EPISODE ANNOTATION COMPLETE")
         print("=" * 50)
@@ -605,6 +661,56 @@ class EgoAnnotatePipeline:
         print("=" * 50 + "\n")
 
         return episode
+
+    def _maybe_verify_physics(self, episode: AnnotatedEpisode) -> None:
+        """Stage 9b: physics-verification gate (Phase E).
+
+        Replays the exported ``episode_rlds.hdf5`` in MuJoCo with weld-grasp
+        trials and sets ``episode.physics_verified`` / ``physics_report_path``.
+        The verifier gates ONLY the label: on any failure or error the episode
+        is kept and the report is still written — data is never dropped.
+        """
+        if not self.physics_verify_enabled:
+            return
+        if self.episode_verifier is None:
+            logger.warning(
+                "[Pipeline] physics_verify enabled but the verifier failed to "
+                "initialize — episode %s kept, label withheld.", episode.episode_id)
+            return
+        out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
+        hdf5_path = out_ep_dir / "episode_rlds.hdf5"
+        try:
+            # Prefer the retargeter's RESOLVED URDF: config.urdf_path may be
+            # None when URDFLoader fell back to its bundled model.
+            urdf_path = None
+            if self.retargeter is not None:
+                try:
+                    urdf_path = self.retargeter.load_kinematics().urdf_path
+                except Exception as e:
+                    logger.warning("[Pipeline] Could not resolve retargeter URDF (%s).", e)
+                    urdf_path = self.retargeter.config.urdf_path
+            report = self.episode_verifier.verify_episode(
+                str(hdf5_path), episode.episode_id, urdf_path=urdf_path)
+            report_path = out_ep_dir / "physics_verification.json"
+            report.save_json(str(report_path))
+            episode.physics_verified = bool(report.passed)
+            episode.physics_report_path = str(report_path)
+            self.dataset_exporter.persist_physics_verification(episode, out_ep_dir)
+            if report.passed:
+                logger.info("[Pipeline] Physics verification PASSED for episode %s.",
+                            episode.episode_id)
+                print(f"[Pipeline] Physics verification PASSED ({episode.episode_id})")
+            else:
+                logger.warning(
+                    "[Pipeline] Physics verification FAILED for episode %s — "
+                    "episode kept, label withheld. Report: %s",
+                    episode.episode_id, report_path)
+                print(f"[Pipeline] Physics verification FAILED ({episode.episode_id}) — "
+                      f"episode kept, see {report_path}")
+        except Exception as e:  # noqa: BLE001 - the gate must never lose the episode
+            logger.warning(
+                "[Pipeline] Physics verification errored for episode %s (%s) — "
+                "episode kept, label withheld.", episode.episode_id, e)
 
     @staticmethod
     def _probe_frame_resolution(image_paths: List[str]) -> Optional[tuple]:

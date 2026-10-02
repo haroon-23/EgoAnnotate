@@ -30,6 +30,10 @@ robot:
     z_min: 0.20
     z_max: 0.65
 
+  # Phase E: IK backend selector — "pybullet" (default) or "mink" (opt-in;
+  # needs the mujoco + mink packages: pip install mujoco mink).
+  ik_backend: "pybullet"
+
 pose_mapper:
   preferred_hand: "right"    # "right" | "left" | "auto"
   z_floor_m: 0.10            # minimum EE height above base (prevents below-table targets)
@@ -45,6 +49,19 @@ ik_solver:
   residual_threshold_m: 0.005   # 5 mm — frame marked unreachable if exceeded
   joint_damping: 0.005
   num_attempts: 3               # random restarts per frame to escape local minima
+
+# Phase E: IK backend selector. "pybullet" (default) or "mink" (opt-in;
+# needs the mujoco + mink packages: pip install mujoco mink).
+# ik_backend lives under robot: so it stays with the other robot settings.
+mink_ik:
+  residual_threshold_m: 0.01    # 10 mm — frame marked unreachable if exceeded
+  # dt: 0.03333333333333333     # integration timestep per frame (default 1/30)
+  position_cost: 1.0
+  orientation_cost: 1.0         # 0.0 = position-only IK
+  lm_damping: 0.001
+  solver: "quadprog"            # tried first; falls back to "daqp", then default
+  use_posture_task: true
+  use_limit_tasks: true
 
 gripper_mapper:
   confidence_threshold: 0.6    # grasp_type used if confidence >= this, else continuous_distance

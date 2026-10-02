@@ -1,30 +1,58 @@
 """MuJoCo + mink: Physics-verified IK with joint limits enforced.
-Replaces PyBullet with proper velocity/limit constraints."""
-import mujoco
-import mink
+Replaces PyBullet with proper velocity/limit constraints.
+
+NOTE (Phase E): ``mujoco`` and ``mink`` are imported lazily so that importing
+this module never raises on machines without them (e.g. the CI sandbox).
+Constructing :class:`MuJoCoIKSolver` without them raises ImportError with
+install instructions. New code should prefer
+:mod:`src.retargeting.mink_ik` (``MinkIKSolver``), which implements the
+``IKSolver`` interface and plugs into the retargeter via
+``RetargetingConfig.ik_backend = "mink"``.
+"""
 import numpy as np
 from pathlib import Path
+
+
+def _require_mink():
+    """Import mujoco and mink lazily.
+
+    Raises:
+        ImportError: with install instructions when either is missing.
+    """
+    try:
+        import mujoco
+        import mink
+    except ImportError as exc:
+        raise ImportError(
+            f"MuJoCoIKSolver needs the mujoco and mink packages ({exc}). "
+            "Install with: pip install mujoco mink"
+        ) from exc
+    return mujoco, mink
+
 
 class MuJoCoIKSolver:
     def __init__(self, urdf_path: str, ee_link_name: str = "panda_hand"):
         """
         Initialize MuJoCo model and mink IK solver.
-        
+
         Args:
             urdf_path: Path to robot URDF
             ee_link_name: End-effector link name
         """
+        mujoco, mink = _require_mink()
+        self._mujoco = mujoco
+        self._mink = mink
         # Load MuJoCo model
-        self.model = mujoco.MjModel.from_xml_path(urdf_path)
-        self.data = mujoco.MjData(self.model)
+        self.model = self._mujoco.MjModel.from_xml_path(urdf_path)
+        self.data = self._mujoco.MjData(self.model)
         
         # Get end-effector body ID
-        self.ee_body_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, ee_link_name
+        self.ee_body_id = self._mujoco.mj_name2id(
+            self.model, self._mujoco.mjtObj.mjOBJ_BODY, ee_link_name
         )
         
         # Create mink IK task
-        self.ik_task = mink.FrameTask(
+        self.ik_task = self._mink.FrameTask(
             frame_name=ee_link_name,
             frame_type="body",
             position_cost=1.0,
@@ -39,7 +67,7 @@ class MuJoCoIKSolver:
         self.velocity_limits = np.array([2.17, 2.17, 2.17, 2.17, 2.61, 2.61, 2.61])
         
         # Configuration
-        self.configuration = mink.Configuration(self.model)
+        self.configuration = self._mink.Configuration(self.model)
         
     def _extract_joint_limits(self) -> np.ndarray:
         """Extract joint position limits from MuJoCo model."""
@@ -85,15 +113,15 @@ class MuJoCoIKSolver:
         quat_xyzw = [target_quat[1], target_quat[2], target_quat[3], target_quat[0]]
         rot_matrix = Rotation.from_quat(quat_xyzw).as_matrix()
 
-        target_pose = mink.SE3.from_rotation_and_translation(
-            mink.SO3.from_matrix(rot_matrix),
+        target_pose = self._mink.SE3.from_rotation_and_translation(
+            self._mink.SO3.from_matrix(rot_matrix),
             target_pos
         )
         
         # Solve IK with limits
         try:
             # Use mink's limit-aware solver
-            velocity = mink.solve_ik(
+            velocity = self._mink.solve_ik(
                 self.configuration,
                 [self.ik_task],
                 self.model.opt.timestep,

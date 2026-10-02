@@ -58,3 +58,13 @@ urdfpy>=0.0.22
 # the backend warns (does not fail) on other 4.x versions, and requires
 # trust_remote_code=True. LICENSE: NVIDIA non-commercial, research-only —
 # eval/research use, not the commercial default.
+
+# Optional — Phase E physics verification (mink IK backend + episode verifier).
+# Everything is import-guarded: `pip install -r requirements.txt` (base) works
+# without these, and the pipeline degrades gracefully (verifier reports
+# failure, never a silent pass; mink backend raises ImportError with help).
+# No weight downloads — the robot URDF is the only model file needed.
+# mujoco>=3.0                    # physics replay + weld-grasp trials + hero_clip renderer
+# mink>=0.1                      # differential IK backend (ik_backend: "mink"); pip-installable, Apache-2.0
+#   # Optional QP solvers for mink (fallback chain: configured -> daqp -> library default):
+#   # quadprog, daqp

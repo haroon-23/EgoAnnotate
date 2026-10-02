@@ -18,6 +18,7 @@ from ..datatypes import AnnotationFrame
 from .urdf_loader import URDFLoader, RobotKinematics
 from .pose_mapper import PoseMapper, PoseMapperConfig, TargetPose
 from .ik_solver import IKSolver, IKSolverConfig, IKResult
+from .mink_ik import MinkIKSolver, MinkIKConfig
 from .gripper_mapper import GripperMapper, GripperMapperConfig, GripperCommand
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ class RetargetingConfig:
         gripper_joint_names: List of prismatic finger joint names in URDF.
         pose_mapper: PoseMapper configuration.
         ik_solver: IKSolver configuration.
+        ik_backend: IK backend selector — "pybullet" (default) or "mink"
+            (opt-in; needs the mujoco + mink packages).
+        mink_ik: MinkIKConfig for the mink backend.
         gripper_mapper: GripperMapper configuration.
         output_dir: Directory for output files.
     """
@@ -43,6 +47,8 @@ class RetargetingConfig:
     gripper_joint_names: List[str] = field(default_factory=lambda: ["panda_finger_joint1", "panda_finger_joint2"])
     pose_mapper: PoseMapperConfig = field(default_factory=PoseMapperConfig)
     ik_solver: IKSolverConfig = field(default_factory=IKSolverConfig)
+    ik_backend: str = "pybullet"
+    mink_ik: MinkIKConfig = field(default_factory=MinkIKConfig)
     gripper_mapper: GripperMapperConfig = field(default_factory=GripperMapperConfig)
     output_dir: str = "data/output/retargeting"
 
@@ -85,6 +91,16 @@ class RetargetingConfig:
                 ik_kwargs[k] = ik_data[k]
         ik_solver = IKSolverConfig(**ik_kwargs)
 
+        mink_data = data.get("mink_ik", {})
+        mink_kwargs = {}
+        for k in (
+            "residual_threshold_m", "dt", "position_cost", "orientation_cost",
+            "lm_damping", "solver", "use_posture_task", "use_limit_tasks",
+        ):
+            if k in mink_data:
+                mink_kwargs[k] = mink_data[k]
+        mink_ik = MinkIKConfig(**mink_kwargs)
+
         gm_kwargs = {}
         for k in ("confidence_threshold", "hand_ref_size_m", "smoothing_alpha"):
             if k in gm_data:
@@ -100,9 +116,50 @@ class RetargetingConfig:
             ),
             pose_mapper=pose_mapper,
             ik_solver=ik_solver,
+            ik_backend=robot_cfg.get("ik_backend", "pybullet"),
+            mink_ik=mink_ik,
             gripper_mapper=gripper_mapper,
             output_dir=out_data.get("output_dir", "data/output/retargeting"),
         )
+
+
+def create_ik_solver(
+    backend: str,
+    kinematics: RobotKinematics,
+    ee_link_name: str = "panda_link8",
+    ik_config: Optional[IKSolverConfig] = None,
+    mink_config: Optional[MinkIKConfig] = None,
+):
+    """Create the IK solver for the selected backend.
+
+    Args:
+        backend: "pybullet" (default) or "mink" (opt-in).
+        kinematics: RobotKinematics from URDFLoader.
+        ee_link_name: End-effector link name (used by the mink backend).
+        ik_config: IKSolverConfig for the pybullet backend.
+        mink_config: MinkIKConfig for the mink backend.
+
+    Returns:
+        IKSolver or MinkIKSolver (both implement solve_sequence/print_summary
+        and the context-manager protocol).
+
+    Raises:
+        ValueError: unknown backend name.
+        ImportError: backend "mink" selected but the mink/mujoco stack is not
+            installed.
+    """
+    if backend == "pybullet":
+        return IKSolver(kinematics, ik_config)
+    if backend == "mink":
+        solver = MinkIKSolver(kinematics, ee_link_name=ee_link_name, config=mink_config)
+        if not solver.is_available():
+            raise ImportError(
+                "ik_backend='mink' selected but the mink/mujoco stack is not "
+                "installed. Install with: pip install mujoco mink "
+                "(or set ik_backend: 'pybullet')."
+            )
+        return solver
+    raise ValueError(f"Unknown ik_backend {backend!r}; expected 'pybullet' or 'mink'.")
 
 
 @dataclass
@@ -310,8 +367,15 @@ class Retargeter:
         target_poses = pose_mapper.map_frames(frames)
 
         # --- Task 3: IK Solver ----------------------------------------------
-        logger.info("Running IKSolver on %d target poses...", len(target_poses))
-        with IKSolver(kin, self.config.ik_solver) as solver:
+        logger.info("Running IKSolver (%s backend) on %d target poses...",
+                    self.config.ik_backend, len(target_poses))
+        with create_ik_solver(
+            self.config.ik_backend,
+            kin,
+            self.config.end_effector_link,
+            self.config.ik_solver,
+            self.config.mink_ik,
+        ) as solver:
             ik_results = solver.solve_sequence(target_poses)
 
         solver.print_summary(ik_results)
