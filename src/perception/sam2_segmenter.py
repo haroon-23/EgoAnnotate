@@ -118,12 +118,18 @@ class Sam2Segmenter:
             try:
                 import sam2
 
-                cfg_root = Path(sam2.__file__).parent / "configs"
+                pkg_root = Path(sam2.__file__).parent
+                cfg_root = pkg_root / "configs"
                 if cfg_root.is_dir():
                     stem = Path(cfg).stem
-                    matches = sorted(cfg_root.rglob(f"*{stem}*.yaml"))
+                    clean_stem = stem.replace("sam2.1_", "").replace("sam2_", "")
+                    matches = sorted(cfg_root.rglob(f"*{clean_stem}*.yaml"))
                     if matches:
-                        return str(matches[0])
+                        if "2.1" in str(self.config.checkpoint) or "2.1" in cfg:
+                            m21 = [m for m in matches if "sam2.1" in str(m)]
+                            if m21:
+                                return str(m21[0].relative_to(pkg_root))
+                        return str(matches[0].relative_to(pkg_root))
             except Exception:
                 pass
         return None

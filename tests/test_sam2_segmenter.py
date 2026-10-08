@@ -50,8 +50,9 @@ def fake_sam2(monkeypatch, tmp_path):
     return str(ckpt)
 
 
-def test_missing_package_is_unavailable_no_raise(tmp_path):
-    # sam2 is not installed in this sandbox.
+def test_missing_package_is_unavailable_no_raise(monkeypatch, tmp_path):
+    # Simulate missing sam2 package
+    monkeypatch.setattr(sam2_mod, "_SAM2_IMPORT_OK", False)
     seg = Sam2Segmenter(
         Sam2Config(enabled=True, checkpoint=str(tmp_path / "x.pt"))
     )

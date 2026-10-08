@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - SDK simply not installed
     GEMINI_AVAILABLE = False
 
 #: Current flash-tier model. 1.5-era names 404 as of 2026.
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 #: Model names from the google-generativeai era. All retired; remapped below.
 _LEGACY_MODEL_ALIASES = {
@@ -63,7 +63,7 @@ def resolve_model_name(name: Optional[str]) -> str:
     return name[7:] if name.startswith("models/") else name
 
 
-def create_client(api_key: Optional[str] = None, timeout_s: float = 30.0):
+def create_client(api_key: Optional[str] = None, timeout_s: float = 120.0):
     """Create a google-genai Client.
 
     Raises:

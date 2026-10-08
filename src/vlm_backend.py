@@ -178,7 +178,7 @@ class GeminiBackend:
     def _ensure_client(self):
         if self._client is None:
             key = self.config.gemini_api_key or os.environ.get("GEMINI_API_KEY")
-            self._client = create_client(key, timeout_s=30.0)
+            self._client = create_client(key, timeout_s=120.0)
         return self._client
 
     def generate(self, request: VLMRequest) -> VLMResponse:
