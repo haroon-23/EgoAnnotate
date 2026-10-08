@@ -178,6 +178,7 @@ class SceneInfo:
 
     mj: object  # the lazily imported mujoco module
     arm_q: np.ndarray  # qpos indices of the 7 arm joints
+    arm_dof: np.ndarray  # qvel/dof indices of the 7 arm joints
     fing_q: np.ndarray  # qpos indices of the 2 finger joints
     arm_ctrl: np.ndarray  # ctrl indices of the arm actuators
     fing_ctrl: np.ndarray  # ctrl indices of the finger actuators
@@ -227,11 +228,31 @@ def build_verification_scene(
         raise FileNotFoundError(f"Verifier URDF not found: {urdf_path}")
     cdir = Path(cache_dir) if cache_dir else Path(tempfile.gettempdir()) / "egoannotate_physics"
     cdir.mkdir(parents=True, exist_ok=True)
+    m0 = mj.MjModel.from_xml_path(str(urdf))
     cache = cdir / f"{urdf.stem}_verifier_cache.xml"
     if not cache.exists():
-        m0 = mj.MjModel.from_xml_path(str(urdf))
         mj.mj_saveLastXML(str(cache), m0)
     txt = cache.read_text()
+
+    body_names = []
+    if hasattr(mj, "mj_id2name") and hasattr(mj, "mjtObj"):
+        try:
+            body_names = [mj.mj_id2name(m0, mj.mjtObj.mjOBJ_BODY, i) for i in range(getattr(m0, "nbody", 0))]
+        except Exception:
+            pass
+    elif hasattr(m0, "body"):
+        try:
+            body_names = [m0.body(i).name for i in range(getattr(m0, "nbody", 0))]
+        except Exception:
+            pass
+    body_names = [b for b in body_names if b]
+
+    if ee_link_name not in body_names and body_names:
+        for fb in list(_EE_FALLBACKS) + ["panda_link7", "panda_hand", "link7", "hand", "ee_link"]:
+            if fb in body_names:
+                logger.warning("Verifier: EE body %r not found; using fallback %r", ee_link_name, fb)
+                ee_link_name = fb
+                break
 
     names = re.findall(r'joint name="([^"]+)"', txt)
     arm = [j for j in names if "finger" not in j][:7]
@@ -264,7 +285,7 @@ def build_verification_scene(
     txt = re.sub(r"<equality>.*?</equality>", "", txt, flags=re.S)
     txt = re.sub(
         r"<mujoco[^>]*>",
-        lambda m: m.group(0) + f'\n  <option timestep="{_VERIFIER_TIMESTEP}"/>',
+        lambda m: m.group(0) + f'\n  <option timestep="{_VERIFIER_TIMESTEP}"/>\n  <compiler meshdir="{urdf.parent.resolve()}"/>',
         txt,
         count=1,
     )
@@ -281,6 +302,7 @@ def build_verification_scene(
 
     J, B, E, A = mj.mjtObj.mjOBJ_JOINT, mj.mjtObj.mjOBJ_BODY, mj.mjtObj.mjOBJ_EQUALITY, mj.mjtObj.mjOBJ_ACTUATOR
     arm_q = np.array([model.jnt_qposadr[mj.mj_name2id(model, J, j)] for j in arm], dtype=int)
+    arm_dof = np.array([model.jnt_dofadr[mj.mj_name2id(model, J, j)] for j in arm], dtype=int)
     fing_q = np.array([model.jnt_qposadr[mj.mj_name2id(model, J, j)] for j in fing], dtype=int)
     arm_ctrl = np.array(
         [mj.mj_name2id(model, A, f"ver_q{i+1}") for i in range(len(arm))], dtype=int
@@ -313,6 +335,7 @@ def build_verification_scene(
     info = SceneInfo(
         mj=mj,
         arm_q=arm_q,
+        arm_dof=arm_dof,
         fing_q=fing_q,
         arm_ctrl=arm_ctrl,
         fing_ctrl=fing_ctrl,
@@ -415,7 +438,7 @@ class EpisodeVerifier:
             keys = list(f.keys())
             if not keys:
                 raise ValueError(f"Episode HDF5 has no episode groups: {hdf5_path}")
-            ep = episode_id if episode_id in f else keys[0]
+            ep = episode_id if (episode_id is not None and episode_id in f) else keys[0]
             if episode_id is not None and episode_id not in f:
                 raise KeyError(
                     f"episode {episode_id!r} not found in {hdf5_path}; have {keys}"
@@ -512,17 +535,27 @@ class EpisodeVerifier:
         last_ee = np.array(data.xpos[info.ee_body_id], dtype=float)
         coll_frames = 0
         n_reach = 0
+        prev_reachable = False
         for i in range(n):
             if not r[i]:
                 ee_positions[i] = last_ee
+                prev_reachable = False
                 continue
             n_reach += 1
+            if not prev_reachable:
+                # Start of a reachable segment: place the sim exactly at the
+                # commanded pose (zero velocity) so M1 measures in-segment
+                # tracking quality, not teleportation across unreachable gaps.
+                data.qpos[info.arm_q] = q[i]
+                data.qvel[info.arm_dof] = 0.0
+                mj.mj_forward(model, data)
             replay_frame(mj, model, data, info, q[i], float(g[i]))
             errs.append(float(np.max(np.abs(data.qpos[info.arm_q] - q[i]))))
             last_ee = np.array(data.xpos[info.ee_body_id], dtype=float)
             ee_positions[i] = last_ee
             if frame_has_self_collision(model, data, robot_body_ids):
                 coll_frames += 1
+            prev_reachable = True
         track = float(np.mean(errs)) if errs else 9.9
         logger.info("[Verifier] M1 tracking err = %.4f rad over %d reachable frames", track, n_reach)
 

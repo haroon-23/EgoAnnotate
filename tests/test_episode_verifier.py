@@ -53,12 +53,14 @@ def _make_fake_mujoco():
     class FakeModel:
         def __init__(self):
             self.nq = 16
+            self.nv = 15
             self.nu = 9
             self.njnt = 10
             self.nbody = 13
             self.neq = 1
             self.jnt_type = np.array([1] * 9 + [0])  # [9] is FREE
             self.jnt_qposadr = np.arange(10)
+            self.jnt_dofadr = np.arange(10)
             self.opt = types.SimpleNamespace(timestep=0.00416667)
             self.eq_data = np.zeros((1, 7))
             self.geom_bodyid = np.zeros(30, dtype=int)
@@ -82,6 +84,7 @@ def _make_fake_mujoco():
         def __init__(self, model):
             self._model = model
             self.qpos = np.zeros(model.nq)
+            self.qvel = np.zeros(model.nv)
             self.ctrl = np.zeros(model.nu)
             self.xpos = np.zeros((model.nbody, 3))
             self.xquat = np.zeros((model.nbody, 4))
@@ -105,6 +108,7 @@ def _make_fake_mujoco():
 
     def mj_resetData(model, data):
         data.qpos[:] = 0.0
+        data.qvel[:] = 0.0
         data.ctrl[:] = 0.0
         data.eq_active[:] = 0
         data._weld_was_active = False

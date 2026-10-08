@@ -597,16 +597,37 @@ class EgoAnnotatePipeline:
             gripper_mapper = GripperMapper(kin, self.retargeter.config.gripper_mapper)
             gripper_commands = gripper_mapper.map_frames(frames)
 
+            # Post-processing gates — the SAME shared function
+            # Retargeter.run_from_annotations uses (R3 source gate, R4 velocity
+            # feasibility, self-collision gate). A past real-verification
+            # failure came from this stage inlining retargeting without them.
+            from .retargeting.retargeter import apply_retargeting_gates
+            import numpy as np
+            joint_traj = np.stack([r.joint_angles for r in ik_results], axis=0)
+            vel_limits = getattr(kin, "joint_velocity_limits", None)
+            gates = apply_retargeting_gates(
+                ik_results,
+                target_poses,
+                gripper_commands,
+                joint_traj,
+                dt=1.0 / 30.0,
+                vel_limits=vel_limits,
+            )
+            reachability = gates["reachability"]
+            gripper_traj = gates["gripper_trajectory"]
+
             for i, f in enumerate(frames):
                 f.robot_joint_angles = ik_results[i].joint_angles.tolist()
-                f.robot_gripper_opening_m = float(gripper_commands[i].opening_m)
+                f.robot_gripper_opening_m = float(gripper_traj[i])
                 f.robot_gripper_method = gripper_commands[i].gripper_mapping_method
-                f.robot_reachable = ik_results[i].reachable
+                f.robot_reachable = bool(reachability[i])
 
-            n_reach = sum(1 for r in ik_results if r.reachable)
+            n_reach = int(reachability.sum())
             print(
                 f"[Pipeline] Retargeting complete ({target_robot_name}): "
                 f"{n_reach}/{len(frames)} frames reachable ({100.0 * n_reach / max(len(frames), 1):.1f}%)"
+                f" — {gates['n_velocity_infeasible']} velocity-gated,"
+                f" {gates['n_collision_gated']} self-collision-gated"
             )
 
             if self.save_retargeting_proof_video:

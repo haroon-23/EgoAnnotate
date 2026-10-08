@@ -49,6 +49,9 @@ ik_solver:
   residual_threshold_m: 0.005   # 5 mm — frame marked unreachable if exceeded
   joint_damping: 0.005
   num_attempts: 3               # random restarts per frame to escape local minima
+  continuity_weight: 0.1        # m residual-equivalent per rad of branch deviation —
+                                # keeps best-of-N selection on one IK branch across frames
+                                # (fixes the 2026-10-03 real-verification M1 failure)
 
 # Phase E: IK backend selector. "pybullet" (default) or "mink" (opt-in;
 # needs the mujoco + mink packages: pip install mujoco mink).

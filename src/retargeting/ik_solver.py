@@ -45,6 +45,16 @@ class IKSolverConfig:
         num_attempts: Number of random restarts per frame to escape local minima.
         seed: Random seed for PRNG restarts to guarantee 100% deterministic IK solves.
         verbose_violations: If True, log every joint limit violation to DEBUG.
+        continuity_weight: Branch-continuity penalty for the best-of-num_attempts
+            selection, in metres of residual-equivalent per radian of max joint
+            deviation from the previous frame's exported solution. Attempts are
+            scored ``residual + continuity_weight * max|dq|`` so the solver
+            stays on one IK branch across frames instead of flipping to
+            whichever random restart has a marginally smaller residual
+            (the 2026-10-03 real-verification failure: up to 5.677 rad
+            frame-to-frame jumps → 1.94 rad M1 tracking error). The returned
+            residual is always the true end-effector residual — the
+            reachability threshold applies to it, never to the score.
     """
     max_iterations: int = 200
     residual_threshold_m: float = 0.005   # 5 mm
@@ -52,6 +62,7 @@ class IKSolverConfig:
     num_attempts: int = 3
     seed: Optional[int] = 42
     verbose_violations: bool = False
+    continuity_weight: float = 0.1
 
 
 @dataclass
@@ -187,11 +198,17 @@ class IKSolver:
         target_pos: np.ndarray,
         target_quat: np.ndarray,
         q_prev_full: Optional[list] = None,
+        q_cont_ref: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, float, list]:
         """Run IK for a single target pose and return (joint_angles, residual_m, q_full).
 
         Returns the best result over num_attempts random restarts.
         q_full is the full IK solution (arm + gripper) for warm-starting the next frame.
+        q_cont_ref is the previous frame's *exported* arm angles. When given,
+        attempts are scored ``residual + continuity_weight * max|dq|`` so the
+        solver prefers the same IK branch instead of flipping to whichever
+        random restart has a marginally smaller residual. The returned residual
+        is always the true end-effector residual (unpenalized).
         """
         pb = self._pb
         kin = self.kinematics
@@ -200,9 +217,19 @@ class IKSolver:
         n_arm = len(kin.arm_joint_indices)
         n_active = len(kin.active_joints)  # includes gripper
 
+        cont_ref = (
+            np.asarray(q_cont_ref, dtype=np.float64).ravel()[:n_arm]
+            if q_cont_ref is not None else None
+        )
+
         best_angles = None
         best_residual = float("inf")
+        best_score = float("inf")
         best_q_full: Optional[list] = None
+
+        # Bias PyBullet's null-space toward the previous exported solution so
+        # the warm-started attempt starts on the same branch.
+        rest_bias = cont_ref.tolist() if cont_ref is not None else kin.rest_poses.tolist()
 
         for attempt in range(cfg.num_attempts):
             if attempt > 0:
@@ -233,7 +260,7 @@ class IKSolver:
                 lowerLimits=kin.lower_limits.tolist(),
                 upperLimits=kin.upper_limits.tolist(),
                 jointRanges=(kin.upper_limits - kin.lower_limits).tolist(),
-                restPoses=kin.rest_poses.tolist(),
+                restPoses=rest_bias,
                 jointDamping=[0.15] * n_active,
                 maxNumIterations=120,
                 residualThreshold=1e-4,
@@ -249,7 +276,14 @@ class IKSolver:
             ee_actual = self._get_ee_position()
             residual = float(np.linalg.norm(ee_actual - target_pos))
 
-            if residual < best_residual:
+            if cont_ref is not None:
+                continuity_pen = float(np.max(np.abs(arm_angles - cont_ref)))
+                score = residual + cfg.continuity_weight * continuity_pen
+            else:
+                score = residual
+
+            if score < best_score:
+                best_score = score
                 best_residual = residual
                 best_angles = arm_angles.copy()
                 best_q_full = list(raw)
@@ -330,9 +364,13 @@ class IKSolver:
                 ))
                 continue
 
-            # Solve IK with warm-start from previous frame
+            # Solve IK with warm-start from previous frame. q_cont_ref is the
+            # previous frame's *exported* angles: the continuity penalty keeps
+            # the solver on one IK branch instead of flipping between the
+            # warm-started attempt and the random restarts.
             raw_angles, residual, q_prev_full = self._solve_ik_single(
-                pose.position, pose.quaternion, q_prev_full=q_prev_full
+                pose.position, pose.quaternion, q_prev_full=q_prev_full,
+                q_cont_ref=prev_valid_angles,
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             total_solve_ms += elapsed_ms
@@ -384,6 +422,10 @@ class IKSolver:
                 fallback_deviation_rad=fallback_dev,
                 has_self_collision=has_collision,
             ))
+            # Warm-start AND continuity-reference the *exported* angles next
+            # frame, not the raw best attempt (which may be a discarded
+            # fallback solution far from the trajectory).
+            q_prev_full = list(output_angles)
 
         n_hand_frames = len(target_poses) - n_no_hand
         avg_solve_ms = total_solve_ms / max(n_hand_frames, 1)

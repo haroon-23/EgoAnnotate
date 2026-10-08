@@ -86,7 +86,8 @@ class RetargetingConfig:
 
 
         ik_kwargs = {}
-        for k in ("max_iterations", "residual_threshold_m", "joint_damping", "num_attempts"):
+        for k in ("max_iterations", "residual_threshold_m", "joint_damping", "num_attempts",
+                  "continuity_weight"):
             if k in ik_data:
                 ik_kwargs[k] = ik_data[k]
         ik_solver = IKSolverConfig(**ik_kwargs)
@@ -292,6 +293,107 @@ def enforce_velocity_limits(
     return reach
 
 
+def apply_retargeting_gates(
+    ik_results: List[IKResult],
+    target_poses: List[TargetPose],
+    gripper_commands: List[GripperCommand],
+    joint_trajectories: np.ndarray,
+    dt: float = 1 / 30.0,
+    vel_limits: Optional[np.ndarray] = None,
+) -> Dict:
+    """Apply the R3 source gate, R4 velocity-feasibility gate, and the
+    self-collision gate to one retargeting pass.
+
+    This is the SINGLE shared post-processing for retargeting, used by both
+    ``Retargeter.run_from_annotations`` and the pipeline's Stage 9. The two
+    paths must never diverge again: the 2026-10-03 real-verification failure
+    (M1 tracking 1.94 rad, 15 self-collision frames counted reachable) was
+    caused by the pipeline inlining retargeting WITHOUT these gates, so IK
+    branch-flip discontinuities flowed through as "reachable" frames.
+
+    Gates (each only flips reachable True -> False, never the reverse):
+      R3 source gate — interpolated/no-hand frames are not reachable; the
+          gripper holds its previous opening on interpolated frames.
+      R4 velocity gate — a frame whose joint delta from the previous reachable
+          frame exceeds 0.9x the joint velocity limits is not reachable.
+      Self-collision gate — a frame whose IK solution self-collides
+          (``IKResult.has_self_collision``) is not reachable.
+
+    Mutates ``ik_results`` (``reachable``) and ``gripper_commands``
+    (``opening_m``, ``gripper_mapping_method``) in place.
+
+    Returns:
+        dict with ``reachability`` (final bool array), ``gripper_trajectory``
+        (final float array), ``n_velocity_infeasible``,
+        ``n_collision_gated``, and ``max_joint_speed_rad_s`` (over pre-gate
+        reachable pairs, for diagnostics).
+    """
+    n = len(ik_results)
+    gripper_traj = np.array([c.opening_m for c in gripper_commands], dtype=np.float64)
+    reachability = np.array([r.reachable for r in ik_results], dtype=bool)
+
+    # --- R3: source gate --------------------------------------------------
+    for i in range(n):
+        tp = target_poses[i]
+        ik_res = ik_results[i]
+        grip_cmd = gripper_commands[i]
+        prev_grip = gripper_traj[i - 1] if i > 0 else float(grip_cmd.opening_m)
+
+        gate = apply_source_gate(
+            reachable=ik_res.reachable,
+            interpolated=bool(tp.is_interpolated),
+            present=bool(tp.hand_detected),
+            gripper_prev=prev_grip,
+            gripper_m=grip_cmd.opening_m,
+            gripper_method=grip_cmd.gripper_mapping_method,
+        )
+
+        ik_res.reachable = gate["reachable"]
+        reachability[i] = gate["reachable"]
+        gripper_traj[i] = gate["gripper_opening_m"]
+        grip_cmd.opening_m = gate["gripper_opening_m"]
+        grip_cmd.gripper_mapping_method = gate["gripper_mapping_method"]
+        setattr(ik_res, "retarget_source", gate["retarget_source"])
+
+    # --- R4: velocity feasibility -----------------------------------------
+    if vel_limits is None:
+        vel_limits = PANDA_VEL
+    vel_limits = np.asarray(vel_limits, dtype=np.float64)
+
+    reach_before_vel = reachability.copy()
+    reachability = enforce_velocity_limits(
+        joint_trajectories, reachability, dt=dt, vel_limits=vel_limits
+    )
+
+    max_v = 0.0
+    n_vel_infeasible = 0
+    for i in range(1, n):
+        if reach_before_vel[i] and reach_before_vel[i - 1]:
+            v = np.abs((joint_trajectories[i] - joint_trajectories[i - 1]) / dt)
+            max_v = max(max_v, float(np.max(v)))
+            if not reachability[i]:
+                n_vel_infeasible += 1
+
+    for i in range(n):
+        ik_results[i].reachable = bool(reachability[i])
+
+    # --- Self-collision gate ----------------------------------------------
+    n_collision_gated = 0
+    for i in range(n):
+        if reachability[i] and ik_results[i].has_self_collision:
+            reachability[i] = False
+            ik_results[i].reachable = False
+            n_collision_gated += 1
+
+    return {
+        "reachability": reachability,
+        "gripper_trajectory": gripper_traj,
+        "n_velocity_infeasible": n_vel_infeasible,
+        "n_collision_gated": n_collision_gated,
+        "max_joint_speed_rad_s": max_v,
+    }
+
+
 class Retargeter:
     """Orchestrates the full human-to-robot kinematic retargeting pipeline.
 
@@ -392,53 +494,25 @@ class Retargeter:
         gripper_traj = np.array([c.opening_m for c in gripper_commands], dtype=np.float64)
         reachability = np.array([r.reachable for r in ik_results], dtype=bool)
 
-        # --- Task 1: R3 interpolation gate ----------------------------------
-        for i in range(n):
-            target_pose = target_poses[i]
-            ik_res = ik_results[i]
-            grip_cmd = gripper_commands[i]
-            interp = bool(target_pose.is_interpolated)
-            present = bool(target_pose.hand_detected)
-            prev_grip = gripper_traj[i - 1] if i > 0 else float(grip_cmd.opening_m)
-
-            gate = apply_source_gate(
-                reachable=ik_res.reachable,
-                interpolated=interp,
-                present=present,
-                gripper_prev=prev_grip,
-                gripper_m=grip_cmd.opening_m,
-                gripper_method=grip_cmd.gripper_mapping_method,
-            )
-
-            ik_res.reachable = gate["reachable"]
-            reachability[i] = gate["reachable"]
-            gripper_traj[i] = gate["gripper_opening_m"]
-            grip_cmd.opening_m = gate["gripper_opening_m"]
-            grip_cmd.gripper_mapping_method = gate["gripper_mapping_method"]
-            setattr(ik_res, "retarget_source", gate["retarget_source"])
-
-        # --- Task 2: R4 velocity feasibility --------------------------------
-        dt = 1.0 / 30.0
+        # --- Gates: R3 source, R4 velocity feasibility, self-collision -----
+        # Single shared post-processing (apply_retargeting_gates) — the
+        # pipeline's Stage 9 calls the same function so the two paths cannot
+        # diverge again.
         vel_limits = PANDA_VEL
         if hasattr(kin, "joint_velocity_limits") and kin.joint_velocity_limits is not None:
             vel_limits = kin.joint_velocity_limits
-
-        reach_before_vel = reachability.copy()
-        reachability = enforce_velocity_limits(
-            joint_traj, reachability, dt=dt, vel_limits=vel_limits
+        gates = apply_retargeting_gates(
+            ik_results,
+            target_poses,
+            gripper_commands,
+            joint_traj,
+            dt=1.0 / 30.0,
+            vel_limits=vel_limits,
         )
-
-        for i in range(n):
-            ik_results[i].reachable = bool(reachability[i])
-
-        max_v = 0.0
-        vel_infeasible_count = 0
-        for i in range(1, n):
-            if reach_before_vel[i] and reach_before_vel[i - 1]:
-                v = np.abs((joint_traj[i] - joint_traj[i - 1]) / dt)
-                max_v = max(max_v, float(np.max(v)))
-                if not reachability[i]:
-                    vel_infeasible_count += 1
+        reachability = gates["reachability"]
+        gripper_traj = gates["gripper_trajectory"]
+        max_v = gates["max_joint_speed_rad_s"]
+        vel_infeasible_count = gates["n_velocity_infeasible"]
 
         pct_vel_infeasible = float(100.0 * vel_infeasible_count / max(n, 1))
 
@@ -463,6 +537,7 @@ class Retargeter:
             ),
             "max_joint_speed_rad_s": max_v,
             "pct_velocity_infeasible": pct_vel_infeasible,
+            "n_collision_gated": gates["n_collision_gated"],
             "wall_clock_seconds": float(t_elapsed),
             "gripper_method_counts": dict(method_counts),
             "kinematics_urdf": kin.urdf_path,
