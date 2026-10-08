@@ -22,13 +22,28 @@ robot:
   # Robot workspace bounds (metres, in robot base frame).
   # The human wrist trajectory is linearly mapped into this box.
   # Tuned for Franka Panda tabletop manipulation reach envelope.
+  # CRITICAL: z_min must clear the table top (z=0.25 m, see table below).
+  # The 2026-10-08 real-verification failure (M1 tracking 0.52 rad) was caused
+  # by z_min=0.20 placing wrist targets INSIDE the table — every "reachable"
+  # IK solution had the arm buried in the tabletop, and the M1 contact solver
+  # fought the position servos. z_min=0.35 keeps the wrist 10 cm above the
+  # table; the table-collision gate (ik_solver.table_check) rejects any
+  # residual penetrations from arm geometry.
   workspace_bounds:
     x_min: 0.30
     x_max: 0.65
     y_min: -0.30
     y_max: 0.30
-    z_min: 0.20
+    z_min: 0.35
     z_max: 0.65
+
+  # Static table geometry (metres, robot base frame) — must match the
+  # verification scene in episode_verifier.py (TABLE_POS/TABLE_SIZE).
+  # The IK solver loads this as a collision body and marks any IK solution
+  # that penetrates it as unreachable (table-collision gate).
+  table:
+    center: [0.5, 0.0, 0.125]      # box center
+    half_extents: [0.35, 0.30, 0.125]  # half sizes; top surface at z=0.25
 
   # Phase E: IK backend selector — "pybullet" (default) or "mink" (opt-in;
   # needs the mujoco + mink packages: pip install mujoco mink).
@@ -36,7 +51,9 @@ robot:
 
 pose_mapper:
   preferred_hand: "right"    # "right" | "left" | "auto"
-  z_floor_m: 0.10            # minimum EE height above base (prevents below-table targets)
+  z_floor_m: 0.30            # minimum EE height: must clear the table top (z=0.25 m).
+                             # (2026-10-08: was 0.10, which allowed below-table targets
+                             # that the M1 verifier could never track.)
   orientation_scale: 1.0     # 1.0 = full wrist rotation, reduce if IK becomes unstable
   enable_trajectory_smoothing: true
   smoothing_window: 9
@@ -52,6 +69,14 @@ ik_solver:
   continuity_weight: 0.1        # m residual-equivalent per rad of branch deviation —
                                 # keeps best-of-N selection on one IK branch across frames
                                 # (fixes the 2026-10-03 real-verification M1 failure)
+  # Table-collision gate (2026-10-08): the IK solver loads the static table
+  # (robot.table above) as a PyBullet collision body. Any IK solution whose
+  # arm links penetrate the table is marked unreachable — the M1 verifier's
+  # contact solver would otherwise fight the position servos, producing a
+  # large spurious "tracking error" (Run #2: 0.52 rad from 189/189 frames
+  # with the arm inside the tabletop).
+  table_check_enabled: true
+  table_penetration_tol_m: 0.002  # reject if penetration exceeds 2 mm
 
 # Phase E: IK backend selector. "pybullet" (default) or "mink" (opt-in;
 # needs the mujoco + mink packages: pip install mujoco mink).

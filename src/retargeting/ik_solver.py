@@ -55,6 +55,18 @@ class IKSolverConfig:
             frame-to-frame jumps → 1.94 rad M1 tracking error). The returned
             residual is always the true end-effector residual — the
             reachability threshold applies to it, never to the score.
+        table_check_enabled: If True, load the static table (table_center,
+            table_half_extents) as a PyBullet collision body and flag any IK
+            solution whose arm links penetrate it (``IKResult.has_table_collision``).
+            The 2026-10-08 real-verification failure (M1 tracking 0.52 rad) was
+            caused by wrist targets inside the tabletop (z_min=0.20 < table top
+            0.25): every "reachable" solution had the arm buried in the table,
+            and the verifier's contact solver fought the position servos.
+        table_center: Static table box center in metres (robot base frame).
+        table_half_extents: Static table box half-sizes in metres.
+        table_penetration_tol_m: Reject a solution if any arm-table contact
+            penetrates deeper than this (metres). Small positive tolerance
+            avoids false positives from collision-detection noise.
     """
     max_iterations: int = 200
     residual_threshold_m: float = 0.005   # 5 mm
@@ -63,6 +75,10 @@ class IKSolverConfig:
     seed: Optional[int] = 42
     verbose_violations: bool = False
     continuity_weight: float = 0.1
+    table_check_enabled: bool = True
+    table_center: Tuple[float, float, float] = (0.5, 0.0, 0.125)
+    table_half_extents: Tuple[float, float, float] = (0.35, 0.30, 0.125)
+    table_penetration_tol_m: float = 0.002
 
 
 @dataclass
@@ -84,6 +100,10 @@ class IKResult:
         fallback_deviation_rad: Max per-joint deviation from the raw IK solution
             to the fallback config (if fallback_used=True).
         has_self_collision: True if PyBullet detected self-collision at this pose.
+        has_table_collision: True if PyBullet detected arm-table penetration
+            at this pose (beyond table_penetration_tol_m). Such frames are
+            marked unreachable by the table-collision gate — the M1 verifier
+            cannot track a pose that is inside the tabletop.
     """
     frame_idx: int
     timestamp: float
@@ -95,6 +115,7 @@ class IKResult:
     fallback_used: bool = False
     fallback_deviation_rad: float = 0.0
     has_self_collision: bool = False
+    has_table_collision: bool = False
 
 
 class IKSolver:
@@ -124,6 +145,7 @@ class IKSolver:
         self.config = config or IKSolverConfig()
         self._client_id: Optional[int] = None
         self._robot_id: Optional[int] = None
+        self._table_id: Optional[int] = None
         self._pb = None
         if self.config.seed is not None:
             np.random.seed(self.config.seed)
@@ -148,6 +170,23 @@ class IKSolver:
             useFixedBase=True,
             physicsClientId=self._client_id,
         )
+        # Static table collision body for the table-collision gate. The table
+        # is the dominant static obstacle in tabletop manipulation; IK
+        # solutions that penetrate it can never be tracked by the M1 verifier
+        # (2026-10-08: 189/189 "reachable" Run #2 frames had the arm inside
+        # the tabletop → 0.52 rad spurious M1 "tracking error").
+        if self.config.table_check_enabled:
+            table_shape = pb.createCollisionShape(
+                pb.GEOM_BOX,
+                halfExtents=list(self.config.table_half_extents),
+                physicsClientId=self._client_id,
+            )
+            self._table_id = pb.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=table_shape,
+                basePosition=list(self.config.table_center),
+                physicsClientId=self._client_id,
+            )
         # Set robot to rest pose initially
         for idx, angle in zip(
             self.kinematics.arm_joint_indices,
@@ -166,6 +205,7 @@ class IKSolver:
                 pass
         self._client_id = None
         self._robot_id = None
+        self._table_id = None
         self._pb = None
 
     def __enter__(self) -> "IKSolver":
@@ -317,6 +357,30 @@ class IKSolver:
         )
         return contacts is not None and len(contacts) > 0
 
+    def _check_table_collision(self) -> bool:
+        """Return True if the current robot state penetrates the table.
+
+        Uses the static table body created in _connect(). A contact counts as
+        a collision only if its penetration depth exceeds
+        table_penetration_tol_m, so light touching from collision-detection
+        noise does not falsely gate frames.
+        """
+        if not self.config.table_check_enabled or self._table_id is None:
+            return False
+        contacts = self._pb.getContactPoints(
+            self._robot_id, self._table_id, physicsClientId=self._client_id
+        )
+        if not contacts:
+            return False
+        tol = self.config.table_penetration_tol_m
+        for c in contacts:
+            # contactDistance < 0 means penetration; c[8] is contactDistance
+            # in the getContactPoints tuple format.
+            dist = c[8] if len(c) > 8 else 0.0
+            if dist < -tol:
+                return True
+        return False
+
     def solve_sequence(
         self,
         target_poses: List[TargetPose],
@@ -385,6 +449,7 @@ class IKSolver:
                 output_angles = raw_angles.copy()
                 self._set_joint_state(output_angles)
                 has_collision = self._check_self_collision()
+                has_table_collision = self._check_table_collision()
                 n_reachable += 1
                 fallback_used = False
                 fallback_dev = 0.0
@@ -394,6 +459,7 @@ class IKSolver:
                 output_angles = prev_valid_angles.copy()
                 self._set_joint_state(output_angles)
                 has_collision = self._check_self_collision()
+                has_table_collision = self._check_table_collision()
                 fallback_used = True
                 fallback_dev = float(np.max(np.abs(raw_angles - prev_valid_angles)))
                 n_fallback += 1
@@ -421,6 +487,7 @@ class IKSolver:
                 fallback_used=fallback_used,
                 fallback_deviation_rad=fallback_dev,
                 has_self_collision=has_collision,
+                has_table_collision=has_table_collision,
             ))
             # Warm-start AND continuity-reference the *exported* angles next
             # frame, not the raw best attempt (which may be a discarded

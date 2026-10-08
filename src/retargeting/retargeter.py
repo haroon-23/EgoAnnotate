@@ -87,9 +87,16 @@ class RetargetingConfig:
 
         ik_kwargs = {}
         for k in ("max_iterations", "residual_threshold_m", "joint_damping", "num_attempts",
-                  "continuity_weight"):
+                  "continuity_weight", "table_check_enabled",
+                  "table_penetration_tol_m"):
             if k in ik_data:
                 ik_kwargs[k] = ik_data[k]
+        # Static table geometry lives under robot.table in the YAML.
+        table_cfg = robot_cfg.get("table", {})
+        if "center" in table_cfg:
+            ik_kwargs["table_center"] = tuple(table_cfg["center"])
+        if "half_extents" in table_cfg:
+            ik_kwargs["table_half_extents"] = tuple(table_cfg["half_extents"])
         ik_solver = IKSolverConfig(**ik_kwargs)
 
         mink_data = data.get("mink_ik", {})
@@ -318,6 +325,8 @@ def apply_retargeting_gates(
           frame exceeds 0.9x the joint velocity limits is not reachable.
       Self-collision gate — a frame whose IK solution self-collides
           (``IKResult.has_self_collision``) is not reachable.
+      Table-collision gate — a frame whose IK solution penetrates the static
+          table (``IKResult.has_table_collision``) is not reachable.
 
     Mutates ``ik_results`` (``reachable``) and ``gripper_commands``
     (``opening_m``, ``gripper_mapping_method``) in place.
@@ -325,8 +334,8 @@ def apply_retargeting_gates(
     Returns:
         dict with ``reachability`` (final bool array), ``gripper_trajectory``
         (final float array), ``n_velocity_infeasible``,
-        ``n_collision_gated``, and ``max_joint_speed_rad_s`` (over pre-gate
-        reachable pairs, for diagnostics).
+        ``n_collision_gated``, ``n_table_gated``, and ``max_joint_speed_rad_s``
+        (over pre-gate reachable pairs, for diagnostics).
     """
     n = len(ik_results)
     gripper_traj = np.array([c.opening_m for c in gripper_commands], dtype=np.float64)
@@ -385,11 +394,25 @@ def apply_retargeting_gates(
             ik_results[i].reachable = False
             n_collision_gated += 1
 
+    # --- Table-collision gate ---------------------------------------------
+    # A frame whose IK solution penetrates the static table can never be
+    # tracked by the M1 verifier: MuJoCo's contact solver fights the position
+    # servos, producing a large spurious "tracking error" (2026-10-08: 0.52
+    # rad from 189/189 Run #2 frames with the arm inside the tabletop, caused
+    # by wrist targets at z=0.20 below the table surface at z=0.25).
+    n_table_gated = 0
+    for i in range(n):
+        if reachability[i] and getattr(ik_results[i], "has_table_collision", False):
+            reachability[i] = False
+            ik_results[i].reachable = False
+            n_table_gated += 1
+
     return {
         "reachability": reachability,
         "gripper_trajectory": gripper_traj,
         "n_velocity_infeasible": n_vel_infeasible,
         "n_collision_gated": n_collision_gated,
+        "n_table_gated": n_table_gated,
         "max_joint_speed_rad_s": max_v,
     }
 
@@ -538,6 +561,7 @@ class Retargeter:
             "max_joint_speed_rad_s": max_v,
             "pct_velocity_infeasible": pct_vel_infeasible,
             "n_collision_gated": gates["n_collision_gated"],
+            "n_table_gated": gates["n_table_gated"],
             "wall_clock_seconds": float(t_elapsed),
             "gripper_method_counts": dict(method_counts),
             "kinematics_urdf": kin.urdf_path,

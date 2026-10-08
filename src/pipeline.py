@@ -627,7 +627,8 @@ class EgoAnnotatePipeline:
                 f"[Pipeline] Retargeting complete ({target_robot_name}): "
                 f"{n_reach}/{len(frames)} frames reachable ({100.0 * n_reach / max(len(frames), 1):.1f}%)"
                 f" — {gates['n_velocity_infeasible']} velocity-gated,"
-                f" {gates['n_collision_gated']} self-collision-gated"
+                f" {gates['n_collision_gated']} self-collision-gated,"
+                f" {gates['n_table_gated']} table-gated"
             )
 
             if self.save_retargeting_proof_video:
@@ -710,6 +711,13 @@ class EgoAnnotatePipeline:
                 except Exception as e:
                     logger.warning("[Pipeline] Could not resolve retargeter URDF (%s).", e)
                     urdf_path = self.retargeter.config.urdf_path
+            if urdf_path:
+                try:
+                    txt = Path(urdf_path).read_text(errors="ignore")
+                    if "package://" in txt and Path("data/urdfs/panda.urdf").exists():
+                        urdf_path = "data/urdfs/panda.urdf"
+                except Exception:
+                    pass
             report = self.episode_verifier.verify_episode(
                 str(hdf5_path), episode.episode_id, urdf_path=urdf_path)
             report_path = out_ep_dir / "physics_verification.json"

@@ -51,10 +51,14 @@ class PoseMapperConfig:
         "x_max": 0.65,
         "y_min": -0.30,
         "y_max": 0.30,
-        "z_min": 0.20,  # above table
+        # z_min MUST clear the table top (z=0.25 m). 2026-10-08: was 0.20 with
+        # a wrong "above table" comment — every wrist target sat inside the
+        # tabletop, and the M1 verifier measured 0.52 rad of contact-fighting
+        # as "tracking error". 0.35 keeps the wrist 10 cm above the table.
+        "z_min": 0.35,
         "z_max": 0.65,
     })
-    z_floor_m: float = 0.10
+    z_floor_m: float = 0.30  # safety floor; also clears the table top
     orientation_scale: float = 1.0
     enable_trajectory_smoothing: bool = True
     smoothing_window: int = 9
