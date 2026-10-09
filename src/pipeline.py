@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
@@ -662,14 +663,18 @@ class EgoAnnotatePipeline:
             episode.tracking_rescued_pct = m.get("rescued_pct", 0.0)
             episode.tracking_interpolated_pct = m.get("interpolated_pct", 0.0)
 
-        # Stage 10: Export Episode
+        # Stage 10: Export Episode. Timestamp BEFORE the export so the
+        # physics verifier can prove the HDF5 it is about to read was
+        # written by THIS export and not left over from a previous run
+        # (Run #3 verified Run #2's stale HDF5 and reported its numbers).
+        export_started = time.time()
         self.dataset_exporter.export_episode(episode)
 
         # Stage 9b: Physics verification gate (Phase E; opt-in, default off).
         # Replays the exported HDF5 in MuJoCo with weld-grasp trials and sets
         # the physics_verified label. On ANY failure the episode is KEPT —
         # the verifier gates only the label, never the data.
-        self._maybe_verify_physics(episode)
+        self._maybe_verify_physics(episode, not_before=export_started)
 
         print("\n" + "=" * 50)
         print("EPISODE ANNOTATION COMPLETE")
@@ -684,13 +689,94 @@ class EgoAnnotatePipeline:
 
         return episode
 
-    def _maybe_verify_physics(self, episode: AnnotatedEpisode) -> None:
+    @staticmethod
+    def _hdf5_reachable_count(hdf5_path: Path, episode_id: str) -> Optional[int]:
+        """Count True values in the exported robot_reachable dataset, or None.
+
+        Prefers steps/observation/robot_reachable (what the exporter writes)
+        and falls back to the legacy steps/robot_reachable. Returns None when
+        the count cannot be established, leaving the mtime check authoritative.
+        """
+        try:
+            import h5py
+        except ImportError:
+            return None
+        try:
+            with h5py.File(str(hdf5_path), "r") as hf:
+                keys = list(hf.keys())
+                if not keys:
+                    return None
+                ep_group = hf[episode_id] if episode_id in hf else hf[keys[0]]
+                steps = ep_group.get("steps")
+                if steps is None:
+                    return None
+                obs = steps.get("observation")
+                dataset = None
+                if obs is not None and "robot_reachable" in obs:
+                    dataset = obs["robot_reachable"]
+                elif "robot_reachable" in steps:
+                    dataset = steps["robot_reachable"]
+                if dataset is None:
+                    return None
+                return sum(1 for value in dataset[()].tolist() if bool(value))
+        except Exception:
+            return None
+
+    def _export_freshness_failure(
+        self,
+        episode: AnnotatedEpisode,
+        hdf5_path: Path,
+        not_before: float,
+    ) -> Optional[str]:
+        """Return why the exported HDF5 cannot be trusted for THIS run, or None."""
+        if not hdf5_path.exists():
+            return (
+                "episode_rlds.hdf5 is missing after export; refusing to verify — "
+                "the verifier must never fall back to a previous run's data"
+            )
+        try:
+            mtime = hdf5_path.stat().st_mtime
+        except OSError as exc:
+            return f"could not stat episode_rlds.hdf5: {exc}"
+        if mtime < not_before:
+            return (
+                f"episode_rlds.hdf5 predates this run's export "
+                f"(mtime {mtime:.3f} < export start {not_before:.3f}); it is a "
+                f"previous run's file and its physics numbers would be stale"
+            )
+        if episode.frames:
+            expected = sum(
+                1 for frame in episode.frames if bool(getattr(frame, "robot_reachable", False))
+            )
+            actual = self._hdf5_reachable_count(hdf5_path, episode.episode_id)
+            if actual is not None and actual != expected:
+                return (
+                    f"robot_reachable count mismatch: episode_rlds.hdf5 has "
+                    f"{actual} reachable frames but the in-memory episode has "
+                    f"{expected}; the HDF5 was not exported from this run's annotations"
+                )
+        return None
+
+    def _maybe_verify_physics(
+        self,
+        episode: AnnotatedEpisode,
+        not_before: Optional[float] = None,
+    ) -> None:
         """Stage 9b: physics-verification gate (Phase E).
 
         Replays the exported ``episode_rlds.hdf5`` in MuJoCo with weld-grasp
         trials and sets ``episode.physics_verified`` / ``physics_report_path``.
         The verifier gates ONLY the label: on any failure or error the episode
         is kept and the report is still written — data is never dropped.
+
+        Args:
+            episode: The episode (already exported by process_video).
+            not_before: Optional export-start timestamp for this run. When set,
+                episode_rlds.hdf5 must exist, be at least this new, and carry
+                the same robot_reachable count as the in-memory episode. Any
+                mismatch fails closed with an "export_freshness" check failure
+                and the verifier never runs. None (the existing direct-call
+                path used across the test suite) preserves previous behavior.
         """
         if not self.physics_verify_enabled:
             return
@@ -701,6 +787,44 @@ class EgoAnnotatePipeline:
             return
         out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
         hdf5_path = out_ep_dir / "episode_rlds.hdf5"
+        out_ep_dir.mkdir(parents=True, exist_ok=True)
+        if not_before is not None:
+            stale_reason = self._export_freshness_failure(
+                episode, hdf5_path, not_before
+            )
+            if stale_reason is not None:
+                from .retargeting.episode_verifier import CheckResult, VerificationReport
+
+                print(
+                    "[Pipeline] Physics verification FAILED CLOSED — stale export: "
+                    f"{stale_reason}"
+                )
+                logger.error(
+                    "Physics verification failed closed for %s: %s",
+                    episode.episode_id,
+                    stale_reason,
+                )
+                report = VerificationReport(
+                    episode_id=episode.episode_id,
+                    passed=False,
+                    checks=[
+                        CheckResult(
+                            "export_freshness",
+                            False,
+                            0.0,
+                            1.0,
+                            stale_reason,
+                        )
+                    ],
+                    windows=[],
+                    metrics={"export_freshness": 0.0},
+                )
+                report_path = out_ep_dir / "physics_verification.json"
+                report.save_json(str(report_path))
+                episode.physics_verified = False
+                episode.physics_report_path = str(report_path)
+                self.dataset_exporter.persist_physics_verification(episode, out_ep_dir)
+                return
         try:
             # Prefer the retargeter's RESOLVED URDF: config.urdf_path may be
             # None when URDFLoader fell back to its bundled model.

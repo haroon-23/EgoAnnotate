@@ -55,6 +55,15 @@ class IKSolverConfig:
             frame-to-frame jumps → 1.94 rad M1 tracking error). The returned
             residual is always the true end-effector residual — the
             reachability threshold applies to it, never to the score.
+        collision_penalty: Selection-score penalty added to an attempt whose
+            solved configuration is in table or self collision. A colliding
+            attempt must not be able to WIN the best-of-N selection on a
+            slightly better residual: with Fix H the table gate only ever
+            rejected attempts after selection, so one table-spearing attempt
+            could beat a clean one and the frame was gated even though a
+            valid solution existed in the same candidate set. The penalty is
+            added to the score only; the recorded ik_residual_m stays the
+            true geometric residual.
         table_check_enabled: If True, load the static table (table_center,
             table_half_extents) as a PyBullet collision body and flag any IK
             solution whose arm links penetrate it (``IKResult.has_table_collision``).
@@ -75,6 +84,7 @@ class IKSolverConfig:
     seed: Optional[int] = 42
     verbose_violations: bool = False
     continuity_weight: float = 0.1
+    collision_penalty: float = 1.0
     table_check_enabled: bool = True
     table_center: Tuple[float, float, float] = (0.5, 0.0, 0.125)
     table_half_extents: Tuple[float, float, float] = (0.35, 0.30, 0.125)
@@ -316,11 +326,17 @@ class IKSolver:
             ee_actual = self._get_ee_position()
             residual = float(np.linalg.norm(ee_actual - target_pos))
 
+            collides = (
+                self._check_table_collision() or self._check_self_collision()
+            )
             if cont_ref is not None:
                 continuity_pen = float(np.max(np.abs(arm_angles - cont_ref)))
                 score = residual + cfg.continuity_weight * continuity_pen
             else:
                 score = residual
+            if collides:
+                # Selection-only: ik_residual_m stays the true residual.
+                score += cfg.collision_penalty
 
             if score < best_score:
                 best_score = score

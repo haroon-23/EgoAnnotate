@@ -166,8 +166,10 @@ class DatasetExporter:
                 import pandas as pd
                 df = pd.DataFrame(frame_data)
                 df.to_parquet(episode_dir / "frame_annotations.parquet", index=False)
-                logger.info("Exported frame annotations to Parquet.")
-                return
+                logger.info(
+                    "Exported frame annotations to Parquet "
+                    "(additive — JSON still written below)."
+                )
             except ImportError:
                 logger.warning("pandas or pyarrow not installed. Falling back to JSON frames export.")
 

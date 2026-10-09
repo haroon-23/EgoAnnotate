@@ -87,7 +87,7 @@ class RetargetingConfig:
 
         ik_kwargs = {}
         for k in ("max_iterations", "residual_threshold_m", "joint_damping", "num_attempts",
-                  "continuity_weight", "table_check_enabled",
+                  "continuity_weight", "collision_penalty", "table_check_enabled",
                   "table_penetration_tol_m"):
             if k in ik_data:
                 ik_kwargs[k] = ik_data[k]

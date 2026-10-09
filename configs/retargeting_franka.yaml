@@ -69,6 +69,10 @@ ik_solver:
   continuity_weight: 0.1        # m residual-equivalent per rad of branch deviation —
                                 # keeps best-of-N selection on one IK branch across frames
                                 # (fixes the 2026-10-03 real-verification M1 failure)
+  collision_penalty: 1.0        # selection-score penalty for table/self-colliding IK
+                                # attempts — a clean attempt always beats a colliding
+                                # one; returned residual stays truthful
+                                # (fixes the Run #3 509-table-gated/29.2% failure)
   # Table-collision gate (2026-10-08): the IK solver loads the static table
   # (robot.table above) as a PyBullet collision body. Any IK solution whose
   # arm links penetrate the table is marked unreachable — the M1 verifier's
