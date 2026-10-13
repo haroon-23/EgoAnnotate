@@ -7,6 +7,7 @@ segmenting temporal actions, generating descriptions, and exporting the dataset.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import time
@@ -557,6 +558,7 @@ class EgoAnnotatePipeline:
                 frame.action_segment = "idle"
 
         # Stage 7: Language Generation
+        gc.collect()
         task_description = self.language_generator.generate_episode_description(video_path)
         for seg in segments:
             obj_name = seg.object_name if (seg.name != "idle" and seg.object_name != "unknown") else None
