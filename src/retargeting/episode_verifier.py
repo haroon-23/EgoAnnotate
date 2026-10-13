@@ -230,8 +230,9 @@ def build_verification_scene(
     cdir.mkdir(parents=True, exist_ok=True)
     m0 = mj.MjModel.from_xml_path(str(urdf))
     cache = cdir / f"{urdf.stem}_verifier_cache.xml"
-    if not cache.exists():
-        mj.mj_saveLastXML(str(cache), m0)
+    # Always regenerate from the live model — stale caches (e.g. from tests)
+    # can contain invalid XML that causes "more than 6 dofs" errors.
+    mj.mj_saveLastXML(str(cache), m0)
     txt = cache.read_text()
 
     body_names = []
@@ -351,7 +352,12 @@ def build_verification_scene(
 
 def replay_frame(mj, model, data, info: SceneInfo, q_i: np.ndarray, g_scalar: float) -> None:
     """Replay one trajectory frame: set position-servo targets, step substeps."""
-    data.ctrl[info.arm_ctrl] = np.asarray(q_i, dtype=float).ravel()
+    q_i_arr = np.asarray(q_i, dtype=float).ravel()
+    assert q_i_arr.shape[0] == len(info.arm_ctrl), (
+        f"replay_frame: q_i has {q_i_arr.shape[0]} elements but arm_ctrl "
+        f"has {len(info.arm_ctrl)} entries; URDF and trajectory are mismatched"
+    )
+    data.ctrl[info.arm_ctrl] = q_i_arr
     if len(info.fing_ctrl):
         data.ctrl[info.fing_ctrl] = float(g_scalar) / 2.0
     for _ in range(info.substeps):
@@ -371,7 +377,7 @@ def activate_weld(mj, model, data, info: SceneInfo) -> Tuple[np.ndarray, np.ndar
     obj_quat = np.array(data.xquat[info.obj_body_id], dtype=float)
     rel_pos = _quat_rotate_wxyz(_quat_conj_wxyz(ee_quat), obj_pos - ee_pos)
     rel_quat = _quat_mul_wxyz(_quat_conj_wxyz(ee_quat), obj_quat)
-    model.eq_data[info.weld_eq_id] = np.concatenate([rel_pos, rel_quat])
+    model.eq_data[info.weld_eq_id, :7] = np.concatenate([rel_pos, rel_quat])
     data.eq_active[info.weld_eq_id] = 1
     mj.mj_forward(model, data)
     return rel_pos, rel_quat
@@ -546,11 +552,21 @@ class EpisodeVerifier:
                 # Start of a reachable segment: place the sim exactly at the
                 # commanded pose (zero velocity) so M1 measures in-segment
                 # tracking quality, not teleportation across unreachable gaps.
-                data.qpos[info.arm_q] = q[i]
+                q_arm = np.asarray(q[i], dtype=float).ravel()
+                assert q_arm.shape[0] == len(info.arm_q), (
+                    f"frame {i}: q has {q_arm.shape[0]} DOFs but scene arm_q "
+                    f"has {len(info.arm_q)}; URDF and HDF5 trajectory are mismatched"
+                )
+                data.qpos[info.arm_q] = q_arm
                 data.qvel[info.arm_dof] = 0.0
                 mj.mj_forward(model, data)
             replay_frame(mj, model, data, info, q[i], float(g[i]))
-            errs.append(float(np.max(np.abs(data.qpos[info.arm_q] - q[i]))))
+            q_arm = np.asarray(q[i], dtype=float).ravel()
+            assert q_arm.shape[0] == len(info.arm_q), (
+                f"frame {i}: q has {q_arm.shape[0]} DOFs but scene arm_q "
+                f"has {len(info.arm_q)}; URDF and HDF5 trajectory are mismatched"
+            )
+            errs.append(float(np.max(np.abs(data.qpos[info.arm_q] - q_arm))))
             last_ee = np.array(data.xpos[info.ee_body_id], dtype=float)
             ee_positions[i] = last_ee
             if frame_has_self_collision(model, data, robot_body_ids):
