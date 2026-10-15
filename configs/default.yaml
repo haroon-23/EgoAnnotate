@@ -50,7 +50,7 @@ language_annotation:
   segment_prompt: "Describe what is happening in this video segment. Focus on hand, object, grasp type, motion."
 
 gemini:
-  model: "gemini-3.8-flash"
+  model: "gemini-2.5-flash"
   api_key: null  # Set via GEMINI_API_KEY env var
 
 # Phase D: VLM dual backend. `backend: "gemini"` (default, production) or

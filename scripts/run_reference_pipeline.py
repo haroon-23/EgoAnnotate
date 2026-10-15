@@ -29,7 +29,7 @@ def sanitize_trajectory(q, reach, reason, dt, vel_limits=PANDA_VEL, lim=PANDA_LI
         if np.any(q[i] < LO-tol) or np.any(q[i] > HI+tol):
             reach[i] = False; reason[i] = "joint_limit"; q[i] = q[i-1]; continue
         if np.any(np.abs(q[i]-q[i-1]) > budget):
-            reach[i] = False; reason[i] = "joint_velocity"; q[i] = q[i-1]; continue
+            reach[i] = False; reason[i] = "joint_velocity"; q[i] = q[i-1] + np.clip(q[i] - q[i-1], -budget, budget); continue
     return q, reach, reason
 
 def canon(name):
@@ -330,11 +330,31 @@ def main():
     q_prev=HOME_Q.copy(); dt=1.0/fps
     VEL_LIM=0.9*PANDA_VEL
     LO=np.array([PANDA_LIM[j][0] for j in range(7)]); HI=np.array([PANDA_LIM[j][1] for j in range(7)])
+    grip_state = 0.08  # start open
+    frames_in_state = 0
+    MIN_FRAMES = 5
     for i in range(n):
-        s="r" if rec[i]["rp"] else ("l" if rec[i]["lp"] else None)
-        d=grasp_openness(rec[i][s+"k"]) if s else 2.8
-        grip[i]=min(max((d-1.7)/1.0,0.0),1.0)*0.08
-        method[i]=gl[s][i] if s else "no_hand"
+        s = "r" if rec[i]["rp"] else ("l" if rec[i]["lp"] else None)
+        d = grasp_openness(rec[i][s+"k"]) if s else 2.8
+        target_grip = min(max((d-1.7)/1.0, 0.0), 1.0) * 0.08
+        if target_grip < 0.03:  # want to close
+            if grip_state >= 0.03:
+                if frames_in_state >= MIN_FRAMES:
+                    grip_state = target_grip; frames_in_state = 0
+                else:
+                    frames_in_state += 1
+            else:
+                grip_state = target_grip; frames_in_state += 1
+        else:  # want to open
+            if grip_state < 0.03:
+                if frames_in_state >= MIN_FRAMES:
+                    grip_state = target_grip; frames_in_state = 0
+                else:
+                    frames_in_state += 1
+            else:
+                grip_state = target_grip; frames_in_state += 1
+        grip[i] = grip_state
+        method[i] = gl[s][i] if s else "no_hand"
         if s is None:
             reason[i]="no_hand"; q[i]=q_prev.copy()
             q_full[:7]=q_prev; cfgm.update(q_full); continue

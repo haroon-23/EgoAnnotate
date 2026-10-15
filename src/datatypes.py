@@ -557,6 +557,8 @@ class AnnotatedEpisode:
     num_frames: int
     duration_seconds: float
     target_robot: str = "humanoid_generic"
+    camera_motion_flag: bool = False
+    camera_motion_px_per_sec: float = 0.0
     physics_verified: bool = False
     physics_report_path: Optional[str] = None
 
@@ -571,6 +573,8 @@ class AnnotatedEpisode:
             "num_frames": self.num_frames,
             "duration_seconds": self.duration_seconds,
             "target_robot": self.target_robot,
+            "camera_motion_flag": bool(getattr(self, "camera_motion_flag", False)),
+            "camera_motion_px_per_sec": float(getattr(self, "camera_motion_px_per_sec", 0.0)),
             "physics_verified": bool(self.physics_verified),
             "physics_report_path": self.physics_report_path,
         }
@@ -591,6 +595,8 @@ class AnnotatedEpisode:
             num_frames=int(data["num_frames"]),
             duration_seconds=float(data["duration_seconds"]),
             target_robot=str(data.get("target_robot", "humanoid_generic")),
+            camera_motion_flag=bool(data.get("camera_motion_flag", False)),
+            camera_motion_px_per_sec=float(data.get("camera_motion_px_per_sec", 0.0)),
             physics_verified=bool(data.get("physics_verified", False)),
             physics_report_path=data.get("physics_report_path"),
         )

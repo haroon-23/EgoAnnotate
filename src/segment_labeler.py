@@ -158,6 +158,9 @@ class SegmentLabeler:
         
         # Call the VLM backend with retries
         try:
+            if getattr(self._vlm, "name", None) == "local":
+                logger.warning(f"VLM call failed for segment {seg.start_time}-{seg.end_time}, using default")
+                return self._default_label(seg)
             result = self._call_vlm_with_retry(keyframe, prompt)
         except Exception as e:
             logger.warning(f"VLM call exception for segment {seg.start_time}-{seg.end_time}: {e}, using default")

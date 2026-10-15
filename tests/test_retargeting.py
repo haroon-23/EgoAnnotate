@@ -295,7 +295,8 @@ class TestPoseMapper(unittest.TestCase):
             frame_idx=1, timestamp=1/30, image_path="fake.jpg",
             left_hand=left_hand, right_hand=None,
         )
-        targets = self.mapper.map_frames([frame_right, frame_left])
+        mapper = PoseMapper(PoseMapperConfig(preferred_hand="right", lock_driving_hand=False))
+        targets = mapper.map_frames([frame_right, frame_left])
         self.assertEqual(targets[0].hand_used, "right")
         self.assertEqual(targets[1].hand_used, "left")
 

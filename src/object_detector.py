@@ -389,8 +389,8 @@ class GeminiObjectDetector:
                 last_error = e
                 err = str(e).lower()
 
-                # FATAL: wrong model, auth failure — fail immediately
-                if any(k in err for k in ["404", "not found", "no longer available", "invalid model", "api key not valid", "permission denied"]):
+                # FATAL: wrong model, auth failure, daily quota exhausted — fail immediately
+                if any(k in err for k in ["404", "not found", "no longer available", "invalid model", "api key not valid", "permission denied", "daily limit", "quota exhausted"]):
                     logger.error("[FATAL] VLM API fatal error: %s", e)
                     raise RuntimeError(f"VLM API call failed with fatal error: {e}") from e
 

@@ -61,3 +61,14 @@ hand_landmarker.task
 run_log.txt
 *.code-workspace
 panda_scene_cache*.xml
+
+# EgoAnnotate v1.0 local caches & temporary verification bundles
+cache/
+diagnosis_bundle.zip
+egoannotator_fixG.patch
+verification_bundle*/
+test_mp4v.mp4
+test_H264.mp4
+test_avc1.mp4
+models/
+!.env.example

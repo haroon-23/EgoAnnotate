@@ -20,7 +20,7 @@ def test_franka_adapter_solve():
 
     q = home_q.copy()
     for _ in range(30):
-        q = adapter.solve([(target_pos, target_quat)], dt, grip=0.04)
+        q, _ = adapter.solve([(target_pos, target_quat)], dt, grip=0.04)
 
     # Assert q inside jnt_range
     for j in range(adapter.model.nq):

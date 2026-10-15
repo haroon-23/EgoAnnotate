@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
 
 # Auto-load GEMINI_API_KEY from .env if not present in environment
 if not os.environ.get("GEMINI_API_KEY"):
-    for env_path in [project_root / ".env", Path(".env"), Path.home() / "sia_agent" / ".env"]:
+    for env_path in [project_root / ".env", Path(".env")]:
         if env_path.exists():
             with open(env_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -154,6 +154,11 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow partial completion on non-fatal stage errors (exits with code 2).",
+    )
+    parser.add_argument(
         "--config",
         "-c",
         default="configs/default.yaml",
@@ -248,6 +253,8 @@ def main() -> None:
     # Initialize and run pipeline
     try:
         pipeline = EgoAnnotatePipeline(config_path=args.config)
+        if getattr(args, "allow_partial", False):
+            pipeline.config.setdefault("pipeline", {})["allow_partial"] = True
         successful_episodes = pipeline.process_videos(video_paths)
         
         if successful_episodes:
@@ -310,6 +317,8 @@ def main() -> None:
 
             
             print("=" * 60 + "\n")
+            if any(getattr(ep, "_manifest_exit_code", 0) == 2 for ep in successful_episodes):
+                sys.exit(2)
         else:
             print("Processing complete: 0 videos successfully annotated.", file=sys.stderr)
             sys.exit(1)

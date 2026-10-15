@@ -1,55 +1,25 @@
-default_posture:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.3
-- 0.0
-- 0.0
-- 0.0
-finger_close:
-- 1.2
-- 1.2
-- 1.2
-- 1.0
-finger_joints:
-- joint_1.0
-- joint_5.0
-- joint_9.0
-- joint_13.0
-finger_open:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
+name: allegro_hand_right
 kind: hand
-task_links:
-- link: link_0.0
-  ori_cost: 0.0
-  pos_cost: 0.0
+license: "BSD-2-Clause (Wonik Robotics Allegro Hand URDF)"
 urdf: data/urdfs/embodiments/allegro_clean.urdf
-velocity_limits:
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
-- 10.0
+base_frame: palm_link
+max_reach: 0.85
+default_posture: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0]
+finger_joints:
+  - joint_1.0
+  - joint_5.0
+  - joint_9.0
+  - joint_13.0
+finger_open: [0.0, 0.0, 0.0, 0.0]
+finger_close: [1.2, 1.2, 1.2, 1.0]
+full_finger_joint_map:
+  index: [joint_0.0, joint_1.0, joint_2.0, joint_3.0]
+  middle: [joint_4.0, joint_5.0, joint_6.0, joint_7.0]
+  ring: [joint_8.0, joint_9.0, joint_10.0, joint_11.0]
+  thumb: [joint_12.0, joint_13.0, joint_14.0, joint_15.0]
+task_links:
+  - link: link_0.0
+    hand: right
+    ori_cost: 0.0
+    pos_cost: 0.0
+velocity_limits: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]

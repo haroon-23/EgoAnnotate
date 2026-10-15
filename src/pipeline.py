@@ -288,12 +288,16 @@ class EgoAnnotatePipeline:
                 self.retargeter = Retargeter(r_config)
                 logger.info("Retargeting stage enabled.")
             except Exception as e:
-                logger.warning(
-                    "Failed to initialize Retargeter (%s). Retargeting stage will be skipped cleanly.",
-                    e,
-                )
-                self.enable_retargeting = False
-                self.retargeter = None
+                if bool((self.config.get("pipeline") or {}).get("allow_partial", False)):
+                    logger.warning(
+                        "Failed to initialize Retargeter (%s) with allow_partial=True; marking degraded.",
+                        e,
+                    )
+                    self._init_degraded_reasons = getattr(self, "_init_degraded_reasons", []) + [f"retargeting_init: {e}"]
+                    self.enable_retargeting = False
+                    self.retargeter = None
+                else:
+                    raise RuntimeError(f"Failed to initialize Retargeter while retargeting.enable=True: {e}") from e
 
         # 10b. Physics verification gate (Phase E, Stage 9b; opt-in, default off).
         # Runs AFTER export: replays the exported HDF5 in MuJoCo with weld-grasp
@@ -419,21 +423,46 @@ class EgoAnnotatePipeline:
             fps = 30.0
         sample_every = max(1, int(round(fps / self.video_processor.target_fps)))
 
+        from .atomic_io import RunManifest
+        from .cache_manager import StageCache
+        from .camera_motion import estimate_camera_motion
+
+        allow_partial = bool((self.config.get("pipeline") or {}).get("allow_partial", False))
+        manifest = RunManifest(
+            episode_id=episode_id or video_name,
+            video_path=video_path,
+            allow_partial=allow_partial,
+        )
+        for reason in getattr(self, "_init_degraded_reasons", []):
+            manifest.record_stage("retargeting_init", "degraded", 0.0, reason)
+
+        stage_cache = StageCache(
+            video_path,
+            enabled=bool((self.config.get("pipeline") or {}).get("enable_stage_cache", True)),
+        )
+
         # Stage 1: Video Uniform Frame Extraction
+        t_s1 = time.time()
         frames_dir = self.config.get("pipeline", {}).get("frames_dir", self.config.get("frame_output_dir", "data/frames"))
-        frame_output_dir = str(
-            Path(frames_dir) / video_name
-        )
+        frame_output_dir = str(Path(frames_dir) / video_name)
         image_paths = self.video_processor.process(video_path, frame_output_dir)
+        manifest.record_stage("video_processor", "ok", time.time() - t_s1, f"{len(image_paths)} frames")
 
-        # Stage 2: Hand Landmarks tracking
-        hand_results = self.hand_tracker.track_frames(image_paths)
-
-        # Stage 3: Object Detection (Gemini + Grounding DINO with per-frame tracking)
-        per_frame_objects = self.object_detector.detect_per_frame_objects_with_bboxes(
-            video_path, image_paths
+        # Stage 2: Hand Landmarks tracking (resumable stage cache)
+        t_s2 = time.time()
+        hand_results, s2_cached = stage_cache.load_or_compute(
+            "hand_tracking", lambda: self.hand_tracker.track_frames(image_paths)
         )
-        print(f"[Pipeline] Object bboxes populated via Grounding DINO for {len(per_frame_objects)} frames")
+        manifest.record_stage("hand_tracking", "cached" if s2_cached else "ok", time.time() - t_s2)
+
+        # Stage 3: Object Detection (resumable stage cache)
+        t_s3 = time.time()
+        per_frame_objects, s3_cached = stage_cache.load_or_compute(
+            "object_detection",
+            lambda: self.object_detector.detect_per_frame_objects_with_bboxes(video_path, image_paths),
+        )
+        manifest.record_stage("object_detection", "cached" if s3_cached else "ok", time.time() - t_s3)
+        print(f"[Pipeline] Object bboxes populated via detector for {len(per_frame_objects)} frames (cached={s3_cached})")
 
         # Stage 3b (Phase C): 3D object localization on detection keyframes.
         # Attaches metric position_3d (+ optional SAM 2 mask_rle) to keyframe
@@ -516,35 +545,43 @@ class EgoAnnotatePipeline:
         )
         print(f"[Pipeline] SignalSegmenter found {len(candidates)} candidate segments")
 
-        # Stage 6b: VLM labeling of pre-computed segments
+        # Stage 6b: VLM labeling of pre-computed segments (Fail-loud unless allow_partial)
+        t_s6 = time.time()
         segments = []
-        if self.segment_labeler is not None:
-            try:
-                segments = self.segment_labeler.label_segments(candidates, video_path)
-                print(f"[Pipeline] SegmentLabeler labeled {len(segments)} segments")
-            except Exception as e:
-                print(f"[Pipeline] SegmentLabeler failed: {e}, falling back to auto-labeling")
-                self.segment_labeler = None
-        
         if self.segment_labeler is None:
-            # Fallback: create default segments from candidates
-            segments = []
-            for cand in candidates:
-                hands = cand.hands if hasattr(cand, "hands") and cand.hands else ["right"]
-                hand_used = cand.hand_used if hasattr(cand, "hand_used") else ("both" if len(hands) == 2 else hands[0])
-                act_name = cand.transition_type if cand.transition_type != "full_video" else "idle"
-                obj_name = cand.object_name if (act_name != "idle" and cand.object_name != "unknown") else None
-                desc = build_instruction(act_name, obj_name, hands)
-                segments.append(ActionSegment(
-                    name=act_name,
-                    start_time=cand.start_time,
-                    end_time=cand.end_time,
-                    object_name=cand.object_name or "unknown",
-                    hand_used=hand_used,
-                    hands=hands,
-                    description=desc,
-                ))
-            print(f"[Pipeline] SegmentLabeler unavailable, using {len(segments)} auto-labeled segments")
+            if not allow_partial:
+                raise RuntimeError("[Pipeline] SegmentLabeler is unavailable and allow_partial=False.")
+            manifest.record_stage("segment_labeling", "degraded", 0.0, "segment_labeler unavailable")
+        else:
+            try:
+                segments, s6_cached = stage_cache.load_or_compute(
+                    "segment_labeling",
+                    lambda: self.segment_labeler.label_segments(candidates, video_path),
+                )
+                manifest.record_stage("segment_labeling", "cached" if s6_cached else "ok", time.time() - t_s6)
+                print(f"[Pipeline] SegmentLabeler labeled {len(segments)} segments (cached={s6_cached})")
+            except Exception as e:
+                if not allow_partial:
+                    manifest.record_stage("segment_labeling", "failed", time.time() - t_s6, str(e))
+                    out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
+                    manifest.save(out_ep_dir / "manifest.json")
+                    raise RuntimeError(f"[Pipeline] SegmentLabeler failed (strict mode): {e}") from e
+                manifest.record_stage("segment_labeling", "degraded", time.time() - t_s6, str(e))
+                for cand in candidates:
+                    hands = cand.hands if hasattr(cand, "hands") and cand.hands else ["right"]
+                    hand_used = cand.hand_used if hasattr(cand, "hand_used") else ("both" if len(hands) == 2 else hands[0])
+                    act_name = cand.transition_type if cand.transition_type != "full_video" else "idle"
+                    obj_name = cand.object_name if (act_name != "idle" and cand.object_name != "unknown") else None
+                    desc = build_instruction(act_name, obj_name, hands)
+                    segments.append(ActionSegment(
+                        name=act_name,
+                        start_time=cand.start_time,
+                        end_time=cand.end_time,
+                        object_name=cand.object_name or "unknown",
+                        hand_used=hand_used,
+                        hands=hands,
+                        description=desc,
+                    ))
 
         # Map segment labels to frames
         for frame in frames:
@@ -557,9 +594,23 @@ class EgoAnnotatePipeline:
             if not assigned:
                 frame.action_segment = "idle"
 
-        # Stage 7: Language Generation
+        # Stage 7: Language Generation (Fail-loud unless allow_partial)
         gc.collect()
-        task_description = self.language_generator.generate_episode_description(video_path)
+        t_s7 = time.time()
+        try:
+            task_description, s7_cached = stage_cache.load_or_compute(
+                "language_generation",
+                lambda: self.language_generator.generate_episode_description(video_path),
+            )
+            manifest.record_stage("language_generation", "cached" if s7_cached else "ok", time.time() - t_s7)
+        except Exception as e:
+            if not allow_partial:
+                manifest.record_stage("language_generation", "failed", time.time() - t_s7, str(e))
+                out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
+                manifest.save(out_ep_dir / "manifest.json")
+                raise
+            manifest.record_stage("language_generation", "degraded", time.time() - t_s7, str(e))
+            task_description = "partial_run_unlabeled_task" 
         for seg in segments:
             obj_name = seg.object_name if (seg.name != "idle" and seg.object_name != "unknown") else None
             seg.description = build_instruction(seg.name, obj_name, seg.hands)
@@ -646,6 +697,10 @@ class EgoAnnotatePipeline:
         if episode_id is None:
             episode_id = video_name
 
+        # Estimate background camera ego-motion via optical flow
+        cam_motion = estimate_camera_motion(image_paths, frames, fps=fps / max(sample_every, 1))
+        manifest.metrics["camera_motion"] = cam_motion.to_dict()
+
         duration_sec = total_frames / fps if fps > 0 else 0.0
         episode = AnnotatedEpisode(
             episode_id=episode_id,
@@ -656,6 +711,8 @@ class EgoAnnotatePipeline:
             num_frames=len(frames),
             duration_seconds=duration_sec,
             target_robot=target_robot_name,
+            camera_motion_flag=cam_motion.camera_motion_flag,
+            camera_motion_px_per_sec=cam_motion.mean_bg_speed_px_per_sec,
         )
 
         if hasattr(self.hand_tracker, "last_metrics") and self.hand_tracker.last_metrics:
@@ -676,7 +733,11 @@ class EgoAnnotatePipeline:
         # Replays the exported HDF5 in MuJoCo with weld-grasp trials and sets
         # the physics_verified label. On ANY failure the episode is KEPT —
         # the verifier gates only the label, never the data.
+        manifest.record_stage("export", "ok", time.time() - export_started)
         self._maybe_verify_physics(episode, not_before=export_started)
+        out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
+        manifest.save(out_ep_dir / "manifest.json")
+        episode._manifest_exit_code = manifest.exit_code
 
         print("\n" + "=" * 50)
         print("EPISODE ANNOTATION COMPLETE")

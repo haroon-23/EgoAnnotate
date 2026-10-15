@@ -1,4 +1,25 @@
+name: unitree_h1_upper
 kind: humanoid
+license: "BSD-3-Clause (Unitree Robotics H1 URDF)"
 urdf: data/urdfs/embodiments/h1_clean.urdf
-task_links: [{link: right_elbow_link, pos_cost: 1.0, ori_cost: 1.0}]
+base_frame: pelvis
+max_reach: 1.2
+workspace:
+  x_min: 0.20
+  x_max: 0.65
+  y_min: -0.50
+  y_max: 0.50
+  z_min: -0.10
+  z_max: 0.50
+task_links:
+  - link: right_elbow_link
+    hand: right
+    target_offset: [-0.08, -0.10, -0.05]
+    pos_cost: 1.0
+    ori_cost: 0.2
+  - link: left_elbow_link
+    hand: left
+    target_offset: [-0.08, 0.10, -0.05]
+    pos_cost: 1.0
+    ori_cost: 0.2
 velocity_limits: [2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6]

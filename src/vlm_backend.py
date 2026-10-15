@@ -73,7 +73,7 @@ class VLMBackendConfig:
     """Configuration for both VLM backends (mirrors ``configs/default.yaml``)."""
 
     backend: str = "gemini"  # "gemini" | "local"
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-2.5-flash"
     gemini_api_key: Optional[str] = None  # None -> GEMINI_API_KEY env var
     local_model: str = SMOLVLM_MODEL_ID
     local_weights: str = "models/smolvlm-500m-instruct"  # manual download, never auto
@@ -133,7 +133,6 @@ def ensure_api_key_from_dotenv() -> None:
     candidates = [
         here.parent.parent / ".env",
         Path(".env"),
-        Path.home() / "sia_agent" / ".env",
     ]
     try:
         for env_path in candidates:
@@ -182,9 +181,23 @@ class GeminiBackend:
         return self._client
 
     def generate(self, request: VLMRequest) -> VLMResponse:
+        import hashlib
+        from .cache_manager import GLOBAL_VLM_CACHE, file_sha256
         t0 = time.time()
-        # Raises RuntimeError/ValueError exactly like the old stage _init_model
-        # did when the SDK/key was missing.
+        fps: list[str] = []
+        if request.video_path and os.path.exists(request.video_path):
+            fps.append("video:" + file_sha256(request.video_path))
+        for img in request.images:
+            fps.append("img:" + hashlib.sha256(img.tobytes()).hexdigest())
+        use_cache = (
+            "PYTEST_CURRENT_TEST" not in os.environ
+            or os.environ.get("EGO_ENABLE_VLM_CACHE_IN_TESTS") == "1"
+        )
+        cache_key = GLOBAL_VLM_CACHE.make_key(self._model_name, request.prompt, fps) if use_cache else ""
+        cached_text = GLOBAL_VLM_CACHE.get(cache_key) if use_cache else None
+        if cached_text is not None:
+            return VLMResponse(text=cached_text, backend="gemini", latency_s=time.time() - t0)
+
         client = self._ensure_client()
         if request.video_path:
             remote = upload_video_file(
@@ -207,6 +220,8 @@ class GeminiBackend:
             text = generate_text(
                 client, self._model_name, contents, temperature=request.temperature
             )
+        if text and use_cache:
+            GLOBAL_VLM_CACHE.put(cache_key, text)
         return VLMResponse(text=text or "", backend="gemini", latency_s=time.time() - t0)
 
 
@@ -433,7 +448,7 @@ def create_vlm_backend(config: Optional[VLMBackendConfig] = None) -> Optional[VL
 
 def resolve_stage_backend(
     stage_override: Optional[str],
-    gemini_model: str = "gemini-3.8-flash",
+    gemini_model: str = "gemini-2.5-flash",
     base: Optional[VLMBackendConfig] = None,
 ) -> VLMBackend:
     """Strict constructor helper: return a working backend or raise.

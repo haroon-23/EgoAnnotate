@@ -205,14 +205,8 @@ class ContactDetector:
                             best_fingers = obj_fingers
                             best_in_contact = (best_proximity_conf * depth_consistency) >= self.config.min_confidence
 
-                elif obj.touched:
-                    name_lower = obj.name.lower()
-                    if not any(term in name_lower for term in ["person", "human", "arm", "body", "hand"]):
-                        best_object_name = obj.name
-                        best_fingers = np.ones(5, dtype=bool)
-                        best_in_contact = True
-                        best_proximity_conf = 0.3
-                        break
+                # Removed 5-fingertip VLM-only fallback when bbox is None:
+                # Contact requires geometric fingertip-to-bbox proximity evidence.
 
         # Temporal smoothing
         raw_conf = best_proximity_conf * depth_consistency if best_in_contact else 0.0

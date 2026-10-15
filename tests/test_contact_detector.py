@@ -108,7 +108,7 @@ class TestContactDetector(unittest.TestCase):
         self.assertEqual(state.confidence, 0.0)
 
     def test_detect_contact_fallback_vlm(self):
-        """Test fallback to marking all fingers if object has no bbox but touched=True."""
+        """Phase 1 Fail-Loud Rule: Object with bbox=None must NOT hallucinate 5-finger contact."""
         config = ContactDetectorConfig()
         detector = ContactDetector(config)
         
@@ -124,17 +124,9 @@ class TestContactDetector(unittest.TestCase):
         
         state = detector.detect_contact(hand, objects, hand_side="right")
         self.assertIsNotNone(state)
-        self.assertTrue(state.in_contact)
-        self.assertEqual(state.object_name, "apple")
-        np.testing.assert_array_equal(state.fingers, [True, True, True, True, True])
-        # Fallback should have low confidence (0.3 * 0.5 = 0.15, but min_confidence=0.3 so it's in_contact)
-        # Actually with fallback: proximity=0.3, depth=0.5 -> raw=0.15, but min_confidence=0.3
-        # Wait, the fallback logic sets proximity_conf=0.3 and depth=0.5 -> raw=0.15
-        # But min_confidence=0.3 so in_contact would be False...
-        # Let me check: the fallback has its own logic that forces in_contact=True
-        # So confidence should be around 0.15 (raw)
-        self.assertGreater(state.confidence, 0.0)
-        self.assertLessEqual(state.confidence, 1.0)
+        self.assertFalse(state.in_contact)
+        self.assertIsNone(state.object_name)
+        self.assertFalse(np.any(state.fingers))
 
     def test_depth_consistency_returns_valid_range(self):
         """Test that depth consistency score is in valid range [0, 1]."""

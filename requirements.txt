@@ -1,70 +1,19 @@
-# Core dependencies
-opencv-python>=4.8.0
-numpy>=1.24.0
-pillow>=10.0.0
-scipy>=1.11.0
-tqdm>=4.65.0
-pyyaml>=6.0
-
-# MediaPipe for hand tracking, object detection, pose estimation
-mediapipe>=0.10.0
-
-# Google Gemini API for language generation
-google-genai>=1.0
-
-# Grounding DINO for zero-shot object detection
-transformers>=4.30.0
-torch>=2.0.0  # CPU-only wheel on Intel Mac; required only for training (Phase B+).
-              # Install: pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# Data export formats
+# Pinned for macOS Intel x86_64 (CPU-only, Python 3.10)
+torch==2.2.2
+torchvision==0.17.2
+transformers==4.47.1
+mediapipe==0.10.21
+opencv-python==4.10.0.84
+numpy>=1.24.0,<2.0.0
+scipy==1.15.3
+h5py==3.16.0
+pyarrow>=15.0.0
 pandas>=2.0.0
-pyarrow>=12.0.0
-h5py>=3.9.0
-
-# Optional: visualization
-matplotlib>=3.7.0
-
-# LeRobot v2.1 export video compilation
-imageio[ffmpeg]
-
-# Retargeting: robot simulation and URDF parsing
-pybullet>=3.2.5
-urdfpy>=0.0.22
-
-# Optional — Phase C perception (CPU-only, 2017 Intel Mac).
-# Everything below is import-guarded: `pip install -r requirements.txt` (base)
-# works without any of these, and the pipeline degrades gracefully.
-# onnxruntime>=1.17.0            # UniDepth ONNX backend (macOS x86_64 wheels exist)
-# sam2>=1.0                      # SAM 2 (pip; CPU inference works but slow; needs torch>=2.5.1)
-# Grounding DINO (IDEA-Research, SwinT_OGC) has no PyPI package; install with:
-#   pip install --no-build-isolation -e git+https://github.com/IDEA-Research/GroundingDINO.git
-# (torch must be pre-installed; without CUDA the _C extension is skipped and
-# CPU inference still works). Weights (~170MB, manual download, no auto-download):
-#   https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
-
-# Optional — Phase D local VLM (SmolVLM-500M-Instruct, CPU-only, 2017 Intel Mac).
-# transformers>=4.30.0 and torch>=2.0.0 are already listed above, so the local
-# backend adds ZERO new dependencies — only a manual weight download:
-#   https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct -> models/smolvlm-500m-instruct/
-# NOTE: this is deliberately NOT OpenMMLab's MM-Grounding-DINO — mmcv/mmdet has
-# no usable macOS-Intel wheels, so the MM variant is uninstallable on this dev machine.
-
-# Optional — LocateAnything-3B open-vocab grounding VLM (research-only weights).
-# transformers>=4.30.0 and torch>=2.0.0 are already listed above, so this adds
-# ZERO new dependencies — only a manual weight download:
-#   https://huggingface.co/nvidia/LocateAnything-3B -> models/locate-anything-3b/
-# Upstream pins transformers==4.57.1 (5.x breaks its custom modeling code);
-# the backend warns (does not fail) on other 4.x versions, and requires
-# trust_remote_code=True. LICENSE: NVIDIA non-commercial, research-only —
-# eval/research use, not the commercial default.
-
-# Optional — Phase E physics verification (mink IK backend + episode verifier).
-# Everything is import-guarded: `pip install -r requirements.txt` (base) works
-# without these, and the pipeline degrades gracefully (verifier reports
-# failure, never a silent pass; mink backend raises ImportError with help).
-# No weight downloads — the robot URDF is the only model file needed.
-# mujoco>=3.0                    # physics replay + weld-grasp trials + hero_clip renderer
-# mink>=0.1                      # differential IK backend (ik_backend: "mink"); pip-installable, Apache-2.0
-#   # Optional QP solvers for mink (fallback chain: configured -> daqp -> library default):
-#   # quadprog, daqp
+pyyaml>=6.0
+pillow>=10.0.0
+google-genai>=1.0.0
+mujoco>=3.1.0
+mink>=0.0.5
+daqp>=0.5.1
+lerobot==0.4.4
+pytest>=8.0.0

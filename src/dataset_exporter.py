@@ -75,6 +75,12 @@ class DatasetExporter:
 
         # 6. Create summary metrics file
         self._create_summary(episode, episode_dir)
+        try:
+            from .mcap_exporter import export_episode_to_mcap
+            export_episode_to_mcap(episode, episode_dir / "episode.mcap")
+        except Exception as e:
+            logger.error("Failed to export episode.mcap: %s", e)
+            raise
 
         # 7. Export RLDS HDF5 — fail-loud
         self._export_rlds(episode, episode_dir)
@@ -584,7 +590,9 @@ class DatasetExporter:
             "tracking_loss_pct_active": getattr(episode, "tracking_loss_pct_active", default_loss_active),
             "tracking_rescued_pct": getattr(episode, "tracking_rescued_pct", 0.0),
             "tracking_interpolated_pct": getattr(episode, "tracking_interpolated_pct", 100.0 * sum(1 for f in episode.frames if (f.left_hand and f.left_hand.is_interpolated) or (f.right_hand and f.right_hand.is_interpolated)) / max(total_frames, 1)),
+            "camera_motion_flag": bool(getattr(episode, "camera_motion_flag", False)),
+            "camera_motion_px_per_sec": float(getattr(episode, "camera_motion_px_per_sec", 0.0)),
         }
 
-        with open(episode_dir / "summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
+        from .atomic_io import atomic_write_json
+        atomic_write_json(episode_dir / "summary.json", summary)

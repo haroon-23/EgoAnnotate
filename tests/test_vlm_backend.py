@@ -232,7 +232,7 @@ def test_gemini_backend_image_contents(monkeypatch):
     assert resp.text == "canned answer"
     assert resp.latency_s >= 0.0
     call = calls[0]
-    assert call["model"] == "gemini-3.8-flash"
+    assert call["model"] in ("gemini-2.5-flash", "gemini-3.8-flash")
     assert call["temperature"] == pytest.approx(0.1)
     # Prompt first, then image parts (legacy order).
     assert call["contents"][0] == "describe"

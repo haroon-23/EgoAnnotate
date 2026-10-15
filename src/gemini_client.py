@@ -42,6 +42,8 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 #: Model names from the google-generativeai era. All retired; remapped below.
 _LEGACY_MODEL_ALIASES = {
     "gemini-1.5-flash",
+    "gemini-3.8-flash",
+    "models/gemini-3.8-flash",
     "gemini-flash-latest",
     "gemini-1.5-pro-latest",
     "gemini-flash-lite-latest",
@@ -106,7 +108,16 @@ def pil_to_part(pil_image):
 
 _RETRYABLE_CODES = {429, 500, 502, 503, 504}
 _RETRYABLE_STATUSES = {"RESOURCE_EXHAUSTED", "UNAVAILABLE", "OVERLOADED"}
-_SERVER_HINT_RE = re.compile(r"retry in ([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
+_SERVER_HINT_RE = re.compile(r"retry in (?:([0-9]+)m)?([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
+
+
+def _parse_server_hint_s(exc: Exception):
+    m = _SERVER_HINT_RE.search(str(exc))
+    if not m:
+        return None
+    mins = float(m.group(1)) if m.group(1) else 0.0
+    secs = float(m.group(2))
+    return mins * 60.0 + secs
 
 
 class _GeminiPacer:
@@ -181,9 +192,9 @@ def _retry_delay_s(exc: Exception, attempt: int) -> float:
     120s); otherwise exponential backoff 2s, 4s, 8s... capped at 60s, with
     ±25% jitter to de-synchronise parallel callers.
     """
-    m = _SERVER_HINT_RE.search(str(exc))
-    if m:
-        return min(120.0, float(m.group(1)) + 1.0)
+    hint_s = _parse_server_hint_s(exc)
+    if hint_s is not None:
+        return min(120.0, hint_s + 1.0)
     backoff = min(60.0, 2.0 * (2 ** attempt))
     return backoff * (1.0 + random.uniform(-0.25, 0.25))
 
@@ -216,15 +227,15 @@ def generate_text(client, model_name: str, contents: list, temperature: float = 
             # quota is exhausted — retrying inside this run cannot fix it.
             # Fail fast so the caller's fallback takes over immediately
             # instead of burning minutes of wall-clock per label call.
-            hint = _SERVER_HINT_RE.search(str(exc))
-            if hint and float(hint.group(1)) > 240.0:
+            hint_s = _parse_server_hint_s(exc)
+            if hint_s is not None and hint_s > 240.0:
                 logger.warning(
                     "[gemini_client] Gemini quota exhausted (server asks to "
-                    "retry in %ss — daily limit). Failing fast to fallback; "
+                    "retry in %.1fs — daily limit). Failing fast to fallback; "
                     "enable billing (Tier 1) to remove the daily cap.",
-                    hint.group(1),
+                    hint_s,
                 )
-                raise
+                raise RuntimeError(f"Gemini daily quota exhausted (server retry hint {hint_s:.1f}s)")
             delay = _retry_delay_s(exc, attempt)
             logger.warning(
                 "[gemini_client] Transient API error (%s: %s). "

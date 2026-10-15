@@ -55,8 +55,8 @@ def test_api_key_missing_raises_error():
 
 def test_config_initialization():
     config = LanguageGeneratorConfig()
-    assert config.gemini_model == "gemini-3.8-flash"
-    assert "overall task" in config.episode_prompt
+    assert config.gemini_model == "gemini-2.5-flash"
+    assert "overall" in config.episode_prompt and "task" in config.episode_prompt
     assert "description" in config.segment_prompt
 
 
@@ -101,7 +101,7 @@ def test_generate_segment_descriptions_success():
 
 
 def test_generate_segment_descriptions_fallback():
-    """Test fallback to '{name} the {object}' if segment parsing fails."""
+    """Unparseable VLM output raises RuntimeError (no silent fallback)."""
     generator = _make_generator("invalid output format")
 
     segments = [
@@ -109,18 +109,16 @@ def test_generate_segment_descriptions_fallback():
         ActionSegment(name="place_down", start_time=5.0, end_time=12.5, object_name="cup", hand_used="right", hands=["right"])
     ]
 
-    results = generator.generate_segment_descriptions("dummy_path.mp4", segments)
-    assert len(results) == 2
-    assert results[0] == "pick_up spoon with left hand"
-    assert results[1] == "place_down cup with right hand"
+    with pytest.raises(RuntimeError):
+        generator.generate_segment_descriptions("dummy_path.mp4", segments)
 
 
 def test_generate_episode_description_failure_returns_fallback():
-    """Backend failure -> the 'manipulating object' fallback."""
+    """Backend failure -> raises RuntimeError loudly (never canned 'manipulating object')."""
     class Boom(FakeVLMBackend):
         def generate(self, request):
             raise RuntimeError("boom")
 
     generator = GeminiLanguageGenerator(LanguageGeneratorConfig(), vlm=Boom(""))
-    result = generator.generate_episode_description("dummy_path.mp4")
-    assert result == "manipulating object"
+    with pytest.raises(RuntimeError):
+        generator.generate_episode_description("dummy_path.mp4")

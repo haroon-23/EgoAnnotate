@@ -65,6 +65,7 @@ class PoseMapperConfig:
     smoothing_polyorder: int = 2
     enable_metric_calibration: bool = True
     camera_intrinsics: Optional[Dict[str, float]] = None
+    lock_driving_hand: bool = True
 
 
 @dataclass
@@ -230,6 +231,14 @@ class PoseMapper:
         Returns:
             List of TargetPose, one per input frame.
         """
+        # --- Lock persistent hand side for this episode (no mid-clip hand swapping) ---
+        if getattr(self, '_force_exact_side', None) in ('left', 'right'):
+            self._locked_side = self._force_exact_side
+        elif getattr(self.config, 'lock_driving_hand', True):
+            self._locked_side = self._resolve_episode_hand_side(frames)
+        else:
+            self._locked_side = None
+
         # --- Pass 1: collect raw wrist positions ----------------------------
         raw_wrists: List[Optional[np.ndarray]] = []
         for frame in frames:
@@ -241,27 +250,39 @@ class PoseMapper:
             else:
                 raw_wrists.append(None)
 
-        # --- Compute normalization bounds from all detected wrists ----------
+        # --- Fixed-Anchor Anthropometric Metric Scaling (Phase 1) -----------
         detected = [w for w in raw_wrists if w is not None]
         if detected:
             wrist_arr = np.stack(detected, axis=0)  # (N_detected, 3)
             human_min = wrist_arr.min(axis=0)
             human_max = wrist_arr.max(axis=0)
+            human_anchor = np.median(wrist_arr, axis=0)
         else:
-            # Fallback: unit cube
             human_min = np.zeros(3)
             human_max = np.ones(3)
-
-        # Clamp range to avoid division by zero if wrist barely moves
-        human_range = human_max - human_min
-        human_range = np.where(human_range > 1e-6, human_range, 1.0)
+            human_anchor = np.array([0.5, 0.5, 0.0], dtype=np.float64)
 
         wb = self.config.robot_workspace_bounds
         robot_min = np.array([wb["x_min"], wb["y_min"], wb["z_min"]], dtype=np.float64)
         robot_max = np.array([wb["x_max"], wb["y_max"], wb["z_max"]], dtype=np.float64)
-        robot_range = robot_max - robot_min
+        robot_anchor = np.array([
+            0.5 * (wb["x_min"] + wb["x_max"]),
+            0.5 * (wb["y_min"] + wb["y_max"]),
+            max(self.config.z_floor_m + 0.08, 0.45),
+        ], dtype=np.float64)
 
-        # --- Metric Calibration Estimation ----------------------------------
+        # Estimate metric scale (metres per normalized unit) from palm anthropometry:
+        # anatomical distance wrist (0) -> middle_finger_mcp (9) is ~0.085m (+/- 15%).
+        palm_lengths_2d = []
+        for f in frames:
+            h_obj, _ = self._select_hand(f)
+            if h_obj is not None:
+                d2 = float(np.hypot(h_obj.x[9] - h_obj.x[0], h_obj.y[9] - h_obj.y[0]))
+                if d2 > 1e-3:
+                    palm_lengths_2d.append(d2)
+        median_palm_norm = float(np.median(palm_lengths_2d)) if palm_lengths_2d else 0.15
+        anthro_scale_m = float(np.clip(0.085 / max(median_palm_norm, 0.04), 0.15, 1.20))
+
         if self.config.enable_metric_calibration:
             from .metric_calibration import MetricCalibrator, MetricCalibrationConfig
             calibrator_cfg = MetricCalibrationConfig(
@@ -272,17 +293,22 @@ class PoseMapper:
             hands = [self._select_hand(f)[0] for f in frames]
             metric_res = calibrator.calibrate(hands, raw_wrists)
             metric_meta = metric_res.metadata
+            if isinstance(metric_meta, dict) and metric_meta.get("scale_m_per_unit"):
+                anthro_scale_m = float(np.clip(metric_meta["scale_m_per_unit"], 0.15, 1.20))
         else:
-            metric_meta = {"calibration_method": "disabled"}
+            metric_meta = {"calibration_method": "anthropometric_fixed_anchor"}
 
         scaling_metadata_base = {
-            "method": "linear_workspace_normalization",
+            "method": "fixed_anchor_anthropometric_metric",
             "caveat": (
                 "MediaPipe z is monocular relative depth, not metric. "
-                "Workspace mapping is a linear scaling approximation preserving "
-                "motion shape, NOT metric accuracy. Treat as retargeted motion "
-                "style demonstration only."
+                "Fixed-anchor anthropometric scaling (~0.085m palm reference, +/-15% margin) "
+                "preserves physical motion magnitude without per-episode workspace stretching."
             ),
+            "scale_m_per_norm_unit": round(anthro_scale_m, 4),
+            "estimated_error_margin_pct": 15.0,
+            "human_anchor_norm": human_anchor.tolist(),
+            "robot_anchor_m": robot_anchor.tolist(),
             "human_wrist_bbox_min": human_min.tolist(),
             "human_wrist_bbox_max": human_max.tolist(),
             "robot_workspace_min_m": robot_min.tolist(),
@@ -316,9 +342,16 @@ class PoseMapper:
                 ))
                 continue
 
-            # Normalize wrist position to robot workspace
-            alpha = (raw_wrist - human_min) / human_range  # [0,1]^3
-            pos = robot_min + alpha * robot_range            # robot metres
+            # Fixed-anchor metric mapping (preserves real physical motion magnitude):
+            # Camera frame delta -> Robot base frame (depth -> +X, right -> -Y, up -> +Z)
+            delta_norm = raw_wrist - human_anchor
+            delta_m = np.array([
+                -delta_norm[2] * anthro_scale_m,
+                -delta_norm[0] * anthro_scale_m,
+                -delta_norm[1] * anthro_scale_m,
+            ], dtype=np.float64)
+            pos = np.clip(robot_anchor + delta_m, robot_min, robot_max)
+            alpha = delta_m
 
             # Enforce z floor
             pos[2] = max(pos[2], self.config.z_floor_m)
@@ -377,22 +410,61 @@ class PoseMapper:
         return targets
 
 
-    def _select_hand(self, frame) -> Tuple[Optional[HandLandmarks], Optional[str]]:
-        """Return (hand, side) according to preferred_hand config."""
+    def _resolve_episode_hand_side(self, frames: List) -> str:
+        """Determine and lock a single persistent hand side ('right' or 'left') for the episode."""
         pref = self.config.preferred_hand.lower()
-        if pref == "right":
-            if frame.right_hand is not None:
-                return frame.right_hand, "right"
+        if pref in ("right", "left"):
+            if not getattr(self.config, "lock_driving_hand", True):
+                return pref
+            # If preferred hand is present in at least 1 frame, lock to it; else if only other hand exists, lock to other
+            n_right = sum(1 for f in frames if getattr(f, "right_hand", None) is not None)
+            n_left = sum(1 for f in frames if getattr(f, "left_hand", None) is not None)
+            if pref == "right" and n_right == 0 and n_left > 0:
+                return "left"
+            if pref == "left" and n_left == 0 and n_right > 0:
+                return "right"
+            return pref
+        # "auto": pick whichever hand has more tracked frames (tie-break right) and lock it for the whole clip
+        n_right = sum(1 for f in frames if getattr(f, "right_hand", None) is not None)
+        n_left = sum(1 for f in frames if getattr(f, "left_hand", None) is not None)
+        return "left" if n_left > n_right else "right"
+
+    def _select_hand(self, frame, locked_side: Optional[str] = None) -> Tuple[Optional[HandLandmarks], Optional[str]]:
+        """Return (hand, side) strictly without mid-clip hand swapping when locked_side is set."""
+        side = locked_side or getattr(self, "_locked_side", None)
+        if side == "right":
+            return (frame.right_hand, "right") if frame.right_hand is not None else (None, None)
+        if side == "left":
+            return (frame.left_hand, "left") if frame.left_hand is not None else (None, None)
+
+        pref = self.config.preferred_hand.lower()
+        if getattr(self.config, "lock_driving_hand", True):
+            if pref == "left":
+                return (frame.left_hand, "left") if frame.left_hand is not None else (None, None)
+            return (frame.right_hand, "right") if frame.right_hand is not None else (None, None)
+
+        if pref == "left":
             if frame.left_hand is not None:
                 return frame.left_hand, "left"
-        elif pref == "left":
-            if frame.left_hand is not None:
-                return frame.left_hand, "left"
             if frame.right_hand is not None:
                 return frame.right_hand, "right"
-        else:  # "auto" — right preferred
+        else:
             if frame.right_hand is not None:
                 return frame.right_hand, "right"
             if frame.left_hand is not None:
                 return frame.left_hand, "left"
         return None, None
+
+    def map_frames_for_hand(self, frames: List, hand_side: str) -> List[TargetPose]:
+        """Map frames strictly for a specific hand ('left' or 'right') without cross-hand fallback."""
+        prev_pref = self.config.preferred_hand
+        prev_lock = getattr(self.config, "lock_driving_hand", True)
+        try:
+            self.config.preferred_hand = hand_side.lower()
+            self.config.lock_driving_hand = True
+            self._force_exact_side = hand_side.lower()
+            return self.map_frames(frames)
+        finally:
+            self._force_exact_side = None
+            self.config.preferred_hand = prev_pref
+            self.config.lock_driving_hand = prev_lock
