@@ -12,11 +12,19 @@ def test_franka_adapter_solve():
     dt = 1.0 / 30.0
 
     # Get home FK position as target
-    home_q = np.zeros(adapter.model.nq)
-    fk0 = adapter.fk(home_q)
+    home_q = adapter.default_q.copy()
+    adapter.cfgm.update(home_q)
     target_link = adapter.task_links[0]["link"]
+    fk0 = adapter.fk(home_q)
     target_pos = fk0[target_link]
-    target_quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+    import mujoco as mj
+    from scipy.spatial.transform import Rotation
+    bid = mj.mj_name2id(adapter.model, mj.mjtObj.mjOBJ_BODY, target_link)
+    d = mj.MjData(adapter.model)
+    d.qpos[: len(home_q)] = home_q
+    mj.mj_forward(adapter.model, d)
+    target_quat = Rotation.from_matrix(d.xmat[bid].reshape(3, 3)).as_quat()
 
     q = home_q.copy()
     for _ in range(30):

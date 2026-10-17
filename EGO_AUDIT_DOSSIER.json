@@ -1,0 +1,282 @@
+{
+  "project": "EgoAnnotate v1.0.0",
+  "raw_videos": {
+    "client_video.mp4": {
+      "size_mb": 103.88,
+      "sha256_prefix": "703afa7f5298efca"
+    },
+    "my_video.mp4": {
+      "size_mb": 103.53,
+      "sha256_prefix": "c816721a01bfc7f1"
+    },
+    "new_video.mp4": {
+      "size_mb": 240.69,
+      "sha256_prefix": "f921de7e4450fe4d"
+    },
+    "test_10s.mp4": {
+      "size_mb": 5.68,
+      "sha256_prefix": "677fc7be0e63c77e"
+    },
+    "whatsapp_video.mp4": {
+      "size_mb": 4.84,
+      "sha256_prefix": "64b107c551ff66a8"
+    }
+  },
+  "episodes": {
+    "client_video": {
+      "task_description": "first-person precision pinch and object inspection",
+      "num_segments": 12,
+      "summary": {
+        "left_grasp_distribution": {
+          "precision_pinch": 102,
+          "open": 7
+        },
+        "right_grasp_distribution": {
+          "precision_pinch": 36,
+          "open": 10
+        },
+        "left_contact_frames": 102,
+        "right_contact_frames": 36,
+        "total_frames": 300,
+        "ratio_left_contact": 0.34,
+        "ratio_right_contact": 0.12,
+        "tracking_loss_pct": 89.33333333333333,
+        "tracking_loss_pct_active": 81.60919540229885,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 9.666666666666666,
+        "camera_motion_flag": true,
+        "camera_motion_px_per_sec": 84.54454882670257
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 100.0,
+        "unitree_h1_upper": 98.8,
+        "allegro_hand_right": 100.0
+      }
+    },
+    "my_video": {
+      "task_description": "bimanual workspace manipulation and object placement",
+      "num_segments": 9,
+      "summary": {
+        "left_grasp_distribution": {
+          "open": 232,
+          "precision_pinch": 33
+        },
+        "right_grasp_distribution": {
+          "open": 223,
+          "precision_pinch": 33
+        },
+        "left_contact_frames": 106,
+        "right_contact_frames": 123,
+        "total_frames": 300,
+        "ratio_left_contact": 0.35333333333333333,
+        "ratio_right_contact": 0.41,
+        "tracking_loss_pct": 21.0,
+        "tracking_loss_pct_active": 21.0,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 18.666666666666668,
+        "camera_motion_flag": true,
+        "camera_motion_px_per_sec": 45.37315922268366
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 100.0,
+        "unitree_h1_upper": 97.4,
+        "allegro_hand_right": 100.0
+      }
+    },
+    "new_video": {
+      "task_description": "bimanual hook and pinch handling of workspace item",
+      "num_segments": 5,
+      "summary": {
+        "left_grasp_distribution": {
+          "open": 216,
+          "precision_pinch": 5,
+          "hook": 6
+        },
+        "right_grasp_distribution": {
+          "open": 173,
+          "precision_pinch": 8
+        },
+        "left_contact_frames": 19,
+        "right_contact_frames": 55,
+        "total_frames": 300,
+        "ratio_left_contact": 0.06333333333333334,
+        "ratio_right_contact": 0.18333333333333332,
+        "tracking_loss_pct": 56.333333333333336,
+        "tracking_loss_pct_active": 56.187290969899664,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 11.333333333333334,
+        "camera_motion_flag": true,
+        "camera_motion_px_per_sec": 18.597550713409813
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 100.0,
+        "unitree_h1_upper": 99.2,
+        "allegro_hand_right": 100.0
+      }
+    },
+    "test_10s": {
+      "task_description": "reaching and precision pinching tabletop component",
+      "num_segments": 7,
+      "summary": {
+        "left_grasp_distribution": {
+          "open": 222,
+          "precision_pinch": 30
+        },
+        "right_grasp_distribution": {
+          "open": 215,
+          "precision_pinch": 41
+        },
+        "left_contact_frames": 43,
+        "right_contact_frames": 43,
+        "total_frames": 300,
+        "ratio_left_contact": 0.14333333333333334,
+        "ratio_right_contact": 0.14333333333333334,
+        "tracking_loss_pct": 25.333333333333332,
+        "tracking_loss_pct_active": 25.333333333333332,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 16.333333333333332,
+        "camera_motion_flag": true,
+        "camera_motion_px_per_sec": 45.794207390082086
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 100.0,
+        "unitree_h1_upper": 97.9,
+        "allegro_hand_right": 100.0
+      }
+    },
+    "whatsapp_video": {
+      "task_description": "bimanual tabletop object manipulation and precision transfer",
+      "num_segments": 21,
+      "summary": {
+        "left_grasp_distribution": {
+          "None": 248,
+          "open": 337,
+          "precision_pinch": 132,
+          "hook": 12
+        },
+        "right_grasp_distribution": {
+          "None": 258,
+          "open": 284,
+          "precision_pinch": 113,
+          "hook": 74
+        },
+        "left_contact_frames": 151,
+        "right_contact_frames": 204,
+        "total_frames": 729,
+        "ratio_left_contact": 0.20713305898491083,
+        "ratio_right_contact": 0.27983539094650206,
+        "tracking_loss_pct": 43.62139917695473,
+        "tracking_loss_pct_active": 30.574324324324323,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 0.0,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 98.0,
+        "unitree_h1_upper": 99.3,
+        "allegro_hand_right": 100.0
+      }
+    }
+  },
+  "merged_lerobot": {
+    "codebase_version": "v3.0",
+    "robot_type": "panda",
+    "export_mode": "robot",
+    "action_convention": "absolute_joint_positions",
+    "fps": 30.0,
+    "fps_source": "default",
+    "total_episodes": 5,
+    "total_frames": 1929,
+    "total_tasks": 2,
+    "total_videos": 0,
+    "total_chunks": 3,
+    "chunks_size": 1000,
+    "splits": {
+      "train": "0:5"
+    },
+    "data_files_size_in_mb": 0.164,
+    "video_files_size_in_mb": 0.0,
+    "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+    "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+    "features": {
+      "observation.state": {
+        "dtype": "float32",
+        "shape": [
+          8
+        ],
+        "names": [
+          "j1",
+          "j2",
+          "j3",
+          "j4",
+          "j5",
+          "j6",
+          "j7",
+          "gripper_m"
+        ]
+      },
+      "action": {
+        "dtype": "float32",
+        "shape": [
+          8
+        ],
+        "names": [
+          "j1",
+          "j2",
+          "j3",
+          "j4",
+          "j5",
+          "j6",
+          "j7",
+          "gripper_m"
+        ]
+      },
+      "timestamp": {
+        "dtype": "float32",
+        "shape": [
+          1
+        ],
+        "names": null
+      },
+      "frame_index": {
+        "dtype": "int64",
+        "shape": [
+          1
+        ],
+        "names": null
+      },
+      "episode_index": {
+        "dtype": "int64",
+        "shape": [
+          1
+        ],
+        "names": null
+      },
+      "index": {
+        "dtype": "int64",
+        "shape": [
+          1
+        ],
+        "names": null
+      },
+      "task_index": {
+        "dtype": "int64",
+        "shape": [
+          1
+        ],
+        "names": null
+      }
+    }
+  },
+  "source_modules_count": 49,
+  "test_suite": {
+    "status": "all_passed",
+    "count": 15
+  }
+}

@@ -56,8 +56,9 @@ class DatasetExporter:
 
         logger.info("Exporting episode %s to: %s", episode.episode_id, episode_dir)
 
-        # 1. Export frame annotations (JSON or Parquet)
+        # 1. Export frame annotations (JSON or Parquet) and canonical episode JSON
         self._export_frames(episode, episode_dir)
+        episode.save_json(episode_dir / "annotations.json")
 
         # 2. Export episode metadata
         self._export_metadata(episode, episode_dir)

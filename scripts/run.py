@@ -239,6 +239,10 @@ def main() -> None:
             # Standalone RLDS export mode
             run_export_only(args.export_rlds, args.config)
             sys.exit(0)
+        elif args.merge_lerobot:
+            # Standalone LeRobot merge mode
+            run_merge_lerobot_only(args.config)
+            sys.exit(0)
         else:
             print("Error: No valid video paths found to process.", file=sys.stderr)
             parser.print_help()

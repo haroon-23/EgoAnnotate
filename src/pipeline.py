@@ -457,11 +457,21 @@ class EgoAnnotatePipeline:
 
         # Stage 3: Object Detection (resumable stage cache)
         t_s3 = time.time()
-        per_frame_objects, s3_cached = stage_cache.load_or_compute(
-            "object_detection",
-            lambda: self.object_detector.detect_per_frame_objects_with_bboxes(video_path, image_paths),
-        )
-        manifest.record_stage("object_detection", "cached" if s3_cached else "ok", time.time() - t_s3)
+        try:
+            per_frame_objects, s3_cached = stage_cache.load_or_compute(
+                "object_detection",
+                lambda: self.object_detector.detect_per_frame_objects_with_bboxes(video_path, image_paths),
+            )
+            manifest.record_stage("object_detection", "cached" if s3_cached else "ok", time.time() - t_s3)
+        except Exception as exc:
+            if not allow_partial:
+                manifest.record_stage("object_detection", "failed", time.time() - t_s3, str(exc))
+                out_ep_dir = Path(self.dataset_exporter.output_path) / (episode_id or video_name)
+                manifest.save(out_ep_dir / "manifest.json")
+                raise
+            manifest.record_stage("object_detection", "degraded", time.time() - t_s3, str(exc))
+            per_frame_objects = [[] for _ in image_paths]
+            s3_cached = False
         print(f"[Pipeline] Object bboxes populated via detector for {len(per_frame_objects)} frames (cached={s3_cached})")
 
         # Stage 3b (Phase C): 3D object localization on detection keyframes.

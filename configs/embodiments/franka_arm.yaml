@@ -4,30 +4,23 @@ license: "Apache-2.0 (Franka Emika / Bullet3 Panda URDF)"
 urdf: data/urdfs/panda.urdf
 base_frame: panda_link0
 max_reach: 0.85
+default_posture: [0.0, -0.4, 0.0, -2.1, 0.0, 1.7, 0.78, 0.02, 0.02]
 workspace:
   x_min: 0.30
-  x_max: 0.65
-  y_min: -0.30
-  y_max: 0.30
-  z_min: 0.30
-  z_max: 0.65
+  x_max: 0.62
+  y_min: -0.28
+  y_max: 0.28
+  z_min: 0.25
+  z_max: 0.62
 task_links:
   - link: panda_link7
     hand: right
+    task_anchor: [0.44, -0.05, 0.38]
     pos_cost: 1.0
-    ori_cost: 1.0
+    ori_cost: 0.03
 gripper_joints:
   - panda_finger_joint1
   - panda_finger_joint2
 gripper_open: 0.04
 gripper_close: 0.0
-velocity_limits:
-  - 2.17
-  - 2.17
-  - 2.17
-  - 2.17
-  - 2.61
-  - 2.61
-  - 2.61
-  - 2.61
-  - 2.61
+velocity_limits: [2.17, 2.17, 2.17, 2.17, 2.61, 2.61, 2.61, 2.61, 2.61]

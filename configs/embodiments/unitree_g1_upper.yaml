@@ -4,20 +4,24 @@ license: "BSD-3-Clause (Unitree Robotics G1 URDF)"
 urdf: data/urdfs/embodiments/g1_clean.urdf
 base_frame: pelvis
 max_reach: 1.2
+bimanual_min_separation_m: 0.22
 workspace:
-  x_min: 0.15
-  x_max: 0.55
-  y_min: -0.45
-  y_max: 0.45
-  z_min: -0.10
-  z_max: 0.45
+  x_min: 0.18
+  x_max: 0.42
+  y_min: -0.38
+  y_max: 0.38
+  z_min: 0.05
+  z_max: 0.38
 task_links:
   - link: right_wrist_yaw_link
     hand: right
+    task_anchor: [0.26, -0.20, 0.18]
     pos_cost: 1.0
-    ori_cost: 1.0
+    ori_cost: 0.03
   - link: left_wrist_yaw_link
     hand: left
+    task_anchor: [0.26, 0.20, 0.18]
     pos_cost: 1.0
-    ori_cost: 1.0
+    ori_cost: 0.03
 velocity_limits: [2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6, 2.6]
+default_posture: [0,0,0, -0.2,0.35,0,0.5,0,0,0,0,0,0,0, -0.2,-0.35,0,0.5,0,0,0,0,0,0,0, 0,0,0,0]

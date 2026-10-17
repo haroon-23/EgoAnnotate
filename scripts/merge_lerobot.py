@@ -51,9 +51,15 @@ SOFT_FRAME_CAP = 2_000_000
 
 
 def find_lerobot_exports(output_dir: str | Path) -> List[Path]:
-    """Scan ``<output_dir>/*/lerobot_v3`` and return sorted export roots."""
+    """Scan ``<output_dir>/*/lerobot_v3`` and return sorted valid export roots."""
     root = Path(output_dir)
-    found = sorted(p.resolve() for p in root.glob("*/lerobot_v3") if p.is_dir())
+    found = sorted(
+        p.resolve()
+        for p in root.glob("*/lerobot_v3")
+        if p.is_dir()
+        and (p / "meta" / "info.json").exists()
+        and (p / "meta" / "episodes").exists()
+    )
     logger.info("Found %d lerobot_v3 exports under %s", len(found), root)
     return found
 

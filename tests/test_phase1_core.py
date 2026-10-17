@@ -29,6 +29,12 @@ def _make_hand(cx: float = 0.5, cy: float = 0.5, cz: float = 0.0, palm_size: flo
     x[5], y[5] = cx - palm_size * 0.5, cy - palm_size
     x[9], y[9] = cx, cy - palm_size
     x[17], y[17] = cx + palm_size * 0.5, cy - palm_size
+    # Extended fingertips for an open resting hand
+    x[4], y[4] = cx - palm_size * 0.8, cy - palm_size * 0.8
+    x[8], y[8] = cx - palm_size * 0.3, cy - palm_size * 1.8
+    x[12], y[12] = cx, cy - palm_size * 1.9
+    x[16], y[16] = cx + palm_size * 0.3, cy - palm_size * 1.8
+    x[20], y[20] = cx + palm_size * 0.6, cy - palm_size * 1.6
     return HandLandmarks(x=x, y=y, z=z, confidence=0.95, handedness="Right")
 
 

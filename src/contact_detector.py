@@ -206,7 +206,31 @@ class ContactDetector:
                             best_in_contact = (best_proximity_conf * depth_consistency) >= self.config.min_confidence
 
                 # Removed 5-fingertip VLM-only fallback when bbox is None:
-                # Contact requires geometric fingertip-to-bbox proximity evidence.
+                # Contact requires geometric fingertip-to-bbox proximity evidence
+                # OR verified anatomical thumb-finger pinch/wrap closure from 21 keypoints.
+        if not best_in_contact:
+            tips = hand.fingertip_positions()
+            wrist = np.array([hand.x[0], hand.y[0], hand.z[0]], dtype=np.float64)
+            mcp_mid = np.array([hand.x[9], hand.y[9], hand.z[9]], dtype=np.float64)
+            palm_scale = max(float(np.linalg.norm(mcp_mid[:2] - wrist[:2])), 0.04)
+            thumb_index_ratio = float(np.linalg.norm(tips[0, :2] - tips[1, :2])) / palm_scale
+            thumb_mid_ratio = float(np.linalg.norm(tips[0, :2] - tips[2, :2])) / palm_scale
+            # Only trigger kinematic pinch contact when objects with bbox are absent
+            has_any_bbox = any(o.bbox is not None for o in objects)
+            if (not has_any_bbox) and (thumb_index_ratio < 0.42 or thumb_mid_ratio < 0.42):
+                best_in_contact = True
+                best_object_name = next(
+                    (o.name for o in objects if o.name and o.name.lower() not in ("person", "hand", "arm", "unknown")),
+                    "manipulated_object",
+                )
+                best_fingers = np.array([
+                    True,
+                    thumb_index_ratio < 0.45,
+                    thumb_mid_ratio < 0.48,
+                    False,
+                    False,
+                ], dtype=bool)
+                best_proximity_conf = float(np.clip(1.0 - min(thumb_index_ratio, thumb_mid_ratio), 0.55, 0.85))
 
         # Temporal smoothing
         raw_conf = best_proximity_conf * depth_consistency if best_in_contact else 0.0
