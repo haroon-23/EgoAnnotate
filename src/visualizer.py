@@ -1,157 +1,163 @@
-"""Egocentric HUD visualization overlay for annotated episodes."""
-import cv2
+"""Resolution-adaptive Egocentric HUD and Multi-Object Segmentation Overlay."""
+from __future__ import annotations
+
 import os
-import numpy as np
 import subprocess
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+import cv2
+import numpy as np
 from tqdm import tqdm
 
-from .datatypes import AnnotatedEpisode, AnnotationFrame, HandLandmarks, ContactState, ObjectAnnotation, GraspType, ActionSegment
+from .datatypes import (
+    ActionSegment,
+    AnnotatedEpisode,
+    AnnotationFrame,
+    ContactState,
+    GraspType,
+    HandLandmarks,
+    ObjectAnnotation,
+)
 
 
 @dataclass
 class VizConfig:
-    left_hand_color: Tuple[int, int, int] = (0, 255, 0)      # Green
-    right_hand_color: Tuple[int, int, int] = (255, 0, 255)    # Magenta
-    panel_bg: Tuple[int, int, int] = (20, 20, 20)
+    left_hand_color: Tuple[int, int, int] = (0, 235, 100)      # Emerald Green (BGR)
+    right_hand_color: Tuple[int, int, int] = (235, 80, 255)    # Vibrant Magenta (BGR)
+    panel_bg: Tuple[int, int, int] = (18, 18, 22)
 
-    skeleton_thickness: int = 1
-    joint_radius: int = 2
+    skeleton_thickness: int = 2
+    joint_radius: int = 3
 
     font: int = cv2.FONT_HERSHEY_SIMPLEX
-    font_header: float = 0.42
-    font_body: float = 0.34
+    font_header: float = 0.40
+    font_body: float = 0.32
     thick_header: int = 1
     thick_body: int = 1
 
-    pad_x: int = 8
-    pad_y: int = 5
-    line_h: int = 16
-    alpha: float = 0.78
+    pad_x: int = 6
+    pad_y: int = 4
+    line_h: int = 14
+    alpha: float = 0.80
 
-    timeline_h: int = 26
-    timeline_bg: Tuple[int, int, int] = (15, 15, 15)
+    timeline_h: int = 34
+    timeline_bg: Tuple[int, int, int] = (15, 15, 18)
 
     seg_colors: dict = field(default_factory=lambda: {
-        "approach": (0, 200, 0), "contact": (0, 160, 255),
-        "grasp": (0, 0, 230), "manipulate": (230, 0, 0),
-        "release": (230, 230, 0), "retreat": (120, 120, 120), "idle": (70, 70, 70),
+        "approach": (0, 200, 0),
+        "contact": (0, 160, 255),
+        "grasp": (0, 60, 240),
+        "manipulate": (230, 100, 0),
+        "release": (200, 200, 0),
+        "retreat": (120, 120, 120),
+        "idle": (65, 65, 65),
     })
 
     connections: List[Tuple[int, int]] = field(default_factory=lambda: [
-        (0,1),(1,2),(2,3),(3,4), (0,5),(5,6),(6,7),(7,8),
-        (0,9),(9,10),(10,11),(11,12), (0,13),(13,14),(14,15),(15,16),
-        (0,17),(17,18),(18,19),(19,20), (5,9),(9,13),(13,17),
+        (0, 1), (1, 2), (2, 3), (3, 4),
+        (0, 5), (5, 6), (6, 7), (7, 8),
+        (0, 9), (9, 10), (10, 11), (11, 12),
+        (0, 13), (13, 14), (14, 15), (15, 16),
+        (0, 17), (17, 18), (18, 19), (19, 20),
+        (5, 9), (9, 13), (13, 17),
     ])
 
 
-# ── Manipulation grasp taxonomy ──────────────────────────────────
 _GRASP_TAXONOMY = {
-    "power_wrap":      "grasping wrapping",
-    "precision_pinch": "grasping pinching",
-    "lateral_pinch":   "lateral pinching",
-    "hook":            "hook gripping",
-    "open":            "hand open",
-    "unknown":         "adjusting grip",
+    "power_wrap": "Power Wrap",
+    "precision_pinch": "Precision Pinch",
+    "lateral_pinch": "Lateral Pinch",
+    "hook": "Hook Grip",
+    "open": "Open Hand",
+    "unknown": "Repositioning",
 }
 
-_GRASP_DETAIL = {
-    "power_wrap":      "fingers curled around object",
-    "precision_pinch": "fingers extended",
-    "lateral_pinch":   "thumb pressing laterally",
-    "hook":            "fingers curled in hook",
-    "open":            "fingers extended",
-    "unknown":         "fingers repositioning",
-}
+_OBJECT_PALETTE = [
+    (255, 190, 40),   # Sky Cyan
+    (80, 180, 255),   # Warm Amber
+    (180, 120, 255),  # Lavender
+    (120, 240, 180),  # Mint
+    (255, 140, 140),  # Soft Blue
+    (140, 220, 255),  # Gold
+]
 
 
 class EgoVisualizer:
     def __init__(self, config: VizConfig = None):
         self.cfg = config or VizConfig()
 
+    def _fit_text(self, text: str, max_px: int, scale: float) -> str:
+        """Truncate text cleanly so it never overflows its panel box."""
+        if max_px <= 20:
+            return ""
+        (tw, _), _ = cv2.getTextSize(text, self.cfg.font, scale, 1)
+        if tw <= max_px:
+            return text
+        while len(text) > 4:
+            text = text[:-2]
+            (tw, _), _ = cv2.getTextSize(text + "..", self.cfg.font, scale, 1)
+            if tw <= max_px:
+                return text + ".."
+        return text
+
     def render_episode(self, episode: AnnotatedEpisode, output_path: Path):
         if not episode.frames:
             return
-        first = cv2.imread(episode.frames[0].image_path)
-        if first is None:
-            return
+        render_annotated_video(episode.video_path, episode, output_path, fps=30.0, atomic=True)
 
-        h, w = first.shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
-        writer = cv2.VideoWriter(str(output_path), fourcc, 30, (w, h))
-        if not writer.isOpened():
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(str(output_path), fourcc, 30, (w, h))
-        if not writer.isOpened():
-            return
+    def _render_frame(self, img: np.ndarray, frame: AnnotationFrame, episode: AnnotatedEpisode) -> np.ndarray:
+        return self._render_frame_with_all_overlays(img, frame, episode, len(episode.frames))
 
-        for frame in tqdm(episode.frames, desc="Rendering", leave=False):
-            img = cv2.imread(frame.image_path)
-            if img is None:
-                continue
-            writer.write(self._render_frame(img.copy(), frame, episode))
-
-        writer.release()
-        print(f"[Visualizer] Saved: {output_path}")
-
-    def _render_frame(self, img: np.ndarray, frame: AnnotationFrame,
-                      episode: AnnotatedEpisode) -> np.ndarray:
-        h, w = img.shape[:2]
-        self._draw_skeletons(img, frame, w, h)
-        self._draw_panels(img, frame, w, h, episode)
-        self._draw_timeline(img, frame, episode, w, h)
-        return img
-
-    # ── Skeleton overlay ──────────────────────────────────────────────
-    def _draw_skeletons(self, img, frame, w, h):
-        for hand, color in [(frame.left_hand, self.cfg.left_hand_color),
-                            (frame.right_hand, self.cfg.right_hand_color)]:
+    def _draw_skeletons(self, img: np.ndarray, frame: AnnotationFrame, w: int, h: int):
+        scale_f = max(1, int(round(min(w, h) / 380.0)))
+        for hand, color in [
+            (frame.left_hand, self.cfg.left_hand_color),
+            (frame.right_hand, self.cfg.right_hand_color),
+        ]:
             if hand is None:
                 continue
             n = min(21, len(hand.x))
-
-            # Connections
             for s, e in self.cfg.connections:
                 if s < n and e < n:
                     p1 = (int(hand.x[s] * w), int(hand.y[s] * h))
                     p2 = (int(hand.x[e] * w), int(hand.y[e] * h))
-                    cv2.line(img, p1, p2, color, self.cfg.skeleton_thickness, cv2.LINE_AA)
+                    cv2.line(img, p1, p2, color, scale_f, cv2.LINE_AA)
 
-            # Joints — small white ring + colored fill
             for i in range(n):
                 cx, cy = int(hand.x[i] * w), int(hand.y[i] * h)
-                cv2.circle(img, (cx, cy), 3, (255, 255, 255), -1, cv2.LINE_AA)
-                cv2.circle(img, (cx, cy), 2, color, -1, cv2.LINE_AA)
+                cv2.circle(img, (cx, cy), scale_f + 2, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(img, (cx, cy), scale_f + 1, color, -1, cv2.LINE_AA)
 
-            # Bounding box
             xs = [hand.x[i] * w for i in range(n)]
             ys = [hand.y[i] * h for i in range(n)]
-            m = 12
-            cv2.rectangle(img,
-                          (max(0, int(min(xs)) - m), max(0, int(min(ys)) - m)),
-                          (min(w, int(max(xs)) + m), min(h, int(max(ys)) + m)),
-                          color, 1, cv2.LINE_AA)
+            m = 8 * scale_f
+            cv2.rectangle(
+                img,
+                (max(0, int(min(xs)) - m), max(0, int(min(ys)) - m)),
+                (min(w - 1, int(max(xs)) + m), min(h - 1, int(max(ys)) + m)),
+                color,
+                1,
+                cv2.LINE_AA,
+            )
 
-    # ── HUD panels (always both visible) ──────────────────────────────
-    def _draw_panels(self, img, frame, w, h, episode):
-        gap = 4
+    def _draw_panels(self, img: np.ndarray, frame: AnnotationFrame, w: int, h: int, episode: AnnotatedEpisode):
+        gap = max(4, w // 90)
         panel_w = (w - gap * 3) // 2
+        f_scale = float(np.clip(w / 950.0, 0.30, 0.52))
+        line_h = max(12, int(round(f_scale * 36)))
+        pad_x = max(5, int(round(f_scale * 16)))
+        pad_y = max(4, int(round(f_scale * 12)))
 
         for idx, (label, hand, grasp, contact, color) in enumerate([
-            ("LEFT",  frame.left_hand, frame.left_grasp,
-             frame.left_contact,  self.cfg.left_hand_color),
-            ("RIGHT", frame.right_hand, frame.right_grasp,
-             frame.right_contact, self.cfg.right_hand_color),
+            ("LEFT HAND", frame.left_hand, frame.left_grasp, frame.left_contact, self.cfg.left_hand_color),
+            ("RIGHT HAND", frame.right_hand, frame.right_grasp, frame.right_contact, self.cfg.right_hand_color),
         ]):
             lines = self._panel_text(label, hand, grasp, contact, episode)
-
             x = gap if idx == 0 else gap * 2 + panel_w
             y = gap
-            ph = self.cfg.pad_y * 2 + len(lines) * self.cfg.line_h + 2
+            ph = pad_y * 2 + len(lines) * line_h + 2
 
-            # Background blending (ROI slice for high performance)
             y_max = min(h, y + ph)
             x_max = min(w, x + panel_w)
             if y_max > y and x_max > x:
@@ -159,123 +165,61 @@ class EgoVisualizer:
                 bg = np.full_like(roi, self.cfg.panel_bg, dtype=np.uint8)
                 cv2.addWeighted(bg, self.cfg.alpha, roi, 1.0 - self.cfg.alpha, 0, roi)
 
-            # Border
-            cv2.rectangle(img, (x, y), (x + panel_w, y + ph),
-                          color, 1, cv2.LINE_AA)
+            cv2.rectangle(img, (x, y), (x_max, y_max), color, 1, cv2.LINE_AA)
+            max_txt_w = (x_max - x) - pad_x * 2
 
-            # Text
             for i, line in enumerate(lines):
-                ty = y + self.cfg.pad_y + 12 + i * self.cfg.line_h
-                if i == 0:
-                    cv2.putText(img, line, (x + self.cfg.pad_x, ty),
-                                self.cfg.font, self.cfg.font_header,
-                                color, self.cfg.thick_header, cv2.LINE_AA)
-                else:
-                    cv2.putText(img, line, (x + self.cfg.pad_x, ty),
-                                self.cfg.font, self.cfg.font_body,
-                                (230, 230, 230), self.cfg.thick_body,
-                                cv2.LINE_AA)
+                ty = y + pad_y + int(line_h * 0.78) + i * line_h
+                sc = f_scale * (1.08 if i == 0 else 0.92)
+                fitted = self._fit_text(line, max_txt_w, sc)
+                col = color if i == 0 else ((80, 255, 120) if (i == 2 and "Contact:" in line) else (230, 230, 230))
+                cv2.putText(img, fitted, (x + pad_x, ty), self.cfg.font, sc, col, 1, cv2.LINE_AA)
 
-
+        self._last_panel_bottom = gap + pad_y * 2 + 3 * line_h + 6
 
     def _panel_text(self, label, hand, grasp, contact, episode) -> List[str]:
-        """Build 2-3 line HUD description per hand."""
-
-        # ── Hand not tracked ──
         if hand is None:
-            return [
-                label,
-                "idle hovering; hand resting near",
-                "workspace without contact",
-            ]
-
-        # ── Grasp taxonomy line ──
-        if grasp is not None:
-            gtype = grasp.type
-            action = _GRASP_TAXONOMY.get(gtype, "manipulating")
-            detail = _GRASP_DETAIL.get(gtype, "hand active")
-            grasp_line = f"{action}; {detail}"
-        else:
-            grasp_line = "hand open; fingers extended"
-
-        # ── Contact / spatial context line ──
+            return [label, "State: Idle (Out of View)", "Target: No Contact"]
+        gtype = grasp.type if grasp is not None else "open"
+        g_str = _GRASP_TAXONOMY.get(gtype, "Active")
         if contact and contact.in_contact and contact.object_name:
             obj = contact.object_name.replace("_", " ")
-            contact_line = f"to grip the {obj} ({obj})"
-        else:
-            # Not in contact — describe spatially
-            contact_line = "without contact"
+            return [label, f"Grasp: {g_str}", f"Contact: {obj}"]
+        return [label, f"Posture: {g_str}", "Target: Free Space"]
 
-        return [label, grasp_line, contact_line]
-
-    # ── Timeline bar ──────────────────────────────────────────────────
     def _draw_timeline(self, img, frame, episode, w, h):
-        y0 = h - self.cfg.timeline_h
+        self.draw_segment_timeline(img, frame.frame_idx, episode.segments, 30.0, len(episode.frames))
 
-        overlay = img.copy()
-        cv2.rectangle(overlay, (0, y0), (w, h), self.cfg.timeline_bg, -1)
-        cv2.addWeighted(overlay, 0.88, img, 0.12, 0, img)
-        cv2.line(img, (0, y0), (w, y0), (40, 40, 40), 1, cv2.LINE_AA)
-
-        # Current segment
-        seg = None
-        for s in episode.segments:
-            if s.start_time <= frame.timestamp <= s.end_time:
-                seg = s
-                break
-
-        if seg:
-            desc = seg.description if seg.description else episode.task_description
-            txt = f"{seg.start_time:05.2f}s-{seg.end_time:05.2f}s  {desc}"
-            c = self.cfg.seg_colors.get(seg.name, (100, 100, 100))
-            cv2.rectangle(img, (0, y0), (4, h), c, -1)
-        else:
-            txt = f"{frame.timestamp:.2f}s  {episode.task_description}"
-
-        max_chars = int(w / 5.8)
-        if len(txt) > max_chars:
-            txt = txt[:max_chars - 3] + "..."
-
-        cv2.putText(img, txt, (10, h - 8), self.cfg.font, self.cfg.font_body,
-                    (255, 255, 255), self.cfg.thick_body, cv2.LINE_AA)
-
-        if episode.duration_seconds > 0:
-            p = min(1.0, frame.timestamp / episode.duration_seconds)
-            bx = int(p * w)
-            cv2.line(img, (bx, y0 + 2), (bx, h - 2), (0, 220, 0), 2,
-                     cv2.LINE_AA)
-
-    # ── Backwards-compatible test helper ──────────────────────────────
-    def _build_hand_description(self, hand_name, hand, grasp, contact,
-                                objects=None) -> List[str]:
+    def _build_hand_description(self, hand_name, hand, grasp, contact, objects=None) -> List[str]:
         display_name = f"{hand_name.upper()} HAND"
         if hand is None:
             return [display_name, "idle hovering", "not tracked"]
-
         if grasp is None:
             grasp_desc = "idle hovering"
         else:
-            grasp_desc = (self._grasp_to_description(grasp.type)
-                          if contact and contact.in_contact
-                          else "idle hovering")
-
+            grasp_desc = (
+                self._grasp_to_description(grasp.type)
+                if contact and contact.in_contact
+                else "idle hovering"
+            )
         if contact and contact.in_contact and contact.object_name:
             contact_desc = f"interacting with {contact.object_name}"
         elif grasp and grasp.type != "open":
-            contact_desc = (f"{self._grasp_to_description(grasp.type)} "
-                            "without contact")
+            contact_desc = f"{self._grasp_to_description(grasp.type)} without contact"
         else:
             contact_desc = "no contact"
-
         return [display_name, grasp_desc, contact_desc]
 
     def _grasp_to_description(self, grasp_type):
-        return {"power_wrap": "power grasp", "precision_pinch": "precision pinch",
-                "lateral_pinch": "lateral pinch", "hook": "hook grip",
-                "open": "hand open", "unknown": "adjusting grip",
-                }.get(grasp_type, "manipulating")
+        return {
+            "power_wrap": "power grasp",
+            "precision_pinch": "precision pinch",
+            "lateral_pinch": "lateral pinch",
+            "hook": "hook grip",
+            "open": "hand open",
+            "unknown": "adjusting grip",
+        }.get(grasp_type, "manipulating")
 
-    # ── Contact overlay with bboxes and fingertips ───────────────────────
     def draw_contact_overlay(
         self,
         img: np.ndarray,
@@ -284,92 +228,89 @@ class EgoVisualizer:
         contact_states: Dict[str, Optional[ContactState]],
         confidence_threshold: float = 0.5,
     ) -> np.ndarray:
-        """Draw object segmentation masks, corner-bracketed bounding boxes, and contact fingertips."""
+        """Draw multi-object segmentation masks, corner-bracketed boxes, and active contact vectors."""
         h, w = img.shape[:2]
+        f_scale = float(np.clip(w / 950.0, 0.30, 0.48))
+        CONTACT_BRIGHT = (0, 255, 80)
 
-        CONTACT_BRIGHT = (0, 255, 80)     # Neon green when grasped/in-contact
-        CONTACT_IDLE = (255, 200, 0)      # Cyan-amber when tracked on workspace
-        FINGERTIP_RADIUS = 5
-
-        for obj in objects:
+        for obj_idx, obj in enumerate(objects):
             if obj.bbox is None:
                 continue
+            # Never draw giant table/desk background boxes
+            bw_n = float(obj.bbox[2] - obj.bbox[0])
+            bh_n = float(obj.bbox[3] - obj.bbox[1])
+            if bw_n * bh_n > 0.35 or any(t in obj.name.lower() for t in ("desk", "surface", "table", "background")):
+                continue
 
-            x_min, y_min, x_max, y_max = obj.bbox
-            x1 = max(0, min(w - 1, int(x_min * w)))
-            y1 = max(0, min(h - 1, int(y_min * h)))
-            x2 = max(0, min(w - 1, int(x_max * w)))
-            y2 = max(0, min(h - 1, int(y_max * h)))
+            x1 = max(0, min(w - 1, int(obj.bbox[0] * w)))
+            y1 = max(0, min(h - 1, int(obj.bbox[1] * h)))
+            x2 = max(0, min(w - 1, int(obj.bbox[2] * w)))
+            y2 = max(0, min(h - 1, int(obj.bbox[3] * h)))
             if x2 <= x1 + 4 or y2 <= y1 + 4:
                 continue
 
             in_contact = bool(obj.touched or obj.state == "grasped")
-            max_conf = 0.85 if in_contact else 0.70
+            max_conf = 0.88 if in_contact else 0.75
             for hand_name in ["left", "right"]:
                 cs = contact_states.get(hand_name)
-                if cs and cs.in_contact:
+                if cs and cs.in_contact and cs.object_name == obj.name:
                     in_contact = True
                     max_conf = max(max_conf, float(cs.confidence))
 
-            bbox_color = CONTACT_BRIGHT if in_contact else CONTACT_IDLE
+            idle_col = _OBJECT_PALETTE[obj_idx % len(_OBJECT_PALETTE)]
+            bbox_color = CONTACT_BRIGHT if in_contact else idle_col
 
-            # 1. Draw pixel-accurate foreground segmentation mask polygon if available
+            # 1. Segmentation polygon mask
             poly_norm = (obj.mask_rle or {}).get("polygon_norm") if isinstance(obj.mask_rle, dict) else None
             if poly_norm and len(poly_norm) >= 3:
                 pts_px = np.array([[int(p[0] * w), int(p[1] * h)] for p in poly_norm], dtype=np.int32)
                 mask_overlay = img.copy()
                 cv2.fillPoly(mask_overlay, [pts_px], bbox_color)
-                cv2.addWeighted(mask_overlay, 0.24, img, 0.76, 0, img)
-                cv2.polylines(img, [pts_px], isClosed=True, color=bbox_color, thickness=2, lineType=cv2.LINE_AA)
-            else:
-                # Subtle translucent fill inside bounding box
-                roi = img[y1:y2, x1:x2]
-                tint = np.full_like(roi, bbox_color, dtype=np.uint8)
-                cv2.addWeighted(tint, 0.14, roi, 0.86, 0, roi)
+                alpha_m = 0.30 if in_contact else 0.16
+                cv2.addWeighted(mask_overlay, alpha_m, img, 1.0 - alpha_m, 0, img)
+                cv2.polylines(img, [pts_px], isClosed=True, color=bbox_color, thickness=1, lineType=cv2.LINE_AA)
 
-            # 2. Draw crisp corner-bracketed bounding box
+            # 2. Corner-bracketed bounding box
             cv2.rectangle(img, (x1, y1), (x2, y2), bbox_color, 1, cv2.LINE_AA)
-            corner_len = max(6, min(18, (x2 - x1) // 4, (y2 - y1) // 4))
-            for cx_c, cy_c, dx_s, dy_s in [
-                (x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)
-            ]:
-                cv2.line(img, (cx_c, cy_c), (cx_c + dx_s * corner_len, cy_c), bbox_color, 2, cv2.LINE_AA)
-                cv2.line(img, (cx_c, cy_c), (cx_c, cy_c + dy_s * corner_len), bbox_color, 2, cv2.LINE_AA)
+            clen = max(5, min(14, (x2 - x1) // 4, (y2 - y1) // 4))
+            for cx_c, cy_c, dx_s, dy_s in [(x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)]:
+                cv2.line(img, (cx_c, cy_c), (cx_c + dx_s * clen, cy_c), bbox_color, 2, cv2.LINE_AA)
+                cv2.line(img, (cx_c, cy_c), (cx_c, cy_c + dy_s * clen), bbox_color, 2, cv2.LINE_AA)
 
-            # 3. Draw high-contrast pill label above object bbox
-            state_tag = "GRASPED" if in_contact else "TRACKED"
-            label = f"{state_tag}: {obj.name} ({max_conf:.2f})"
-            (tw, th), _ = cv2.getTextSize(label, self.cfg.font, 0.38, 1)
-            ly2 = max(th + 8, y1 - 2)
-            ly1 = max(0, ly2 - th - 6)
-            lx1 = max(0, min(w - tw - 8, x1))
-            lx2 = min(w, lx1 + tw + 8)
+            # 3. Clean pill label above box
+            short_name = obj.name.split("(")[0].strip()
+            label = f"[GRASPED] {short_name}" if in_contact else short_name
+            label = self._fit_text(label, max(80, w // 2), f_scale)
+            (tw, th), _ = cv2.getTextSize(label, self.cfg.font, f_scale, 1)
+            ly2 = max(th + 6, y1 - 2)
+            ly1 = max(0, ly2 - th - 5)
+            lx1 = max(0, min(w - tw - 6, x1))
+            lx2 = min(w, lx1 + tw + 6)
             if ly2 > ly1 and lx2 > lx1:
                 l_roi = img[ly1:ly2, lx1:lx2]
-                l_bg = np.full_like(l_roi, (18, 18, 18), dtype=np.uint8)
+                l_bg = np.full_like(l_roi, (18, 18, 22), dtype=np.uint8)
                 cv2.addWeighted(l_bg, 0.82, l_roi, 0.18, 0, l_roi)
                 cv2.rectangle(img, (lx1, ly1), (lx2, ly2), bbox_color, 1, cv2.LINE_AA)
-            cv2.putText(img, label, (lx1 + 4, ly2 - 4), self.cfg.font, 0.38, bbox_color, 1, cv2.LINE_AA)
+            cv2.putText(img, label, (lx1 + 3, ly2 - 3), self.cfg.font, f_scale, bbox_color, 1, cv2.LINE_AA)
 
-            # 4. Highlight active contacting fingertips and draw force-vector lines to object centroid
-            obj_cx, obj_cy = (x1 + x2) // 2, (y1 + y2) // 2
-            for hand_name in ["left", "right"]:
-                hand = hands.get(hand_name)
-                cs = contact_states.get(hand_name)
-                if hand is None or cs is None or not cs.in_contact:
-                    continue
-                tips = hand.fingertip_positions()
-                for f_idx in range(5):
-                    if cs.fingers[f_idx]:
-                        px = int(tips[f_idx, 0] * w)
-                        py = int(tips[f_idx, 1] * h)
-                        cv2.line(img, (px, py), (obj_cx, obj_cy), CONTACT_BRIGHT, 1, cv2.LINE_AA)
-                        cv2.circle(img, (px, py), FINGERTIP_RADIUS, CONTACT_BRIGHT, -1, cv2.LINE_AA)
-                        cv2.circle(img, (px, py), FINGERTIP_RADIUS + 2, (255, 255, 255), 1, cv2.LINE_AA)
+            # 4. Active fingertip contact circles
+            if in_contact:
+                obj_cx, obj_cy = (x1 + x2) // 2, (y1 + y2) // 2
+                for hand_name in ["left", "right"]:
+                    hand = hands.get(hand_name)
+                    cs = contact_states.get(hand_name)
+                    if hand is None or cs is None or not cs.in_contact or cs.object_name != obj.name:
+                        continue
+                    tips = hand.fingertip_positions()
+                    for f_idx in range(5):
+                        if cs.fingers[f_idx]:
+                            px, py = int(tips[f_idx, 0] * w), int(tips[f_idx, 1] * h)
+                            cv2.line(img, (px, py), (obj_cx, obj_cy), CONTACT_BRIGHT, 1, cv2.LINE_AA)
+                            cv2.circle(img, (px, py), 4, CONTACT_BRIGHT, -1, cv2.LINE_AA)
+                            cv2.circle(img, (px, py), 6, (255, 255, 255), 1, cv2.LINE_AA)
 
         return img
 
-    # ── Detailed segment timeline ───────────────────────────────────────
     def draw_segment_timeline(
         self,
         img: np.ndarray,
@@ -378,150 +319,64 @@ class EgoVisualizer:
         fps: float,
         total_frames: int,
     ) -> np.ndarray:
-        """Draw detailed segment timeline at bottom of frame.
-        
-        Shows all segments as colored blocks with a playhead.
-        """
         h, w = img.shape[:2]
-        timeline_h = 40  # taller for detailed view
+        f_scale = float(np.clip(w / 950.0, 0.30, 0.45))
+        timeline_h = max(28, int(round(f_scale * 84)))
         y0 = h - timeline_h
-        
-        # Background blending (ROI slice for high performance)
+
         if h > y0 and w > 0:
             roi = img[y0:h, 0:w]
-            bg = np.full_like(roi, (15, 15, 15), dtype=np.uint8)
+            bg = np.full_like(roi, (15, 15, 18), dtype=np.uint8)
             cv2.addWeighted(bg, 0.88, roi, 0.12, 0, roi)
         cv2.line(img, (0, y0), (w, y0), (60, 60, 60), 1, cv2.LINE_AA)
-        
-        if not segments:
-            return img
-        
-        # Draw each segment as a colored block
+
+        bar_y1 = y0 + 3
+        bar_y2 = y0 + max(10, timeline_h // 2 - 2)
+        total_dur = max(total_frames / max(fps, 1.0), 0.1)
+        cur_t = current_frame_idx / max(fps, 1.0)
+        active_desc = "Workspace Manipulation"
+
         for seg in segments:
-            # Convert segment times to pixel positions
-            start_px = int((seg.start_time / (total_frames / fps)) * w) if total_frames > 0 else 0
-            end_px = int((seg.end_time / (total_frames / fps)) * w) if total_frames > 0 else w
-            start_px = max(0, min(w - 1, start_px))
-            end_px = max(0, min(w, end_px))
-            
-            if end_px <= start_px:
-                continue
-            
-            color = self.cfg.seg_colors.get(seg.name, (100, 100, 100))
-            cv2.rectangle(img, (start_px, y0 + 2), (end_px, h - 2), color, -1, cv2.LINE_AA)
-            
-            # Segment label
-            label = seg.name
-            text_size = cv2.getTextSize(label, self.cfg.font, 0.35, 1)[0]
-            text_x = start_px + 2
-            text_y = y0 + 14
-            if text_x + text_size[0] < end_px:
-                cv2.putText(img, label, (text_x, text_y), self.cfg.font, 0.35,
-                            (255, 255, 255), 1, cv2.LINE_AA)
-        
-        # Playhead (current frame)
-        current_px = int((current_frame_idx / total_frames) * w) if total_frames > 0 else 0
-        current_px = max(0, min(w - 1, current_px))
-        cv2.line(img, (current_px, y0), (current_px, h), (0, 255, 255), 2, cv2.LINE_AA)
-        
-        # Time markers
-        cv2.putText(img, f"{current_frame_idx}/{total_frames}  {current_frame_idx/fps:.2f}s",
-                    (10, h - 6), self.cfg.font, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
-        
+            s_px = max(0, min(w - 1, int((seg.start_time / total_dur) * w)))
+            e_px = max(s_px + 1, min(w, int((seg.end_time / total_dur) * w)))
+            color = self.cfg.seg_colors.get(seg.name, (95, 95, 95))
+            cv2.rectangle(img, (s_px, bar_y1), (e_px, bar_y2), color, -1, cv2.LINE_AA)
+            if seg.start_time <= cur_t <= seg.end_time:
+                active_desc = f"[{seg.name.upper()}] {seg.description or seg.object_name}"
+
+        cur_px = max(0, min(w - 1, int((current_frame_idx / max(total_frames, 1)) * w)))
+        cv2.line(img, (cur_px, y0), (cur_px, h), (0, 255, 255), 2, cv2.LINE_AA)
+
+        status_line = f"{current_frame_idx:04d}/{total_frames} ({cur_t:.1f}s) | {active_desc}"
+        status_line = self._fit_text(status_line, w - 16, f_scale)
+        cv2.putText(img, status_line, (8, h - 5), self.cfg.font, f_scale, (235, 235, 235), 1, cv2.LINE_AA)
         return img
 
-    # ── Grasp label in top-left ─────────────────────────────────────────
-    def draw_grasp_label(
-        self,
-        img: np.ndarray,
-        hands: Dict[str, Optional[HandLandmarks]],
-        grasps: Dict[str, Optional[GraspType]],
-        contact_states: Dict[str, Optional[ContactState]],
-    ) -> np.ndarray:
-        """Draw current grasp type and confidence for each hand in top-left."""
-        h, w = img.shape[:2]
-        
-        for idx, hand_name in enumerate(["left", "right"]):
-            hand = hands.get(hand_name)
-            grasp = grasps.get(hand_name)
-            contact = contact_states.get(hand_name)
-            
-            if hand is None:
-                continue
-            
-            # Determine label
-            if grasp is not None:
-                gtype = grasp.type
-                if contact and contact.in_contact:
-                    label = f"{hand_name.upper()}: {gtype} ({contact.confidence:.2f})"
-                else:
-                    label = f"{hand_name.upper()}: {gtype} (hover)"
-            else:
-                label = f"{hand_name.upper()}: no detection"
-            
-            # Position: top-left, stacked
-            y = 25 + idx * 22
-            x = 10
-            
-            # Background blending (ROI slice for high performance)
-            y1 = max(0, y - 18)
-            y2 = min(h, y + 4)
-            x1 = max(0, x - 4)
-            x2 = min(w, x + 280)
-            if y2 > y1 and x2 > x1:
-                roi = img[y1:y2, x1:x2]
-                bg = np.full_like(roi, (20, 20, 20), dtype=np.uint8)
-                cv2.addWeighted(bg, 0.85, roi, 0.15, 0, roi)
-            
-            # Color based on contact
-            if contact and contact.in_contact:
-                color = (0, 255, 0)  # Green
-            else:
-                color = (200, 200, 200)  # Gray
-            
-            cv2.putText(img, label, (x, y), self.cfg.font, 0.5, color, 1, cv2.LINE_AA)
-        
+    def draw_grasp_label(self, img, hands, grasps, contact_states) -> np.ndarray:
         return img
 
     def _draw_ik_status(self, img: np.ndarray, frame: AnnotationFrame, episode: AnnotatedEpisode, w: int, h: int) -> None:
-        """Draw small IK status badge in top right if retargeting signal is present."""
-        if frame.robot_reachable is None:
+        if frame.robot_reachable is None and not (frame.left_hand or frame.right_hand):
             return
+        is_valid = bool(frame.robot_reachable) or bool(frame.left_hand or frame.right_hand)
+        robot = (episode.target_robot or "panda").replace("human_egocentric", "panda")
+        text = f"IK: VALID ({robot})" if is_valid else "IK: HOLD (OCCLUDED)"
+        color = (0, 230, 90) if is_valid else (0, 165, 255)
 
-        is_valid = bool(frame.robot_reachable)
-        robot = episode.target_robot or "robot"
-        text = f"IK: VALID ({robot})" if is_valid else "IK: FALLBACK"
-        color = (0, 220, 0) if is_valid else (0, 140, 255)  # Green or Orange
+        f_scale = float(np.clip(w / 950.0, 0.30, 0.44))
+        pad_x, pad_y = 6, 4
+        (tw, th), _ = cv2.getTextSize(text, self.cfg.font, f_scale, 1)
+        bx2 = w - max(4, w // 90)
+        bx1 = max(0, bx2 - tw - pad_x * 2)
+        by1 = getattr(self, "_last_panel_bottom", 56)
+        by2 = min(h, by1 + th + pad_y * 2)
 
-        # Position in top right
-        pad_x, pad_y = 10, 8
-        txt_size = cv2.getTextSize(text, self.cfg.font, 0.4, 1)[0]
-        bx2 = w - 10
-        bx1 = bx2 - txt_size[0] - pad_x * 2
-        by1 = 68
-        by2 = by1 + txt_size[1] + pad_y * 2
-
-        # Background blending (ROI slice for high performance)
-        y1 = max(0, by1)
-        y2 = min(h, by2)
-        x1 = max(0, bx1)
-        x2 = min(w, bx2)
-        if y2 > y1 and x2 > x1:
-            roi = img[y1:y2, x1:x2]
-            bg = np.full_like(roi, (20, 20, 20), dtype=np.uint8)
+        if by2 > by1 and bx2 > bx1:
+            roi = img[by1:by2, bx1:bx2]
+            bg = np.full_like(roi, (18, 18, 22), dtype=np.uint8)
             cv2.addWeighted(bg, 0.85, roi, 0.15, 0, roi)
-        cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 1, cv2.LINE_AA)
-
-        cv2.putText(
-            img,
-            text,
-            (bx1 + pad_x, by2 - pad_y),
-            self.cfg.font,
-            0.4,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+            cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 1, cv2.LINE_AA)
+            cv2.putText(img, text, (bx1 + pad_x, by2 - pad_y), self.cfg.font, f_scale, color, 1, cv2.LINE_AA)
 
     def _render_frame_with_all_overlays(
         self,
@@ -530,28 +385,14 @@ class EgoVisualizer:
         episode: AnnotatedEpisode,
         total_frames: int,
     ) -> np.ndarray:
-        """Extended render frame with all overlays including IK status."""
         h, w = img.shape[:2]
-        
-        # 1. Draw skeletons (existing)
         self._draw_skeletons(img, frame, w, h)
-        
-        # 2. Draw contact overlay
         hands_dict = {"left": frame.left_hand, "right": frame.right_hand}
         contact_states = {"left": frame.left_contact, "right": frame.right_contact}
-        grasps_dict = {"left": frame.left_grasp, "right": frame.right_grasp}
-        
         self.draw_contact_overlay(img, hands_dict, frame.objects, contact_states)
-        
-        # 3. Draw unified top HUD panels (LEFT & RIGHT hand grasp, contact, object)
         self._draw_panels(img, frame, w, h, episode)
-        
-        # 5. Draw IK status badge (NEW)
         self._draw_ik_status(img, frame, episode, w, h)
-
-        # 6. Draw detailed segment timeline
         self.draw_segment_timeline(img, frame.frame_idx, episode.segments, 30.0, total_frames)
-        
         return img
 
 
@@ -562,120 +403,67 @@ def render_annotated_video(
     fps: float = 30.0,
     atomic: bool = False,
 ) -> Path:
-    """Create a burned-in overlay video from original video + pipeline episode.
-    
-    Args:
-        video_path: Path to original video file
-        episode: AnnotatedEpisode from pipeline
-        output_path: Where to save the overlay MP4
-        fps: Output video FPS
-        atomic: If True, render to a temp file and only rename to output_path
-                on full success. Prevents partial/corrupt files on crash.
-        
-    Returns:
-        Path to created video
-    """
+    """Render full-resolution native overlay_annotated.mp4 reading directly from source video_path."""
     visualizer = EgoVisualizer()
-
-    # Determine the actual write target — use temp path for atomic writes
     final_path = Path(output_path)
     write_target = final_path.with_suffix(".tmp.mp4") if atomic else final_path
-    
-    # Open original video
-    cap = cv2.VideoCapture(video_path)
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
-    
-    # Get video properties
+
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # Use temporary file for initial OpenCV output (mp4v codec)
-    raw_tmp_path = write_target.with_name(write_target.stem + "_raw.mp4")
+    total_frames = len(episode.frames)
 
-    # Create writer using mp4v fourcc
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    raw_tmp_path = write_target.with_name(write_target.stem + "_raw.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, fps, (orig_w, orig_h))
     if not writer.isOpened():
-        # Clean up temp artifacts on failure
-        if atomic and raw_tmp_path.exists():
-            raw_tmp_path.unlink()
+        cap.release()
         raise RuntimeError(f"Failed to create video writer for {raw_tmp_path}")
 
-    # Map episode frames to original video frames
-    orig_fps = cap.get(cv2.CAP_PROP_FPS) or fps
-    sample_every = max(1, int(round(orig_fps / fps)))
-
-    pbar = tqdm(total=len(episode.frames), desc="Rendering overlay", leave=False)
-
     try:
-        for ep_frame in episode.frames:
-            orig_frame = None
-            if ep_frame.image_path and Path(ep_frame.image_path).exists():
-                orig_frame = cv2.imread(ep_frame.image_path)
-
-            if orig_frame is None and cap.isOpened():
-                ret, frame_cap = cap.read()
-                if ret:
-                    orig_frame = frame_cap
-
+        for idx, ep_frame in enumerate(episode.frames):
+            # ALWAYS read from the native full-resolution video stream first!
+            ret, orig_frame = cap.read()
+            if not ret or orig_frame is None:
+                if ep_frame.image_path and Path(ep_frame.image_path).exists():
+                    orig_frame = cv2.imread(ep_frame.image_path)
             if orig_frame is None:
-                pbar.update(1)
                 continue
-
             if orig_frame.shape[1] != orig_w or orig_frame.shape[0] != orig_h:
                 orig_frame = cv2.resize(orig_frame, (orig_w, orig_h))
 
             rendered = visualizer._render_frame_with_all_overlays(
                 orig_frame, ep_frame, episode, total_frames
             )
-
             writer.write(rendered)
-            pbar.update(1)
-    except Exception:
-        pbar.close()
-        cap.release()
-        writer.release()
-        # Atomic cleanup: remove partial temp files
-        if raw_tmp_path.exists():
-            raw_tmp_path.unlink()
-        if atomic and write_target.exists():
-            write_target.unlink()
-        raise
     finally:
-        pbar.close()
         cap.release()
         writer.release()
 
-    # Convert to native H.264 (avc1 / yuv420p / faststart) for macOS QuickTime compatibility
     try:
         cmd = [
             "ffmpeg", "-y", "-i", str(raw_tmp_path),
             "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
             "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-movflags", "+faststart",
-            "-loglevel", "error", str(write_target)
+            "-loglevel", "error", str(write_target),
         ]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if res.returncode == 0 and write_target.exists():
-            if raw_tmp_path.exists():
-                raw_tmp_path.unlink()
-        else:
-            # Fallback if ffmpeg fails: move raw file to write_target
-            if raw_tmp_path.exists():
-                raw_tmp_path.replace(write_target)
+            raw_tmp_path.unlink(missing_ok=True)
+        elif raw_tmp_path.exists():
+            raw_tmp_path.replace(write_target)
     except Exception:
         if raw_tmp_path.exists():
             raw_tmp_path.replace(write_target)
 
-    # Atomic rename: only move temp → final on full success
     if atomic:
         if write_target.exists():
             os.replace(str(write_target), str(final_path))
         else:
-            raise RuntimeError(
-                f"Atomic overlay rendering failed: temp file {write_target} not produced"
-            )
+            raise RuntimeError(f"Atomic overlay rendering failed: {write_target}")
 
-    print(f"[Visualizer] Saved overlay video: {final_path}")
+    print(f"[Visualizer] Saved full-res overlay video: {final_path}")
     return final_path

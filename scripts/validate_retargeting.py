@@ -68,6 +68,55 @@ RENDER_H = 480
 
 
 
+
+def setup_pybullet_multi_object_scene(
+    pb,
+    client_id: int,
+    objects_init: List[Dict[str, Any]],
+    table_z_m: float = 0.24,
+) -> Dict[str, Any]:
+    """Spawn a 3D worktable and ALL detected tabletop objects at their respective 3D coordinates."""
+    table_half = [0.32, 0.42, table_z_m * 0.5]
+    col_table = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=table_half, physicsClientId=client_id)
+    vis_table = pb.createVisualShape(
+        pb.GEOM_BOX, halfExtents=table_half, rgbaColor=[0.82, 0.76, 0.66, 1.0], physicsClientId=client_id
+    )
+    table_id = pb.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=col_table,
+        baseVisualShapeIndex=vis_table,
+        basePosition=[0.45, 0.0, table_z_m * 0.5],
+        physicsClientId=client_id,
+    )
+
+    rgba_palette = [
+        [0.95, 0.25, 0.20, 1.0],  # Red
+        [0.20, 0.65, 0.95, 1.0],  # Blue
+        [0.95, 0.75, 0.15, 1.0],  # Gold
+        [0.25, 0.85, 0.45, 1.0],  # Emerald
+        [0.75, 0.35, 0.95, 1.0],  # Purple
+        [0.95, 0.50, 0.20, 1.0],  # Orange
+    ]
+    obj_bodies: Dict[str, int] = {}
+    for idx, oinfo in enumerate(objects_init):
+        name = oinfo["name"]
+        pos = oinfo["pos"]
+        half_ext = oinfo.get("half_extents", [0.024, 0.024, 0.032])
+        rgba = rgba_palette[idx % len(rgba_palette)]
+        col_o = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=half_ext, physicsClientId=client_id)
+        vis_o = pb.createVisualShape(pb.GEOM_BOX, halfExtents=half_ext, rgbaColor=rgba, physicsClientId=client_id)
+        bid = pb.createMultiBody(
+            baseMass=0.08,
+            baseCollisionShapeIndex=col_o,
+            baseVisualShapeIndex=vis_o,
+            basePosition=[float(pos[0]), float(pos[1]), table_z_m + half_ext[2]],
+            physicsClientId=client_id,
+        )
+        obj_bodies[name] = bid
+
+    return {"table_id": table_id, "obj_bodies": obj_bodies}
+
+
 def setup_pybullet_tabletop_scene(
     pb,
     client_id: int,

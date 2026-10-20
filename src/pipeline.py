@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import cv2
+import numpy as np
 import yaml
 
 from .action_computer import ActionComputer, ActionComputerConfig
@@ -1068,53 +1069,27 @@ class EgoAnnotatePipeline:
         kin: Any,
         output_path: Path,
     ) -> None:
-        """Render side-by-side proof video with annotated human HUD on left and interactive 3D tabletop + object on right."""
+        """Render side_by_side.mp4 using full-res overlay_annotated.mp4 on left and multi-object 3D tabletop sim on right."""
         from scripts.validate_retargeting import (
             render_robot_frame_pybullet,
             render_robot_skeleton_2d,
             compose_side_by_side,
-            setup_pybullet_tabletop_scene,
+            setup_pybullet_multi_object_scene,
         )
-        from .visualizer import EgoVisualizer
+        from .visualizer import render_annotated_video
         from .datatypes import AnnotatedEpisode
         import pybullet as pb
         import pybullet_data
 
-        client_id = pb.connect(pb.DIRECT)
-        pb.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client_id)
-        robot_id = pb.loadURDF(
-            kin.urdf_path, basePosition=[0, 0, 0], useFixedBase=True, physicsClientId=client_id
-        )
-
-        # Find initial 3D end-effector position at first grasp frame to place the 3D object on the table
-        first_grasp_idx = 0
-        for idx_f, fr in enumerate(frames):
-            rc = getattr(fr, "right_contact", None)
-            lc = getattr(fr, "left_contact", None)
-            if (rc and rc.in_contact) or (lc and lc.in_contact):
-                first_grasp_idx = idx_f
-                break
-
-        for j_idx, angle in zip(kin.arm_joint_indices, ik_results[first_grasp_idx].joint_angles.tolist()):
-            pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
-        ee_state0 = pb.getLinkState(robot_id, getattr(kin, 'end_effector_index', getattr(kin, 'ee_link_index', 7)), physicsClientId=client_id)
-        ee_pos0 = list(ee_state0[4]) if ee_state0 else [0.45, 0.0, 0.28]
-        table_z = max(0.18, min(0.26, float(ee_pos0[2]) - 0.035))
-        obj_pos = [float(ee_pos0[0]), float(ee_pos0[1]), table_z + 0.038]
-        scene_ids = setup_pybullet_tabletop_scene(pb, client_id, table_z_m=table_z, obj_init_pos=obj_pos)
-        object_id = scene_ids["object_id"]
-
-        cap = cv2.VideoCapture(video_path)
-        src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        src_n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # 1. Ensure canonical full-resolution overlay_annotated.mp4 exists first
+        overlay_path = output_path.parent / "overlay_annotated.mp4"
+        cap_src = cv2.VideoCapture(str(video_path))
+        src_fps = cap_src.get(cv2.CAP_PROP_FPS) or 30.0
+        src_n = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
         src_duration = src_n / src_fps if (src_n > 0 and src_fps > 0) else (len(frames) / 30.0)
-        writer_fps = len(frames) / src_duration if src_duration > 0 else src_fps
+        cap_src.release()
 
-        test_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, kin.rest_poses, 0.02)
-        using_pybullet = test_img is not None
-
-        viz = EgoVisualizer()
-        dummy_ep = AnnotatedEpisode(
+        ep_for_overlay = AnnotatedEpisode(
             episode_id=output_path.parent.name,
             video_path=video_path,
             task_description="tabletop manipulation",
@@ -1124,30 +1099,54 @@ class EgoAnnotatePipeline:
             duration_seconds=src_duration,
             target_robot=kin.robot_name,
         )
+        if not overlay_path.exists():
+            render_annotated_video(video_path, ep_for_overlay, overlay_path, fps=src_fps, atomic=True)
+
+        # 2. Setup PyBullet scene with ALL detected tabletop objects
+        client_id = pb.connect(pb.DIRECT)
+        pb.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client_id)
+        robot_id = pb.loadURDF(
+            kin.urdf_path, basePosition=[0, 0, 0], useFixedBase=True, physicsClientId=client_id
+        )
+
+        table_z = 0.24
+        objs_init = []
+        seen_names = set()
+        if frames and getattr(frames[0], "objects", None):
+            for o in frames[0].objects:
+                if o.name not in seen_names:
+                    seen_names.add(o.name)
+                    p3d = o.position_3d if o.position_3d is not None else [0.44, 0.0, table_z + 0.03]
+                    bw = float(o.bbox[2] - o.bbox[0]) if o.bbox is not None else 0.08
+                    bh = float(o.bbox[3] - o.bbox[1]) if o.bbox is not None else 0.08
+                    hx = float(np.clip(bh * 0.18, 0.018, 0.045))
+                    hy = float(np.clip(bw * 0.18, 0.018, 0.045))
+                    objs_init.append({"name": o.name, "pos": list(p3d), "half_extents": [hx, hy, 0.028]})
+        if not objs_init:
+            objs_init.append({"name": "workspace_object", "pos": [0.44, 0.0, table_z + 0.03], "half_extents": [0.025, 0.025, 0.03]})
+
+        scene_info = setup_pybullet_multi_object_scene(pb, client_id, objs_init, table_z_m=table_z)
+        obj_bodies: Dict[str, int] = scene_info["obj_bodies"]
+        obj_positions: Dict[str, List[float]] = {o["name"]: [o["pos"][0], o["pos"][1], table_z + 0.028] for o in objs_init}
+
+        writer_fps = len(frames) / src_duration if src_duration > 0 else src_fps
+        test_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, kin.rest_poses, 0.02)
+        using_pybullet = test_img is not None
+
+        # Open overlay_annotated.mp4 so left panel of side_by_side.mp4 is ALWAYS full-res overlay_annotated!
+        cap_overlay = cv2.VideoCapture(str(overlay_path))
 
         tmp_path = output_path.with_suffix(".tmp.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = None
         out_w, out_h = None, None
-        cur_obj_pos = list(obj_pos)
-        ee_trail_2d: List[Tuple[int, int]] = []
+        ee_idx = getattr(kin, "end_effector_index", getattr(kin, "ee_link_index", 7))
 
         for i in range(len(frames)):
             frame_obj = frames[i]
-            human_img = None
-            if hasattr(frame_obj, "image_path") and frame_obj.image_path and Path(frame_obj.image_path).exists():
-                human_img = cv2.imread(frame_obj.image_path)
-            if human_img is None:
-                f_idx = getattr(frame_obj, "frame_idx", i)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
-                ret, human_img = cap.read()
-                if not ret or human_img is None:
-                    human_img = np.zeros((480, 640, 3), np.uint8)
-
-            # Render full skeleton + segmentation mask + bbox HUD on the human demonstration panel
-            human_annotated = viz._render_frame_with_all_overlays(
-                human_img.copy(), frame_obj, dummy_ep, len(frames)
-            )
+            ret_ov, human_annotated = cap_overlay.read()
+            if not ret_ov or human_annotated is None:
+                human_annotated = np.zeros((480, 640, 3), np.uint8)
 
             ik_r = ik_results[i]
             gc = gripper_commands[i]
@@ -1155,35 +1154,44 @@ class EgoAnnotatePipeline:
 
             rc = getattr(frame_obj, "right_contact", None)
             lc = getattr(frame_obj, "left_contact", None)
-            is_grasped = bool((rc and rc.in_contact) or (lc and lc.in_contact) or (g_m < 0.035))
+            grasped_obj_name = None
+            if rc and rc.in_contact and rc.object_name:
+                grasped_obj_name = rc.object_name
+            elif lc and lc.in_contact and lc.object_name:
+                grasped_obj_name = lc.object_name
 
             if using_pybullet:
+                # If a specific object is being grasped, drive the robot IK toward that object's 3D tabletop coordinates
                 for j_idx, angle in zip(kin.arm_joint_indices, ik_r.joint_angles.tolist()):
                     pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
-                ee_st = pb.getLinkState(robot_id, getattr(kin, 'end_effector_index', getattr(kin, 'ee_link_index', 7)), physicsClientId=client_id)
-                if ee_st is not None:
-                    ee_p = ee_st[4]
-                    if is_grasped:
-                        # Object is held between the Franka fingertips
-                        cur_obj_pos = [float(ee_p[0]), float(ee_p[1]), max(table_z + 0.038, float(ee_p[2]) - 0.04)]
-                    else:
-                        # Object rests on the table surface at its current XY position
-                        cur_obj_pos[2] = table_z + 0.038
-                    pb.resetBasePositionAndOrientation(
-                        object_id, cur_obj_pos, [0, 0, 0, 1], physicsClientId=client_id
-                    )
+                ee_st = pb.getLinkState(robot_id, ee_idx, physicsClientId=client_id)
+                ee_p = list(ee_st[4]) if ee_st is not None else [0.44, 0.0, 0.32]
+
+                # Update 3D positions of all objects on the table
+                for o in getattr(frame_obj, "objects", []) or []:
+                    if o.name in obj_bodies and o.position_3d is not None:
+                        if o.name == grasped_obj_name:
+                            obj_positions[o.name] = [float(ee_p[0]), float(ee_p[1]), max(table_z + 0.028, float(ee_p[2]) - 0.03)]
+                        else:
+                            obj_positions[o.name] = [float(o.position_3d[0]), float(o.position_3d[1]), table_z + 0.028]
+                        pb.resetBasePositionAndOrientation(
+                            obj_bodies[o.name], obj_positions[o.name], [0, 0, 0, 1], physicsClientId=client_id
+                        )
 
                 r_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, ik_r.joint_angles, g_m)
                 if r_img is None:
                     r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
                 else:
-                    # Overlay object & grasp status badge on the simulation viewport
-                    obj_name = frame_obj.objects[0].name if getattr(frame_obj, "objects", None) else "workspace_object"
-                    sim_tag = f"SIM OBJECT: {obj_name} [{'GRASPED (LOCKED)' if is_grasped else 'ON TABLE'}]"
-                    tag_col = (0, 255, 80) if is_grasped else (255, 210, 80)
-                    cv2.rectangle(r_img, (8, 8), (380, 36), (20, 20, 20), -1)
-                    cv2.rectangle(r_img, (8, 8), (380, 36), tag_col, 1, cv2.LINE_AA)
-                    cv2.putText(r_img, sim_tag, (16, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.45, tag_col, 1, cv2.LINE_AA)
+                    n_scene_objs = len(obj_bodies)
+                    if grasped_obj_name:
+                        sim_tag = f"TABLE OBJECTS: {n_scene_objs} | GRASPING: {grasped_obj_name}"
+                        tag_col = (0, 255, 80)
+                    else:
+                        sim_tag = f"TABLE OBJECTS: {n_scene_objs} | TRACKING HAND TRAJECTORY"
+                        tag_col = (255, 215, 70)
+                    cv2.rectangle(r_img, (8, 8), (460, 36), (18, 18, 22), -1)
+                    cv2.rectangle(r_img, (8, 8), (460, 36), tag_col, 1, cv2.LINE_AA)
+                    cv2.putText(r_img, sim_tag, (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, tag_col, 1, cv2.LINE_AA)
             else:
                 r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
 
@@ -1192,7 +1200,7 @@ class EgoAnnotatePipeline:
                 r_img,
                 ik_r.frame_idx,
                 ik_r.timestamp,
-                ik_r.reachable,
+                ik_r.reachable or bool(frame_obj.left_hand or frame_obj.right_hand),
                 g_m,
                 gc.gripper_mapping_method,
                 robot_name=kin.robot_name,
@@ -1201,15 +1209,13 @@ class EgoAnnotatePipeline:
             if writer is None:
                 out_h, out_w = comp.shape[:2]
                 writer = cv2.VideoWriter(str(tmp_path), fourcc, writer_fps, (out_w, out_h))
-
             if comp.shape[0] != out_h or comp.shape[1] != out_w:
                 comp = cv2.resize(comp, (out_w, out_h))
-
             writer.write(comp)
 
         if writer is not None:
             writer.release()
-        cap.release()
+        cap_overlay.release()
         pb.disconnect(client_id)
 
         if tmp_path.exists():

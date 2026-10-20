@@ -1,5 +1,5 @@
 {
-  "project": "EgoAnnotate v1.2.0",
+  "project": "EgoAnnotate v1.3.0",
   "raw_videos": {
     "client_video.mp4": {
       "size_mb": 103.88,
@@ -24,8 +24,15 @@
   },
   "episodes": {
     "client_video": {
-      "task_description": "first-person precision pinch and object inspection",
-      "num_segments": 12,
+      "num_frames": 300,
+      "num_segments": 1,
+      "tracked_objects": [
+        "Inspected Component",
+        "Inspected Component_2"
+      ],
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 300,
+      "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
           "precision_pinch": 102,
@@ -35,11 +42,11 @@
           "precision_pinch": 36,
           "open": 10
         },
-        "left_contact_frames": 102,
-        "right_contact_frames": 36,
+        "left_contact_frames": 0,
+        "right_contact_frames": 0,
         "total_frames": 300,
-        "ratio_left_contact": 0.34,
-        "ratio_right_contact": 0.12,
+        "ratio_left_contact": 0.0,
+        "ratio_right_contact": 0.0,
         "tracking_loss_pct": 89.33333333333333,
         "tracking_loss_pct_active": 81.60919540229885,
         "tracking_rescued_pct": 0.0,
@@ -52,14 +59,20 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 98.8,
         "allegro_hand_right": 100.0
-      },
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 282,
-      "frames_with_3d_object_pose": 300
+      }
     },
     "my_video": {
-      "task_description": "bimanual workspace manipulation and object placement",
-      "num_segments": 9,
+      "num_frames": 300,
+      "num_segments": 6,
+      "tracked_objects": [
+        "Workspace Tool",
+        "Workspace Tool_2",
+        "Workspace Tool_3",
+        "Workspace Tool_4"
+      ],
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 300,
+      "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
           "open": 232,
@@ -69,11 +82,11 @@
           "open": 223,
           "precision_pinch": 33
         },
-        "left_contact_frames": 106,
-        "right_contact_frames": 123,
+        "left_contact_frames": 19,
+        "right_contact_frames": 101,
         "total_frames": 300,
-        "ratio_left_contact": 0.35333333333333333,
-        "ratio_right_contact": 0.41,
+        "ratio_left_contact": 0.06333333333333334,
+        "ratio_right_contact": 0.33666666666666667,
         "tracking_loss_pct": 21.0,
         "tracking_loss_pct_active": 21.0,
         "tracking_rescued_pct": 0.0,
@@ -86,14 +99,17 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.4,
         "allegro_hand_right": 100.0
-      },
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 296,
-      "frames_with_3d_object_pose": 300
+      }
     },
     "new_video": {
-      "task_description": "bimanual hook and pinch handling of workspace item",
-      "num_segments": 5,
+      "num_frames": 300,
+      "num_segments": 4,
+      "tracked_objects": [
+        "Handled Object"
+      ],
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 300,
+      "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
           "open": 216,
@@ -104,11 +120,11 @@
           "open": 173,
           "precision_pinch": 8
         },
-        "left_contact_frames": 19,
-        "right_contact_frames": 55,
+        "left_contact_frames": 12,
+        "right_contact_frames": 58,
         "total_frames": 300,
-        "ratio_left_contact": 0.06333333333333334,
-        "ratio_right_contact": 0.18333333333333332,
+        "ratio_left_contact": 0.04,
+        "ratio_right_contact": 0.19333333333333333,
         "tracking_loss_pct": 56.333333333333336,
         "tracking_loss_pct_active": 56.187290969899664,
         "tracking_rescued_pct": 0.0,
@@ -121,14 +137,20 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 99.2,
         "allegro_hand_right": 100.0
-      },
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 286,
-      "frames_with_3d_object_pose": 300
+      }
     },
     "test_10s": {
-      "task_description": "reaching and precision pinching tabletop component",
-      "num_segments": 7,
+      "num_frames": 300,
+      "num_segments": 10,
+      "tracked_objects": [
+        "Workspace Object",
+        "Workspace Object_2",
+        "Workspace Object_3",
+        "Workspace Object_4"
+      ],
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 300,
+      "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
           "open": 222,
@@ -138,11 +160,11 @@
           "open": 215,
           "precision_pinch": 41
         },
-        "left_contact_frames": 43,
-        "right_contact_frames": 43,
+        "left_contact_frames": 16,
+        "right_contact_frames": 127,
         "total_frames": 300,
-        "ratio_left_contact": 0.14333333333333334,
-        "ratio_right_contact": 0.14333333333333334,
+        "ratio_left_contact": 0.05333333333333334,
+        "ratio_right_contact": 0.42333333333333334,
         "tracking_loss_pct": 25.333333333333332,
         "tracking_loss_pct_active": 25.333333333333332,
         "tracking_rescued_pct": 0.0,
@@ -155,14 +177,22 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.9,
         "allegro_hand_right": 100.0
-      },
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 262,
-      "frames_with_3d_object_pose": 300
+      }
     },
     "whatsapp_video": {
-      "task_description": "bimanual tabletop object manipulation and precision transfer",
-      "num_segments": 21,
+      "num_frames": 729,
+      "num_segments": 25,
+      "tracked_objects": [
+        "Router & Adapter",
+        "Computer Mouse",
+        "Perfume Bottle",
+        "Red Pouch & Lighter",
+        "Earbud Case",
+        "Keyfob"
+      ],
+      "frames_with_bbox": 729,
+      "frames_with_segmentation_mask": 729,
+      "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
           "None": 248,
@@ -176,11 +206,11 @@
           "precision_pinch": 113,
           "hook": 74
         },
-        "left_contact_frames": 151,
-        "right_contact_frames": 204,
+        "left_contact_frames": 233,
+        "right_contact_frames": 358,
         "total_frames": 729,
-        "ratio_left_contact": 0.20713305898491083,
-        "ratio_right_contact": 0.27983539094650206,
+        "ratio_left_contact": 0.3196159122085048,
+        "ratio_right_contact": 0.49108367626886146,
         "tracking_loss_pct": 43.62139917695473,
         "tracking_loss_pct_active": 30.574324324324323,
         "tracking_rescued_pct": 0.0,
@@ -193,10 +223,7 @@
         "unitree_g1_upper": 98.0,
         "unitree_h1_upper": 99.3,
         "allegro_hand_right": 100.0
-      },
-      "frames_with_bbox": 729,
-      "frames_with_segmentation_mask": 593,
-      "frames_with_3d_object_pose": 729
+      }
     }
   },
   "merged_lerobot": {

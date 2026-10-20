@@ -31,7 +31,7 @@ class ExporterConfig:
     output_dir: str
     format: str = "json"                 # "json" or "parquet"
     include_image_bytes: bool = False
-    save_viz_video: bool = True          # Internal 224x224 debug HUD → debug_hud_preview.mp4
+    save_viz_video: bool = False          # Internal 224x224 debug HUD → debug_hud_preview.mp4
     save_overlay_video: bool = True      # Client-facing native-res → overlay_annotated.mp4
     lerobot_export_mode: str = "human"   # "human" (24D) or "robot" (8D joint+gripper)
 
@@ -67,8 +67,7 @@ class DatasetExporter:
         self._export_segments(episode, episode_dir)
 
         # 4. Save debug HUD video if requested (224×224 internal preview)
-        if self.config.save_viz_video:
-            self._create_viz_video(episode, episode_dir)
+        # Removed 224x224 debug_hud_preview.mp4 per v1.3 spec: overlay_annotated.mp4 is the canonical video.
 
         # 5. Save client-facing overlay video (native resolution, all annotations)
         if self.config.save_overlay_video:
