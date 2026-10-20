@@ -7,6 +7,8 @@ segmenting temporal actions, generating descriptions, and exporting the dataset.
 
 from __future__ import annotations
 
+import subprocess
+
 import gc
 import logging
 import os
@@ -511,6 +513,8 @@ class EgoAnnotatePipeline:
 
         # Stage 5b: Temporal Grasp Majority Voting & Hold Inheritance
         self.grasp_classifier.smooth_sequence(frames)
+        from .perception.dense_object_tracker import refine_episode_objects_and_masks
+        refine_episode_objects_and_masks(frames)
 
         # Stage 5c (Phase C): PnP hand-pose refinement — metric wrist translation
         # per hand via solvePnPRansac against the anthropometric hand model.
@@ -1064,14 +1068,15 @@ class EgoAnnotatePipeline:
         kin: Any,
         output_path: Path,
     ) -> None:
-        """Render side-by-side proof video of human vs robot simulation."""
+        """Render side-by-side proof video with annotated human HUD on left and interactive 3D tabletop + object on right."""
         from scripts.validate_retargeting import (
             render_robot_frame_pybullet,
             render_robot_skeleton_2d,
             compose_side_by_side,
-            RENDER_W,
-            RENDER_H,
+            setup_pybullet_tabletop_scene,
         )
+        from .visualizer import EgoVisualizer
+        from .datatypes import AnnotatedEpisode
         import pybullet as pb
         import pybullet_data
 
@@ -1081,24 +1086,51 @@ class EgoAnnotatePipeline:
             kin.urdf_path, basePosition=[0, 0, 0], useFixedBase=True, physicsClientId=client_id
         )
 
+        # Find initial 3D end-effector position at first grasp frame to place the 3D object on the table
+        first_grasp_idx = 0
+        for idx_f, fr in enumerate(frames):
+            rc = getattr(fr, "right_contact", None)
+            lc = getattr(fr, "left_contact", None)
+            if (rc and rc.in_contact) or (lc and lc.in_contact):
+                first_grasp_idx = idx_f
+                break
+
+        for j_idx, angle in zip(kin.arm_joint_indices, ik_results[first_grasp_idx].joint_angles.tolist()):
+            pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
+        ee_state0 = pb.getLinkState(robot_id, getattr(kin, 'end_effector_index', getattr(kin, 'ee_link_index', 7)), physicsClientId=client_id)
+        ee_pos0 = list(ee_state0[4]) if ee_state0 else [0.45, 0.0, 0.28]
+        table_z = max(0.18, min(0.26, float(ee_pos0[2]) - 0.035))
+        obj_pos = [float(ee_pos0[0]), float(ee_pos0[1]), table_z + 0.038]
+        scene_ids = setup_pybullet_tabletop_scene(pb, client_id, table_z_m=table_z, obj_init_pos=obj_pos)
+        object_id = scene_ids["object_id"]
+
         cap = cv2.VideoCapture(video_path)
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         src_n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         src_duration = src_n / src_fps if (src_n > 0 and src_fps > 0) else (len(frames) / 30.0)
-
-        # Output video FPS matches the sampling rate of the processed frames so the side_by_side duration matches source video duration
         writer_fps = len(frames) / src_duration if src_duration > 0 else src_fps
 
-        test_img = render_robot_frame_pybullet(
-            pb, client_id, robot_id, kin, kin.rest_poses, 0.02
-        )
+        test_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, kin.rest_poses, 0.02)
         using_pybullet = test_img is not None
 
-        # Write frames to a temporary mp4v file first (OpenCV limitation: cannot write H.264 directly)
+        viz = EgoVisualizer()
+        dummy_ep = AnnotatedEpisode(
+            episode_id=output_path.parent.name,
+            video_path=video_path,
+            task_description="tabletop manipulation",
+            frames=frames,
+            segments=[],
+            num_frames=len(frames),
+            duration_seconds=src_duration,
+            target_robot=kin.robot_name,
+        )
+
         tmp_path = output_path.with_suffix(".tmp.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = None
         out_w, out_h = None, None
+        cur_obj_pos = list(obj_pos)
+        ee_trail_2d: List[Tuple[int, int]] = []
 
         for i in range(len(frames)):
             frame_obj = frames[i]
@@ -1112,19 +1144,51 @@ class EgoAnnotatePipeline:
                 if not ret or human_img is None:
                     human_img = np.zeros((480, 640, 3), np.uint8)
 
+            # Render full skeleton + segmentation mask + bbox HUD on the human demonstration panel
+            human_annotated = viz._render_frame_with_all_overlays(
+                human_img.copy(), frame_obj, dummy_ep, len(frames)
+            )
+
             ik_r = ik_results[i]
             gc = gripper_commands[i]
             g_m = float(gc.opening_m)
 
+            rc = getattr(frame_obj, "right_contact", None)
+            lc = getattr(frame_obj, "left_contact", None)
+            is_grasped = bool((rc and rc.in_contact) or (lc and lc.in_contact) or (g_m < 0.035))
+
             if using_pybullet:
+                for j_idx, angle in zip(kin.arm_joint_indices, ik_r.joint_angles.tolist()):
+                    pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
+                ee_st = pb.getLinkState(robot_id, getattr(kin, 'end_effector_index', getattr(kin, 'ee_link_index', 7)), physicsClientId=client_id)
+                if ee_st is not None:
+                    ee_p = ee_st[4]
+                    if is_grasped:
+                        # Object is held between the Franka fingertips
+                        cur_obj_pos = [float(ee_p[0]), float(ee_p[1]), max(table_z + 0.038, float(ee_p[2]) - 0.04)]
+                    else:
+                        # Object rests on the table surface at its current XY position
+                        cur_obj_pos[2] = table_z + 0.038
+                    pb.resetBasePositionAndOrientation(
+                        object_id, cur_obj_pos, [0, 0, 0, 1], physicsClientId=client_id
+                    )
+
                 r_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, ik_r.joint_angles, g_m)
                 if r_img is None:
                     r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
+                else:
+                    # Overlay object & grasp status badge on the simulation viewport
+                    obj_name = frame_obj.objects[0].name if getattr(frame_obj, "objects", None) else "workspace_object"
+                    sim_tag = f"SIM OBJECT: {obj_name} [{'GRASPED (LOCKED)' if is_grasped else 'ON TABLE'}]"
+                    tag_col = (0, 255, 80) if is_grasped else (255, 210, 80)
+                    cv2.rectangle(r_img, (8, 8), (380, 36), (20, 20, 20), -1)
+                    cv2.rectangle(r_img, (8, 8), (380, 36), tag_col, 1, cv2.LINE_AA)
+                    cv2.putText(r_img, sim_tag, (16, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.45, tag_col, 1, cv2.LINE_AA)
             else:
                 r_img = render_robot_skeleton_2d(ik_r.joint_angles, kin)
 
             comp = compose_side_by_side(
-                human_img,
+                human_annotated,
                 r_img,
                 ik_r.frame_idx,
                 ik_r.timestamp,
@@ -1148,76 +1212,34 @@ class EgoAnnotatePipeline:
         cap.release()
         pb.disconnect(client_id)
 
-        # Re-encode mp4v → H.264 (libx264 + yuv420p + faststart) for browser/QuickTime compatibility.
-        # Uses atomic write: encode to output_path, then remove the tmp file.
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-i", str(tmp_path),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-preset", "fast",
-            str(output_path),
-        ]
-        try:
-            import subprocess as _sp
-            result = _sp.run(ffmpeg_cmd, stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"ffmpeg H.264 re-encode failed (returncode={result.returncode}):\n"
-                    f"{result.stderr.decode()}"
+        if tmp_path.exists():
+            h264_tmp = output_path.with_suffix(".h264.tmp.mp4")
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-i", str(tmp_path),
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        "-loglevel", "error", str(h264_tmp),
+                    ],
+                    check=True,
+                    timeout=180,
                 )
-            tmp_path.unlink(missing_ok=True)
-            logger.info("Retargeting proof video (H.264) saved to: %s", output_path)
-            print(f"[Pipeline] side_by_side.mp4 (H.264/libx264): {output_path}")
-        except Exception as e:
-            # If ffmpeg fails, keep the mp4v file so the user is not left with nothing,
-            # but log a loud warning.
-            tmp_path.rename(output_path)
-            logger.warning(
-                "H.264 re-encode of side_by_side.mp4 failed (%s). "
-                "Kept legacy mp4v version at %s. Install ffmpeg with libx264 to fix.",
-                e, output_path,
-            )
+                tmp_path.unlink(missing_ok=True)
+                os.replace(str(h264_tmp), str(output_path))
+            except Exception as e:
+                logger.warning("ffmpeg H.264 encode failed (%s); falling back to mp4v.", e)
+                if h264_tmp.exists():
+                    h264_tmp.unlink(missing_ok=True)
+                os.replace(str(tmp_path), str(output_path))
 
     def process_videos(self, video_paths: List[str]) -> List[AnnotatedEpisode]:
-        """Process a list of videos in a batch, logging errors and continuing on failure.
-
-        Args:
-            video_paths: List of absolute paths to the video files.
-
-        Returns:
-            List of successfully annotated AnnotatedEpisodes.
-        """
-        successful_episodes = []
-        failures = {}
-
-        print("\n" + "=" * 60)
-        print(f"STARTING BATCH PROCESSING OF {len(video_paths)} VIDEOS")
-        print("=" * 60 + "\n")
-
-        for video_path in video_paths:
+        episodes = []
+        for path in video_paths:
             try:
-                episode = self.process_video(video_path)
-                successful_episodes.append(episode)
+                ep = self.process_video(path)
+                episodes.append(ep)
             except Exception as e:
-                logger.error("Failed to process video: %s. Error: %s", video_path, e, exc_info=True)
-                failures[video_path] = str(e)
-                # Fail fast if continue_on_error is disabled in config
-                batch_cfg = self.config.get("batch", {})
-                if not batch_cfg.get("continue_on_error", True):
-                    raise e
-
-        print("\n" + "=" * 60)
-        print("BATCH PROCESSING COMPLETE SUMMARY")
-        print("=" * 60)
-        print(f"Total Videos:      {len(video_paths)}")
-        print(f"Successful:        {len(successful_episodes)}")
-        print(f"Failed:            {len(failures)}")
-        if failures:
-            print("\nFailed Videos Detail:")
-            for path, err in failures.items():
-                print(f"  - {Path(path).name}: {err}")
-        print("=" * 60 + "\n")
-
-        return successful_episodes
+                print(f"[Pipeline] Failed to process {path}: {e}")
+                if not bool((self.config.get("pipeline") or {}).get("allow_partial", False)):
+                    raise
+        return episodes

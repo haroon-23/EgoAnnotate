@@ -1,5 +1,5 @@
 {
-  "project": "EgoAnnotate v1.0.0",
+  "project": "EgoAnnotate v1.2.0",
   "raw_videos": {
     "client_video.mp4": {
       "size_mb": 103.88,
@@ -52,7 +52,10 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 98.8,
         "allegro_hand_right": 100.0
-      }
+      },
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 282,
+      "frames_with_3d_object_pose": 300
     },
     "my_video": {
       "task_description": "bimanual workspace manipulation and object placement",
@@ -83,7 +86,10 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.4,
         "allegro_hand_right": 100.0
-      }
+      },
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 296,
+      "frames_with_3d_object_pose": 300
     },
     "new_video": {
       "task_description": "bimanual hook and pinch handling of workspace item",
@@ -115,7 +121,10 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 99.2,
         "allegro_hand_right": 100.0
-      }
+      },
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 286,
+      "frames_with_3d_object_pose": 300
     },
     "test_10s": {
       "task_description": "reaching and precision pinching tabletop component",
@@ -146,7 +155,10 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.9,
         "allegro_hand_right": 100.0
-      }
+      },
+      "frames_with_bbox": 300,
+      "frames_with_segmentation_mask": 262,
+      "frames_with_3d_object_pose": 300
     },
     "whatsapp_video": {
       "task_description": "bimanual tabletop object manipulation and precision transfer",
@@ -181,7 +193,10 @@
         "unitree_g1_upper": 98.0,
         "unitree_h1_upper": 99.3,
         "allegro_hand_right": 100.0
-      }
+      },
+      "frames_with_bbox": 729,
+      "frames_with_segmentation_mask": 593,
+      "frames_with_3d_object_pose": 729
     }
   },
   "merged_lerobot": {

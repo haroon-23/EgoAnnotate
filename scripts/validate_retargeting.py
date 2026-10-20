@@ -67,6 +67,57 @@ RENDER_W = 640
 RENDER_H = 480
 
 
+
+def setup_pybullet_tabletop_scene(
+    pb,
+    client_id: int,
+    table_z_m: float = 0.24,
+    obj_init_pos: Optional[List[float]] = None,
+) -> Dict[str, int]:
+    """Spawn a 3D worktable, target placement pad, and manipulable object in PyBullet."""
+    pos_obj = obj_init_pos or [0.44, 0.0, table_z_m + 0.035]
+
+    # 1. Worktable (slate-wood tabletop below robot workspace)
+    table_half = [0.32, 0.42, table_z_m * 0.5]
+    col_table = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=table_half, physicsClientId=client_id)
+    vis_table = pb.createVisualShape(
+        pb.GEOM_BOX, halfExtents=table_half, rgbaColor=[0.82, 0.76, 0.66, 1.0], physicsClientId=client_id
+    )
+    table_id = pb.createMultiBody(
+        baseMass=0,
+        baseCollisionShapeIndex=col_table,
+        baseVisualShapeIndex=vis_table,
+        basePosition=[0.46, 0.0, table_z_m * 0.5],
+        physicsClientId=client_id,
+    )
+
+    # 2. Target zone marker on table surface
+    vis_pad = pb.createVisualShape(
+        pb.GEOM_CYLINDER, radius=0.065, length=0.003, rgbaColor=[0.15, 0.65, 0.35, 0.75], physicsClientId=client_id
+    )
+    pad_id = pb.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=vis_pad,
+        basePosition=[pos_obj[0], pos_obj[1], table_z_m + 0.002],
+        physicsClientId=client_id,
+    )
+
+    # 3. Interactive manipulable object (crimson/orange graspable cylinder-block)
+    obj_half = [0.028, 0.028, 0.038]
+    col_obj = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=obj_half, physicsClientId=client_id)
+    vis_obj = pb.createVisualShape(
+        pb.GEOM_BOX, halfExtents=obj_half, rgbaColor=[0.95, 0.25, 0.15, 1.0], physicsClientId=client_id
+    )
+    object_id = pb.createMultiBody(
+        baseMass=0.1,
+        baseCollisionShapeIndex=col_obj,
+        baseVisualShapeIndex=vis_obj,
+        basePosition=pos_obj,
+        physicsClientId=client_id,
+    )
+    return {"table_id": table_id, "pad_id": pad_id, "object_id": object_id}
+
+
 def render_robot_frame_pybullet(
     pb,
     client_id: int,

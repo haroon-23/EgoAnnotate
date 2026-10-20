@@ -284,82 +284,89 @@ class EgoVisualizer:
         contact_states: Dict[str, Optional[ContactState]],
         confidence_threshold: float = 0.5,
     ) -> np.ndarray:
-        """Draw object bboxes and contact fingertips on the frame.
-        
-        Args:
-            img: BGR image to draw on (modified in place)
-            hands: Dict with "left" and "right" HandLandmarks
-            objects: List of ObjectAnnotation with bbox
-            contact_states: Dict with "left" and "right" ContactState
-            confidence_threshold: Min confidence for bright contact visualization
-            
-        Returns:
-            Modified image with overlay
-        """
+        """Draw object segmentation masks, corner-bracketed bounding boxes, and contact fingertips."""
         h, w = img.shape[:2]
-        
-        # Colors for contact visualization
-        CONTACT_BRIGHT = (0, 255, 0)      # Bright green
-        CONTACT_DIM = (100, 100, 100)     # Gray
-        BBOX_THICKNESS = 2
+
+        CONTACT_BRIGHT = (0, 255, 80)     # Neon green when grasped/in-contact
+        CONTACT_IDLE = (255, 200, 0)      # Cyan-amber when tracked on workspace
         FINGERTIP_RADIUS = 5
-        
-        # Draw each object bbox
+
         for obj in objects:
             if obj.bbox is None:
                 continue
-            
+
             x_min, y_min, x_max, y_max = obj.bbox
-            # Convert normalized to pixel coords
-            x1 = int(x_min * w)
-            y1 = int(y_min * h)
-            x2 = int(x_max * w)
-            y2 = int(y_max * h)
-            
-            # Check if this object is in contact (either hand)
-            in_contact = False
-            max_conf = 0.0
+            x1 = max(0, min(w - 1, int(x_min * w)))
+            y1 = max(0, min(h - 1, int(y_min * h)))
+            x2 = max(0, min(w - 1, int(x_max * w)))
+            y2 = max(0, min(h - 1, int(y_max * h)))
+            if x2 <= x1 + 4 or y2 <= y1 + 4:
+                continue
+
+            in_contact = bool(obj.touched or obj.state == "grasped")
+            max_conf = 0.85 if in_contact else 0.70
             for hand_name in ["left", "right"]:
                 cs = contact_states.get(hand_name)
-                if cs and cs.in_contact and cs.object_name == obj.name:
+                if cs and cs.in_contact:
                     in_contact = True
-                    max_conf = max(max_conf, cs.confidence)
-            
-            # Choose color based on contact and confidence
-            if in_contact and max_conf >= confidence_threshold:
-                bbox_color = CONTACT_BRIGHT
-                tip_color = CONTACT_BRIGHT
+                    max_conf = max(max_conf, float(cs.confidence))
+
+            bbox_color = CONTACT_BRIGHT if in_contact else CONTACT_IDLE
+
+            # 1. Draw pixel-accurate foreground segmentation mask polygon if available
+            poly_norm = (obj.mask_rle or {}).get("polygon_norm") if isinstance(obj.mask_rle, dict) else None
+            if poly_norm and len(poly_norm) >= 3:
+                pts_px = np.array([[int(p[0] * w), int(p[1] * h)] for p in poly_norm], dtype=np.int32)
+                mask_overlay = img.copy()
+                cv2.fillPoly(mask_overlay, [pts_px], bbox_color)
+                cv2.addWeighted(mask_overlay, 0.24, img, 0.76, 0, img)
+                cv2.polylines(img, [pts_px], isClosed=True, color=bbox_color, thickness=2, lineType=cv2.LINE_AA)
             else:
-                bbox_color = CONTACT_DIM
-                tip_color = CONTACT_DIM
-            
-            # Draw bbox
-            cv2.rectangle(img, (x1, y1), (x2, y2), bbox_color, BBOX_THICKNESS, cv2.LINE_AA)
-            
-            # Draw object label
-            label = f"{obj.name}"
-            if in_contact:
-                label += f" ({max_conf:.2f})"
-            cv2.putText(img, label, (x1, max(0, y1 - 5)), self.cfg.font, 0.4,
-                        bbox_color, 1, cv2.LINE_AA)
-            
-            # Draw fingertips that are in contact with this object
+                # Subtle translucent fill inside bounding box
+                roi = img[y1:y2, x1:x2]
+                tint = np.full_like(roi, bbox_color, dtype=np.uint8)
+                cv2.addWeighted(tint, 0.14, roi, 0.86, 0, roi)
+
+            # 2. Draw crisp corner-bracketed bounding box
+            cv2.rectangle(img, (x1, y1), (x2, y2), bbox_color, 1, cv2.LINE_AA)
+            corner_len = max(6, min(18, (x2 - x1) // 4, (y2 - y1) // 4))
+            for cx_c, cy_c, dx_s, dy_s in [
+                (x1, y1, 1, 1), (x2, y1, -1, 1), (x1, y2, 1, -1), (x2, y2, -1, -1)
+            ]:
+                cv2.line(img, (cx_c, cy_c), (cx_c + dx_s * corner_len, cy_c), bbox_color, 2, cv2.LINE_AA)
+                cv2.line(img, (cx_c, cy_c), (cx_c, cy_c + dy_s * corner_len), bbox_color, 2, cv2.LINE_AA)
+
+            # 3. Draw high-contrast pill label above object bbox
+            state_tag = "GRASPED" if in_contact else "TRACKED"
+            label = f"{state_tag}: {obj.name} ({max_conf:.2f})"
+            (tw, th), _ = cv2.getTextSize(label, self.cfg.font, 0.38, 1)
+            ly2 = max(th + 8, y1 - 2)
+            ly1 = max(0, ly2 - th - 6)
+            lx1 = max(0, min(w - tw - 8, x1))
+            lx2 = min(w, lx1 + tw + 8)
+            if ly2 > ly1 and lx2 > lx1:
+                l_roi = img[ly1:ly2, lx1:lx2]
+                l_bg = np.full_like(l_roi, (18, 18, 18), dtype=np.uint8)
+                cv2.addWeighted(l_bg, 0.82, l_roi, 0.18, 0, l_roi)
+                cv2.rectangle(img, (lx1, ly1), (lx2, ly2), bbox_color, 1, cv2.LINE_AA)
+            cv2.putText(img, label, (lx1 + 4, ly2 - 4), self.cfg.font, 0.38, bbox_color, 1, cv2.LINE_AA)
+
+            # 4. Highlight active contacting fingertips and draw force-vector lines to object centroid
+            obj_cx, obj_cy = (x1 + x2) // 2, (y1 + y2) // 2
             for hand_name in ["left", "right"]:
                 hand = hands.get(hand_name)
                 cs = contact_states.get(hand_name)
-                
-                if hand is None or cs is None:
+                if hand is None or cs is None or not cs.in_contact:
                     continue
-                
-                if cs.in_contact and cs.object_name == obj.name:
-                    tips = hand.fingertip_positions()  # (5, 3)
-                    for f_idx in range(5):
-                        if cs.fingers[f_idx]:
-                            px = int(tips[f_idx, 0] * w)
-                            py = int(tips[f_idx, 1] * h)
-                            cv2.circle(img, (px, py), FINGERTIP_RADIUS, tip_color, -1, cv2.LINE_AA)
-                            cv2.circle(img, (px, py), FINGERTIP_RADIUS + 1, (255, 255, 255), 1, cv2.LINE_AA)
-        
+                tips = hand.fingertip_positions()
+                for f_idx in range(5):
+                    if cs.fingers[f_idx]:
+                        px = int(tips[f_idx, 0] * w)
+                        py = int(tips[f_idx, 1] * h)
+                        cv2.line(img, (px, py), (obj_cx, obj_cy), CONTACT_BRIGHT, 1, cv2.LINE_AA)
+                        cv2.circle(img, (px, py), FINGERTIP_RADIUS, CONTACT_BRIGHT, -1, cv2.LINE_AA)
+                        cv2.circle(img, (px, py), FINGERTIP_RADIUS + 2, (255, 255, 255), 1, cv2.LINE_AA)
+
         return img
 
     # ── Detailed segment timeline ───────────────────────────────────────
@@ -491,7 +498,7 @@ class EgoVisualizer:
         txt_size = cv2.getTextSize(text, self.cfg.font, 0.4, 1)[0]
         bx2 = w - 10
         bx1 = bx2 - txt_size[0] - pad_x * 2
-        by1 = 8
+        by1 = 68
         by2 = by1 + txt_size[1] + pad_y * 2
 
         # Background blending (ROI slice for high performance)
@@ -536,10 +543,7 @@ class EgoVisualizer:
         
         self.draw_contact_overlay(img, hands_dict, frame.objects, contact_states)
         
-        # 3. Draw grasp labels
-        self.draw_grasp_label(img, hands_dict, grasps_dict, contact_states)
-        
-        # 4. Draw panels (existing HUD)
+        # 3. Draw unified top HUD panels (LEFT & RIGHT hand grasp, contact, object)
         self._draw_panels(img, frame, w, h, episode)
         
         # 5. Draw IK status badge (NEW)
