@@ -287,6 +287,20 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
         meta_group.create_dataset("num_frames", data=int(meta.get("num_frames", num_frames)), dtype=np.int32)
         meta_group.create_dataset("duration_seconds", data=float(meta.get("duration_seconds", 0.0)), dtype=np.float32)
 
+        # Attach universal multi-embodiment trajectories if present
+        emb_dir = episode_dir / "embodiments"
+        if emb_dir.exists():
+            emb_grp = steps_group.require_group("embodiments")
+            for npz_p in sorted(emb_dir.glob("*/trajectory.npz")):
+                rname = npz_p.parent.name
+                with np.load(npz_p, allow_pickle=True) as tdata:
+                    r_grp = emb_grp.require_group(rname)
+                    for k_arr in ("q", "qd", "qdd", "action_chunks_16", "finger_curls", "gripper_opening_m"):
+                        if k_arr in tdata:
+                            if k_arr in r_grp:
+                                del r_grp[k_arr]
+                            r_grp.create_dataset(k_arr, data=tdata[k_arr], compression="gzip")
+
     return rlds_file_path
 
 

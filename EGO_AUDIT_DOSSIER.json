@@ -1,5 +1,5 @@
 {
-  "project": "EgoAnnotate v1.4.0 (FLORA + Multi-Object Grounded)",
+  "project": "EgoAnnotate v2.0.0 (Universal Multi-Embodiment VLA & Robot Compiler)",
   "raw_videos": {
     "client_video.mp4": {
       "size_mb": 103.88,
@@ -72,7 +72,38 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 98.8,
         "allegro_hand_right": 100.0
-      }
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 1.662
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 4.188
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 98.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 18.477
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/client_video/multi_embodiment_proof.mp4"
     },
     "my_video": {
       "num_frames": 300,
@@ -123,7 +154,38 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.4,
         "allegro_hand_right": 100.0
-      }
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 1.803
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.126
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 97.4,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 22.402
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/my_video/multi_embodiment_proof.mp4"
     },
     "new_video": {
       "num_frames": 300,
@@ -174,7 +236,38 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 99.2,
         "allegro_hand_right": 100.0
-      }
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.948
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 6.19
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 99.2,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 17.26
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/new_video/multi_embodiment_proof.mp4"
     },
     "test_10s": {
       "num_frames": 300,
@@ -225,7 +318,38 @@
         "unitree_g1_upper": 100.0,
         "unitree_h1_upper": 97.9,
         "allegro_hand_right": 100.0
-      }
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 1.703
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.678
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 97.9,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 20.929
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/test_10s/multi_embodiment_proof.mp4"
     },
     "whatsapp_video": {
       "num_frames": 729,
@@ -284,7 +408,38 @@
         "unitree_g1_upper": 98.0,
         "unitree_h1_upper": 99.3,
         "allegro_hand_right": 100.0
-      }
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.694
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 75.0,
+          "verdict": "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT",
+          "mean_ik_residual_mm": 2.27
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 99.7,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 15.939
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/whatsapp_video/multi_embodiment_proof.mp4"
     }
   },
   "merged_lerobot": {

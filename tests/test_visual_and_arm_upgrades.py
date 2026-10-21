@@ -93,3 +93,21 @@ def test_world_locked_arm_mapper_compensates_camera_motion_and_tracks_object(tmp
     # Before grasp (frame 0) and after release (frame 9), object rests at table_z_m (0.28m)
     assert abs(float(traj.object_world_positions[0, 2]) - 0.28) < 1e-4
     assert abs(float(traj.object_world_positions[9, 2]) - 0.28) < 1e-4
+
+
+def test_universal_multi_retargeter_exports_all_four_robots_into_rlds():
+    import h5py
+    ep_dir = Path("data/output/whatsapp_video")
+    assert (ep_dir / "multi_embodiment_proof.mp4").exists()
+    for rname in ("franka_panda", "unitree_g1_upper", "unitree_h1_upper", "allegro_hand_right"):
+        npz_p = ep_dir / "embodiments" / rname / "trajectory.npz"
+        assert npz_p.exists(), f"Missing trajectory bundle for {rname}"
+    with h5py.File(ep_dir / "episode_rlds.hdf5", "r") as hf:
+        ep_grp = hf[list(hf.keys())[0]]
+        steps = ep_grp["steps"]
+        assert "reward" in steps
+        assert "embodiments" in steps
+        for rname in ("franka_panda", "unitree_g1_upper", "unitree_h1_upper", "allegro_hand_right"):
+            assert rname in steps["embodiments"]
+            assert "q" in steps["embodiments"][rname]
+            assert "action_chunks_16" in steps["embodiments"][rname]

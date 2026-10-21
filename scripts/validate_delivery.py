@@ -138,6 +138,18 @@ def validate_episode_dir(episode_dir: Path, source_video: Path | None = None) ->
     else:
         report["artifacts"]["episode.mcap"] = verify_mcap_file(mcap_path)
 
+    # 6. Universal Multi-Embodiment artifacts (v2.0 contract)
+    emb_dir = episode_dir / "embodiments"
+    if emb_dir.exists():
+        robots_found = sorted([p.name for p in emb_dir.iterdir() if p.is_dir() and (p / "trajectory.npz").exists()])
+        report["artifacts"]["embodiments"] = robots_found
+    multi_proof = episode_dir / "multi_embodiment_proof.mp4"
+    if multi_proof.exists() and multi_proof.stat().st_size > 0:
+        report["artifacts"]["multi_embodiment_proof.mp4"] = ffprobe_info(multi_proof)
+    hw_rep = episode_dir / "hardware_readiness_report.json"
+    if hw_rep.exists():
+        report["artifacts"]["hardware_readiness_report.json"] = "PRESENT"
+
     report["passed"] = len(failures) == 0
     report["failures"] = failures
     if failures:

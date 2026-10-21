@@ -163,6 +163,11 @@ class Adapter:
         self.fing_close = np.array(c.get("finger_close", []), dtype=np.float64)
         self.full_finger_map: Dict[str, List[str]] = c.get("full_finger_joint_map") or {}
         self.last_step_info: Optional[EmbodimentSolveStep] = None
+        self.dof = int(self.model.nq)
+        self.joint_names = [
+            mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, j) or f"joint_{j}"
+            for j in range(self.model.njnt)
+        ]
 
     def _apply_dexterous_hand_joints(
         self,
@@ -480,3 +485,65 @@ class Adapter:
             reachable_mask=reach_mask,
             hardware_audit=audit,
         )
+
+    def retarget_episode(self, annotations_path: str) -> Dict[str, Any]:
+        """Load an AnnotatedEpisode and retarget it to this embodiment."""
+        from ..datatypes import AnnotatedEpisode
+        from .pose_mapper import PoseMapper, PoseMapperConfig
+
+        ep = AnnotatedEpisode.load_json(annotations_path)
+        frames = ep.frames
+
+        mapper_r = PoseMapper(PoseMapperConfig(preferred_hand="right", lock_driving_hand=True))
+        mapper_l = PoseMapper(PoseMapperConfig(preferred_hand="left", lock_driving_hand=True))
+        t_right = mapper_r.map_frames_for_hand(frames, "right")
+        t_left = mapper_l.map_frames_for_hand(frames, "left")
+
+        r_seq = [(t.position, t.quaternion) for t in t_right]
+        l_seq = [(t.position, t.quaternion) for t in t_left]
+        valid_r = [t.hand_detected for t in t_right]
+        valid_l = [t.hand_detected for t in t_left]
+        hands_seq = [f.right_hand for f in frames]
+        grips_seq = [
+            float(f.robot_gripper_opening_m / 0.08)
+            if getattr(f, "robot_gripper_opening_m", None) is not None
+            else (0.85 if (f.right_grasp and f.right_grasp.type != "open") else 0.10)
+            for f in frames
+        ]
+
+        rep = self.solve_episode(
+            r_seq,
+            left_targets=l_seq,
+            grips=grips_seq,
+            hand_landmarks_seq=hands_seq,
+            valid_mask=valid_r,
+            left_valid_mask=valid_l,
+        )
+
+        curls_arr = np.zeros((len(frames), 10), dtype=np.float32)
+        for i_f, f in enumerate(frames):
+            c_r = compute_anatomical_finger_curls(f.right_hand)
+            c_l = compute_anatomical_finger_curls(f.left_hand)
+            curls_arr[i_f, 0:5] = [c_r.get("thumb", 0.0), c_r.get("index", 0.0), c_r.get("middle", 0.0), c_r.get("ring", 0.0), c_r.get("pinky", 0.0)]
+            curls_arr[i_f, 5:10] = [c_l.get("thumb", 0.0), c_l.get("index", 0.0), c_l.get("middle", 0.0), c_l.get("ring", 0.0), c_l.get("pinky", 0.0)]
+
+        frame_list = [
+            {
+                "ik_residual_m": float(rep.mean_ik_residual_mm / 1000.0),
+                "reachable": bool(rep.reachable_mask[i]) if i < len(rep.reachable_mask) else False,
+            }
+            for i in range(len(frames))
+        ]
+
+        return {
+            "summary": rep.to_dict(),
+            "hardware_audit": rep.hardware_audit.to_dict(),
+            "q_trajectory": rep.q_trajectory,
+            "qd_trajectory": rep.qd_trajectory,
+            "qdd_trajectory": rep.qdd_trajectory,
+            "action_chunks_16": rep.action_chunks_16,
+            "finger_curls": curls_arr,
+            "gripper_trajectory": np.array(grips_seq, dtype=np.float32),
+            "frames": frame_list,
+        }
+

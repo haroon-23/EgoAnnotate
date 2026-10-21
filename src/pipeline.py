@@ -765,6 +765,25 @@ class EgoAnnotatePipeline:
         print(f"Target Robot:     {episode.target_robot}")
         print("=" * 50 + "\n")
 
+        # Stage 9c: Universal Multi-Embodiment Compilation & FLORA Process Rewards
+        try:
+            from .flora_engine import compute_flora_rewards_and_rubric
+            from .retargeting.universal_multi_retargeter import compile_all_embodiments_for_episode
+            from .rlds_exporter import export_to_rlds
+            out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
+            ann_file = out_ep_dir / "annotations.json"
+            flora_rep = compute_flora_rewards_and_rubric(episode)
+            episode.save_json(str(ann_file))
+            sum_file = out_ep_dir / "summary.json"
+            if sum_file.exists():
+                s_json = json.loads(sum_file.read_text(encoding="utf-8"))
+                s_json["flora_evaluation"] = flora_rep
+                sum_file.write_text(json.dumps(s_json, indent=2) + "\n", encoding="utf-8")
+            compile_all_embodiments_for_episode(ann_file, out_ep_dir, render_multi_video=True)
+            export_to_rlds(episode.episode_id, str(self.dataset_exporter.output_path))
+        except Exception as exc_u:
+            logger.warning("[Pipeline] Universal multi-embodiment post-stage warning: %s", exc_u)
+
         return episode
 
     @staticmethod
