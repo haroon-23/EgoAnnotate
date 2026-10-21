@@ -273,6 +273,15 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
         steps_group.create_dataset("is_last", data=is_last, dtype=bool)
         steps_group.create_dataset("is_terminal", data=is_terminal, dtype=bool)
 
+        # FLORA dense process reward
+        process_rewards = np.array([
+            float((f.get("metadata", {}) or {}).get("process_reward", f.get("process_reward", 0.0)) or 0.0)
+            if isinstance(f, dict) else 0.0
+            for f in frames
+        ], dtype=np.float32)
+        steps_group.create_dataset("reward", data=process_rewards, dtype=np.float32)
+        obs_group.create_dataset("process_reward", data=process_rewards, dtype=np.float32)
+
         # Save episode metadata
         meta_group.create_dataset("task_description", data=meta.get("task_description", ""), dtype=utf8_type)
         meta_group.create_dataset("num_frames", data=int(meta.get("num_frames", num_frames)), dtype=np.int32)

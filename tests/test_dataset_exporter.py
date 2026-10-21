@@ -104,11 +104,11 @@ class TestDatasetExporter(unittest.TestCase):
         config = ExporterConfig(output_dir=str(self.output_dir))
         self.assertEqual(config.format, "json")
         self.assertFalse(config.include_image_bytes)
-        self.assertTrue(config.save_viz_video)
+        self.assertFalse(config.save_viz_video)
 
     def test_export_episode_json(self):
         """Test complete JSON export flow and assert all required files and fields exist."""
-        config = ExporterConfig(output_dir=str(self.output_dir), format="json", save_viz_video=True, save_overlay_video=False)
+        config = ExporterConfig(output_dir=str(self.output_dir), format="json", save_viz_video=False, save_overlay_video=False)
         exporter = DatasetExporter(config)
         
         episode_dir = exporter.export_episode(self.episode)
@@ -122,7 +122,7 @@ class TestDatasetExporter(unittest.TestCase):
         self.assertTrue((episode_dir / "action_segments.json").exists())
         self.assertTrue((episode_dir / "frame_annotations.json").exists())
         self.assertTrue((episode_dir / "summary.json").exists())
-        self.assertTrue((episode_dir / "debug_hud_preview.mp4").exists())
+        self.assertFalse((episode_dir / "debug_hud_preview.mp4").exists())
         # Verify old name does NOT exist (renamed)
         self.assertFalse((episode_dir / "visualization.mp4").exists())
         

@@ -1,5 +1,5 @@
 {
-  "project": "EgoAnnotate v1.3.0",
+  "project": "EgoAnnotate v1.4.0 (FLORA + Multi-Object Grounded)",
   "raw_videos": {
     "client_video.mp4": {
       "size_mb": 103.88,
@@ -25,10 +25,10 @@
   "episodes": {
     "client_video": {
       "num_frames": 300,
-      "num_segments": 1,
+      "num_segments": 8,
       "tracked_objects": [
-        "Inspected Component",
-        "Inspected Component_2"
+        "Light Blue Fabric",
+        "Sewing Machine Foot"
       ],
       "frames_with_bbox": 300,
       "frames_with_segmentation_mask": 300,
@@ -42,17 +42,30 @@
           "precision_pinch": 36,
           "open": 10
         },
-        "left_contact_frames": 0,
-        "right_contact_frames": 0,
+        "left_contact_frames": 108,
+        "right_contact_frames": 42,
         "total_frames": 300,
-        "ratio_left_contact": 0.0,
-        "ratio_right_contact": 0.0,
+        "ratio_left_contact": 0.36,
+        "ratio_right_contact": 0.14,
         "tracking_loss_pct": 89.33333333333333,
         "tracking_loss_pct_active": 81.60919540229885,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 9.666666666666666,
         "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 84.54454882670257
+        "camera_motion_px_per_sec": 84.54454882670257,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.8199,
+          "peak_process_reward": 0.9599,
+          "overall_rubric_score_5": 4.3,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 3.52,
+            "camera_stability": 3.01,
+            "kinematic_smoothness": 4.95
+          }
+        }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
@@ -63,12 +76,10 @@
     },
     "my_video": {
       "num_frames": 300,
-      "num_segments": 6,
+      "num_segments": 12,
       "tracked_objects": [
-        "Workspace Tool",
-        "Workspace Tool_2",
-        "Workspace Tool_3",
-        "Workspace Tool_4"
+        "White Garment Fabric",
+        "Sewing Machine Head"
       ],
       "frames_with_bbox": 300,
       "frames_with_segmentation_mask": 300,
@@ -82,17 +93,30 @@
           "open": 223,
           "precision_pinch": 33
         },
-        "left_contact_frames": 19,
-        "right_contact_frames": 101,
+        "left_contact_frames": 258,
+        "right_contact_frames": 184,
         "total_frames": 300,
-        "ratio_left_contact": 0.06333333333333334,
-        "ratio_right_contact": 0.33666666666666667,
+        "ratio_left_contact": 0.86,
+        "ratio_right_contact": 0.6133333333333333,
         "tracking_loss_pct": 21.0,
         "tracking_loss_pct_active": 21.0,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 18.666666666666668,
         "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 45.37315922268366
+        "camera_motion_px_per_sec": 45.37315922268366,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.7941,
+          "peak_process_reward": 0.9692,
+          "overall_rubric_score_5": 4.79,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.87,
+            "camera_stability": 4.13,
+            "kinematic_smoothness": 4.95
+          }
+        }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
@@ -103,9 +127,9 @@
     },
     "new_video": {
       "num_frames": 300,
-      "num_segments": 4,
+      "num_segments": 10,
       "tracked_objects": [
-        "Handled Object"
+        "Textile Workpiece"
       ],
       "frames_with_bbox": 300,
       "frames_with_segmentation_mask": 300,
@@ -120,17 +144,30 @@
           "open": 173,
           "precision_pinch": 8
         },
-        "left_contact_frames": 12,
-        "right_contact_frames": 58,
+        "left_contact_frames": 154,
+        "right_contact_frames": 143,
         "total_frames": 300,
-        "ratio_left_contact": 0.04,
-        "ratio_right_contact": 0.19333333333333333,
+        "ratio_left_contact": 0.5133333333333333,
+        "ratio_right_contact": 0.4766666666666667,
         "tracking_loss_pct": 56.333333333333336,
         "tracking_loss_pct_active": 56.187290969899664,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 11.333333333333334,
         "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 18.597550713409813
+        "camera_motion_px_per_sec": 18.597550713409813,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.736,
+          "peak_process_reward": 0.9729,
+          "overall_rubric_score_5": 4.93,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.81,
+            "camera_stability": 4.9,
+            "kinematic_smoothness": 4.95
+          }
+        }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
@@ -141,12 +178,10 @@
     },
     "test_10s": {
       "num_frames": 300,
-      "num_segments": 10,
+      "num_segments": 14,
       "tracked_objects": [
-        "Workspace Object",
-        "Workspace Object_2",
-        "Workspace Object_3",
-        "Workspace Object_4"
+        "White Fabric",
+        "Sewing Machine Presser Foot"
       ],
       "frames_with_bbox": 300,
       "frames_with_segmentation_mask": 300,
@@ -160,17 +195,30 @@
           "open": 215,
           "precision_pinch": 41
         },
-        "left_contact_frames": 16,
-        "right_contact_frames": 127,
+        "left_contact_frames": 244,
+        "right_contact_frames": 131,
         "total_frames": 300,
-        "ratio_left_contact": 0.05333333333333334,
-        "ratio_right_contact": 0.42333333333333334,
+        "ratio_left_contact": 0.8133333333333334,
+        "ratio_right_contact": 0.43666666666666665,
         "tracking_loss_pct": 25.333333333333332,
         "tracking_loss_pct_active": 25.333333333333332,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 16.333333333333332,
         "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 45.794207390082086
+        "camera_motion_px_per_sec": 45.794207390082086,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.7988,
+          "peak_process_reward": 0.9712,
+          "overall_rubric_score_5": 4.79,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.87,
+            "camera_stability": 4.12,
+            "kinematic_smoothness": 4.95
+          }
+        }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
@@ -181,12 +229,12 @@
     },
     "whatsapp_video": {
       "num_frames": 729,
-      "num_segments": 25,
+      "num_segments": 14,
       "tracked_objects": [
-        "Router & Adapter",
+        "Router & Cables",
         "Computer Mouse",
-        "Perfume Bottle",
-        "Red Pouch & Lighter",
+        "Lotion Bottle",
+        "Cigarette Pack & Lighter",
         "Earbud Case",
         "Keyfob"
       ],
@@ -206,17 +254,30 @@
           "precision_pinch": 113,
           "hook": 74
         },
-        "left_contact_frames": 233,
-        "right_contact_frames": 358,
+        "left_contact_frames": 476,
+        "right_contact_frames": 467,
         "total_frames": 729,
-        "ratio_left_contact": 0.3196159122085048,
-        "ratio_right_contact": 0.49108367626886146,
+        "ratio_left_contact": 0.6529492455418381,
+        "ratio_right_contact": 0.6406035665294925,
         "tracking_loss_pct": 43.62139917695473,
         "tracking_loss_pct_active": 30.574324324324323,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 0.0,
         "camera_motion_flag": false,
-        "camera_motion_px_per_sec": 0.0
+        "camera_motion_px_per_sec": 0.0,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.6283,
+          "peak_process_reward": 0.9877,
+          "overall_rubric_score_5": 4.86,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.36,
+            "camera_stability": 5.0,
+            "kinematic_smoothness": 4.95
+          }
+        }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
@@ -232,18 +293,18 @@
     "export_mode": "robot",
     "action_convention": "absolute_joint_positions",
     "fps": 30.0,
-    "fps_source": "default",
+    "fps_source": "video_probe",
     "total_episodes": 5,
     "total_frames": 1929,
-    "total_tasks": 2,
-    "total_videos": 0,
+    "total_tasks": 5,
+    "total_videos": 5,
     "total_chunks": 3,
     "chunks_size": 1000,
     "splits": {
       "train": "0:5"
     },
-    "data_files_size_in_mb": 0.164,
-    "video_files_size_in_mb": 0.0,
+    "data_files_size_in_mb": 0.166,
+    "video_files_size_in_mb": 56.922,
     "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
     "features": {
@@ -313,6 +374,28 @@
           1
         ],
         "names": null
+      },
+      "observation.images.ego": {
+        "dtype": "video",
+        "shape": [
+          3,
+          1080,
+          1920
+        ],
+        "names": [
+          "channel",
+          "height",
+          "width"
+        ],
+        "info": {
+          "video.fps": 30.0,
+          "video.codec": "h264",
+          "video.pix_fmt": "yuv420p",
+          "video.height": 1080,
+          "video.width": 1920,
+          "video.channels": 3,
+          "video.is_depth_map": false
+        }
       }
     }
   },

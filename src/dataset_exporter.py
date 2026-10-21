@@ -163,6 +163,8 @@ class DatasetExporter:
                 "robot_gripper_opening_m": frame.robot_gripper_opening_m,
                 "robot_gripper_method": frame.robot_gripper_method,
                 "robot_reachable": frame.robot_reachable,
+                "metadata": frame.metadata,
+                "process_reward": (frame.metadata or {}).get("process_reward", 0.0) if frame.metadata else 0.0,
             }
             frame_data.append(row)
 
@@ -170,14 +172,20 @@ class DatasetExporter:
         if self.config.format.lower() == "parquet":
             try:
                 import pandas as pd
-                df = pd.DataFrame(frame_data)
+                pq_data = []
+                for r in frame_data:
+                    rc = dict(r)
+                    if isinstance(rc.get("metadata"), dict):
+                        rc["metadata"] = json.dumps(rc["metadata"])
+                    pq_data.append(rc)
+                df = pd.DataFrame(pq_data)
                 df.to_parquet(episode_dir / "frame_annotations.parquet", index=False)
                 logger.info(
                     "Exported frame annotations to Parquet "
                     "(additive — JSON still written below)."
                 )
-            except ImportError:
-                logger.warning("pandas or pyarrow not installed. Falling back to JSON frames export.")
+            except Exception as e:
+                logger.warning("Parquet export failed (%s). Falling back to JSON frames export.", e)
 
         # Default JSON export
         with open(episode_dir / "frame_annotations.json", "w") as f:
@@ -248,6 +256,12 @@ class DatasetExporter:
         segments_data = [s.to_dict() for s in episode.segments]
         with open(episode_dir / "action_segments.json", "w") as f:
             json.dump(segments_data, f, indent=2)
+
+    def _export_json(self, episode: AnnotatedEpisode, episode_dir: Path) -> None:
+        """Export all primary JSON deliverables (frames, metadata, segments)."""
+        self._export_frames(episode, episode_dir)
+        self._export_metadata(episode, episode_dir)
+        self._export_segments(episode, episode_dir)
 
     def _create_viz_video(self, episode: AnnotatedEpisode, episode_dir: Path) -> None:
         """Render and save a debug HUD video (224×224, internal-only) in the output directory."""
@@ -593,6 +607,12 @@ class DatasetExporter:
             "camera_motion_flag": bool(getattr(episode, "camera_motion_flag", False)),
             "camera_motion_px_per_sec": float(getattr(episode, "camera_motion_px_per_sec", 0.0)),
         }
+
+        try:
+            from .flora_engine import compute_flora_rewards_and_rubric
+            summary["flora_evaluation"] = compute_flora_rewards_and_rubric(episode)
+        except Exception:
+            pass
 
         from .atomic_io import atomic_write_json
         atomic_write_json(episode_dir / "summary.json", summary)

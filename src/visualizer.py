@@ -260,15 +260,11 @@ class EgoVisualizer:
             idle_col = _OBJECT_PALETTE[obj_idx % len(_OBJECT_PALETTE)]
             bbox_color = CONTACT_BRIGHT if in_contact else idle_col
 
-            # 1. Segmentation polygon mask
-            poly_norm = (obj.mask_rle or {}).get("polygon_norm") if isinstance(obj.mask_rle, dict) else None
-            if poly_norm and len(poly_norm) >= 3:
-                pts_px = np.array([[int(p[0] * w), int(p[1] * h)] for p in poly_norm], dtype=np.int32)
-                mask_overlay = img.copy()
-                cv2.fillPoly(mask_overlay, [pts_px], bbox_color)
-                alpha_m = 0.30 if in_contact else 0.16
-                cv2.addWeighted(mask_overlay, alpha_m, img, 1.0 - alpha_m, 0, img)
-                cv2.polylines(img, [pts_px], isClosed=True, color=bbox_color, thickness=1, lineType=cv2.LINE_AA)
+            # 1. Clean translucent highlight inside bounding box when grasped (no noisy trapezoid artifacts)
+            if in_contact:
+                roi_box = img[y1:y2, x1:x2]
+                tint = np.full_like(roi_box, bbox_color, dtype=np.uint8)
+                cv2.addWeighted(tint, 0.22, roi_box, 0.78, 0, roi_box)
 
             # 2. Corner-bracketed bounding box
             cv2.rectangle(img, (x1, y1), (x2, y2), bbox_color, 1, cv2.LINE_AA)
@@ -414,19 +410,34 @@ def render_annotated_video(
 
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    orig_fps = float(cap.get(cv2.CAP_PROP_FPS) or fps)
+    orig_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or len(episode.frames))
     total_frames = len(episode.frames)
+
+    # Calculate true episode FPS from episode timestamps so duration matches 100%
+    ep_dur = float(episode.frames[-1].timestamp) if total_frames > 1 else (total_frames / 30.0)
+    out_fps = float(total_frames / max(ep_dur, 0.1)) if ep_dur > 0 else 30.0
+    out_fps = float(np.clip(round(out_fps, 2), 10.0, 60.0))
 
     raw_tmp_path = write_target.with_name(write_target.stem + "_raw.mp4")
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, fps, (orig_w, orig_h))
+    writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, out_fps, (orig_w, orig_h))
     if not writer.isOpened():
         cap.release()
         raise RuntimeError(f"Failed to create video writer for {raw_tmp_path}")
 
     try:
+        cur_raw_idx = 0
         for idx, ep_frame in enumerate(episode.frames):
-            # ALWAYS read from the native full-resolution video stream first!
+            # Map ep_frame.timestamp to exact native video frame index (handles 60fps -> 30fps cleanly!)
+            target_raw_idx = int(round(float(ep_frame.timestamp) * orig_fps))
+            target_raw_idx = max(0, min(orig_total - 1, target_raw_idx))
+            while cur_raw_idx < target_raw_idx:
+                cap.grab()
+                cur_raw_idx += 1
             ret, orig_frame = cap.read()
+            cur_raw_idx += 1
+
             if not ret or orig_frame is None:
                 if ep_frame.image_path and Path(ep_frame.image_path).exists():
                     orig_frame = cv2.imread(ep_frame.image_path)

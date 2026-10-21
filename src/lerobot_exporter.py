@@ -129,6 +129,9 @@ def _find_source_video(episode_dir: Path) -> Tuple[Optional[Path], Optional[str]
             if p.exists():
                 return p, "metadata.video_path"
             logger.warning("Source video recorded in metadata not found on disk: %s", vp)
+    alt = Path(f"data/raw_videos/{episode_dir.name}.mp4")
+    if alt.exists():
+        return alt, "convention.raw_videos"
     return None, None
 
 
@@ -145,7 +148,7 @@ def _probe_video(path: Path) -> Tuple[float, int, int, int]:
     return fps, w, h, n
 
 
-def _transcode_video(src: Path, dst: Path, fps: float) -> Tuple[str, str]:
+def _transcode_video(src: Path, dst: Path, fps: float, max_frames: Optional[int] = None) -> Tuple[str, str]:
     """Transcode ``src`` to h264/yuv420p mp4 at ``fps``. Returns (codec, pix_fmt)
     actually used (honest reporting for the v3 video info block)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -157,6 +160,7 @@ def _transcode_video(src: Path, dst: Path, fps: float) -> Tuple[str, str]:
             exe, "-y", "-i", str(src),
             "-c:v", "libx264", "-pix_fmt", VIDEO_PIX_FMT,
             "-r", f"{fps:.3f}", "-an", "-movflags", "+faststart",
+            *(["-frames:v", str(max_frames)] if max_frames else []),
             str(dst),
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -171,11 +175,15 @@ def _transcode_video(src: Path, dst: Path, fps: float) -> Tuple[str, str]:
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         writer = cv2.VideoWriter(str(dst), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
         try:
+            n_written = 0
             while True:
+                if max_frames and n_written >= max_frames:
+                    break
                 ok, frame = cap.read()
                 if not ok:
                     break
                 writer.write(frame)
+                n_written += 1
         finally:
             writer.release()
     finally:
@@ -363,7 +371,7 @@ def export_to_lerobot(
                 "keeping annotation frame count as ground truth.",
                 vn, num_frames, episode_id,
             )
-        codec, pix_fmt = _transcode_video(src_video, videos_dir / "file-000.mp4", use_fps)
+        codec, pix_fmt = _transcode_video(src_video, videos_dir / "file-000.mp4", use_fps, max_frames=num_frames)
         video_written = True
         video_info = {
             "video.fps": use_fps, "video.codec": codec, "video.pix_fmt": pix_fmt,
