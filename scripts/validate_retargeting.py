@@ -59,10 +59,10 @@ logger = logging.getLogger(__name__)
 # Robot rendering helpers
 # ---------------------------------------------------------------------------
 
-CAMERA_DISTANCE = 1.5       # metres from target
-CAMERA_YAW = 45.0           # degrees
-CAMERA_PITCH = -30.0        # degrees
-CAMERA_TARGET = [0.4, 0.0, 0.3]  # focus point in robot base frame
+CAMERA_DISTANCE = 1.12       # metres from target
+CAMERA_YAW = 38.0           # degrees
+CAMERA_PITCH = -28.0        # degrees
+CAMERA_TARGET = [0.42, 0.0, 0.28]  # focus point in robot base frame
 RENDER_W = 640
 RENDER_H = 480
 
