@@ -25,8 +25,23 @@ def file_sha256(path: Path | str, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def stable_hash(obj: Any, length: int = 16) -> str:
+    """Order-independent SHA-256 of a JSON-like object (non-JSON values via ``str``)."""
+    blob = json.dumps(obj, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:length]
+
+
+def make_stage_key(config: Any = None, model_id: str = "", prompt: str = "") -> str:
+    """Cache-key component covering a stage's config, model id and prompt.
+
+    Pass only the config sections the stage depends on so unrelated edits do
+    not invalidate it.
+    """
+    return stable_hash({"config": config, "model": model_id, "prompt": prompt}, 24)
+
+
 class VLMDiskCache:
-    """Content-addressed JSON cache so no Gemini call is repeated for identical inputs."""
+    """Content-addressed JSON cache so no VLM request is repeated for identical inputs."""
 
     def __init__(self, cache_path: Path | str = "cache/vlm_cache.json") -> None:
         self.cache_path = Path(cache_path)
@@ -69,24 +84,57 @@ class VLMDiskCache:
             self._data[key] = value
             atomic_write_json(self.cache_path, self._data)
 
+    def discard(self, key: str) -> None:
+        with _VLM_CACHE_LOCK:
+            self._ensure_loaded()
+            if self._data.pop(key, None) is not None:
+                atomic_write_json(self.cache_path, self._data)
+
 
 GLOBAL_VLM_CACHE = VLMDiskCache()
 
 
 class StageCache:
-    """Resumable per-video stage cache stored under cache/stages/<video_hash>/."""
+    """Resumable per-video stage cache stored under cache/stages/<video>_<hash>/.
 
-    def __init__(self, video_path: Path | str, cache_root: Path | str = "cache/stages", enabled: bool = True) -> None:
+    A result is reused only when the video bytes, the stage name AND the stage
+    key all match. The stage key (``load_or_compute(..., key=...)``, built with
+    :func:`make_stage_key`) must cover the config, model id and prompt the stage
+    depends on; ``salt`` adds the same for every stage of this cache.
+    """
+
+    def __init__(
+        self,
+        video_path: Path | str,
+        cache_root: Path | str = "cache/stages",
+        enabled: bool = True,
+        salt: Any = None,
+    ) -> None:
         self.enabled = enabled and (os.environ.get("EGO_DISABLE_STAGE_CACHE") != "1")
         self.video_path = Path(video_path)
         self.video_hash = file_sha256(self.video_path)[:16] if self.video_path.exists() else "no_video"
+        self.salt = salt
         self.stage_dir = Path(cache_root) / f"{self.video_path.stem}_{self.video_hash}"
         if self.enabled:
             self.stage_dir.mkdir(parents=True, exist_ok=True)
 
-    def load_or_compute(self, stage_name: str, compute_fn: Callable[[], Any]) -> tuple[Any, bool]:
-        """Return (result, was_cached)."""
-        pkl_path = self.stage_dir / f"{stage_name}.pkl"
+    def stage_path(self, stage_name: str, key: Any = None) -> Path:
+        digest = stable_hash({"stage": stage_name, "salt": self.salt, "key": key}, 12)
+        return self.stage_dir / f"{stage_name}.{digest}.pkl"
+
+    def load_or_compute(
+        self,
+        stage_name: str,
+        compute_fn: Callable[[], Any],
+        key: Any = None,
+        cacheable: Optional[Callable[[Any], bool]] = None,
+    ) -> tuple[Any, bool]:
+        """Return (result, was_cached).
+
+        ``cacheable(result) -> False`` skips persisting, e.g. a template
+        fallback produced because the VLM was momentarily unavailable.
+        """
+        pkl_path = self.stage_path(stage_name, key)
         if self.enabled and pkl_path.exists():
             try:
                 with open(pkl_path, "rb") as f:
@@ -94,7 +142,7 @@ class StageCache:
             except Exception:
                 pass
         result = compute_fn()
-        if self.enabled:
+        if self.enabled and (cacheable is None or cacheable(result)):
             tmp_path = pkl_path.with_suffix(".pkl.tmp")
             try:
                 with open(tmp_path, "wb") as f:

@@ -22,7 +22,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - SDK simply not installed
     types = None  # type: ignore[assignment]
     GEMINI_AVAILABLE = False
 
-#: Current flash-tier model. 1.5-era names 404 as of 2026.
+#: Flash-tier default. 1.5-era names 404 as of 2026. See docs/VLM_BACKENDS.md.
 DEFAULT_MODEL = "gemini-2.5-flash"
 
 #: Model names from the google-generativeai era. All retired; remapped below.
@@ -199,8 +199,20 @@ def _retry_delay_s(exc: Exception, attempt: int) -> float:
     return backoff * (1.0 + random.uniform(-0.25, 0.25))
 
 
-def generate_text(client, model_name: str, contents: list, temperature: float = 0.1) -> str:
+def generate_text(
+    client,
+    model_name: str,
+    contents: list,
+    temperature: float = 0.1,
+    on_attempt: Optional[Callable[[], None]] = None,
+    max_attempts: Optional[int] = None,
+) -> str:
     """One generate_content call, with pacing + retry on transient errors.
+
+    ``on_attempt`` is invoked before EVERY network attempt (first try and each
+    retry) so a request budget can count retries; if it raises (e.g. budget
+    exhausted) the exception propagates and no further attempt is made.
+    ``max_attempts`` overrides GEMINI_MAX_ATTEMPTS.
 
     Calls are spaced by the shared pacer (GEMINI_MIN_INTERVAL_S, default 4s)
     so per-segment bursts stay under the free-tier RPM cap. Transient 429
@@ -210,8 +222,10 @@ def generate_text(client, model_name: str, contents: list, temperature: float = 
     exception propagates, so callers' existing fallback behavior (e.g. the
     SmolVLM fallback / default segment labels) is unchanged.
     """
-    attempts = _max_attempts()
+    attempts = max(1, int(max_attempts)) if max_attempts else _max_attempts()
     for attempt in range(attempts):
+        if on_attempt is not None:
+            on_attempt()
         _PACER.wait()
         try:
             resp = client.models.generate_content(
