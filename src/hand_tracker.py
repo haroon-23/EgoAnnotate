@@ -50,6 +50,9 @@ class HandTrackerConfig:
     smoothing_window: int = 5
     max_gap_frames: int = 5
     max_gap_distance: float = 0.15
+    # MediaPipe assumes a mirrored (selfie) image, so its Left/Right labels are
+    # swapped on normal video. Set True only if the frames are really mirrored.
+    mirrored_input: bool = False
 
 
 class HandTracker:
@@ -107,38 +110,98 @@ class HandTracker:
     def _empty(i: int) -> Dict[str, Any]:
         return {"frame_idx": i, "left_present": False, "right_present": False,
                 "left_keypoints": [0.0]*63, "right_keypoints": [0.0]*63,
+                "left_world": None, "right_world": None,
+                "left_score": 0.0, "right_score": 0.0,
                 "left_interpolated": False, "right_interpolated": False,
-                "rescued": False}
+                "rescued": False, "image_size": None}
 
-    def _fill(self, rec: Dict[str, Any], res: Any, only_missing: bool = False) -> None:
+    @staticmethod
+    def _flatten(pts: Any) -> Optional[List[float]]:
+        if hasattr(pts, "landmark"):
+            pts = pts.landmark
+        try:
+            pts = list(pts)
+        except TypeError:
+            return None
+        if len(pts) != 21:
+            return None
+        return [c for p in pts for c in (float(p.x), float(p.y), float(p.z))]
+
+    def _detections(self, res: Any) -> List[Dict[str, Any]]:
+        """Normalise a MediaPipe result (legacy Hands or Tasks API) to dicts."""
         if res is None:
-            return
+            return []
         landmarks = getattr(res, "multi_hand_landmarks", None) or getattr(res, "hand_landmarks", None)
         handedness = getattr(res, "multi_handedness", None) or getattr(res, "handedness", None)
+        worlds = (getattr(res, "multi_hand_world_landmarks", None)
+                  or getattr(res, "hand_world_landmarks", None) or [])
         if not landmarks or not handedness:
-            return
-
-        for lm, handed in zip(landmarks, handedness):
+            return []
+        out: List[Dict[str, Any]] = []
+        for k, (lm, handed) in enumerate(zip(landmarks, handedness)):
             if hasattr(handed, "classification"):
-                side = handed.classification[0].label.lower()  # keep existing mirror convention
-            elif isinstance(handed, list) and len(handed) > 0 and hasattr(handed[0], "category_name"):
-                side = handed[0].category_name.lower()
-            else:
-                side = "right"
-
-            key = f"{side}_present"
-            if only_missing and rec[key]:
-                continue
-            rec[key] = True
-
-            if hasattr(lm, "landmark"):
-                pts = lm.landmark
-            elif isinstance(lm, list):
-                pts = lm
+                label, score = handed.classification[0].label, float(handed.classification[0].score)
+            elif isinstance(handed, list) and handed and hasattr(handed[0], "category_name"):
+                label, score = handed[0].category_name, float(getattr(handed[0], "score", 0.0))
             else:
                 continue
+            kp = self._flatten(lm)
+            if kp is None:
+                continue
+            world = self._flatten(worlds[k]) if k < len(worlds) else None
+            out.append({"label": label.lower(), "score": score, "kp": kp, "world": world})
+        return out
 
-            rec[f"{side}_keypoints"] = [c for p in pts for c in (p.x, p.y, p.z)]
+    def _corrected_label(self, label: str) -> str:
+        """MediaPipe labels assume a mirrored image; undo that for normal video."""
+        if bool(getattr(self.config, "mirrored_input", False)):
+            return label
+        return "left" if label == "right" else "right"
+
+    def _assign_sides(self, dets: List[Dict[str, Any]],
+                      present: Optional[Dict[str, float]] = None) -> List[Tuple[str, Dict[str, Any]]]:
+        """Map detections to (side, det) for unmirrored input.
+
+        Two hands carrying the same label are split by wrist x (egocentric
+        camera: the wearer's left hand is on the image left). ``present`` maps
+        side -> wrist x of hands already tracked in this frame (rescue pass).
+        """
+        known = dict(present or {})
+        todo = [d for d in dets
+                if not any(abs(d["kp"][0] - x) < 0.05 for x in known.values())]
+        if not todo:
+            return []
+        if len(todo) >= 2:
+            todo = sorted(todo, key=lambda d: -d["score"])[:2]
+            labels = [self._corrected_label(d["label"]) for d in todo]
+            if labels[0] == labels[1]:
+                lo, hi = sorted(todo, key=lambda d: d["kp"][0])
+                pairs = [("left", lo), ("right", hi)]
+            else:
+                pairs = list(zip(labels, todo))
+            return [(s_, d) for s_, d in pairs if s_ not in known]
+        d = todo[0]
+        side = self._corrected_label(d["label"])
+        if side in known:
+            other = "right" if side == "left" else "left"
+            if other in known:
+                return []
+            side = other
+        return [(side, d)]
+
+    def _fill(self, rec: Dict[str, Any], res: Any, only_missing: bool = False) -> None:
+        dets = self._detections(res)
+        present = None
+        if only_missing:
+            present = {s_: rec[f"{s_}_keypoints"][0]
+                       for s_ in ("left", "right") if rec[f"{s_}_present"]}
+        for side, d in self._assign_sides(dets, present):
+            if only_missing and rec[f"{side}_present"]:
+                continue
+            rec[f"{side}_present"] = True
+            rec[f"{side}_keypoints"] = d["kp"]
+            rec[f"{side}_world"] = d["world"]
+            rec[f"{side}_score"] = d["score"]
 
     def _process_frame(self, hands_obj: Any, frame_rgb: np.ndarray) -> Any:
         if hasattr(hands_obj, "process"):
@@ -155,6 +218,8 @@ class HandTracker:
             return [], metrics
 
         recs = [self._empty(i) for i in range(n)]
+        for i, frm in enumerate(frames):
+            recs[i]["image_size"] = (int(frm.shape[1]), int(frm.shape[0]))
         for i, frm in enumerate(frames):                       # Pass 1
             self._fill(recs[i], self._process_frame(self._video,
                 cv2.cvtColor(frm, cv2.COLOR_BGR2RGB)))
@@ -177,15 +242,22 @@ class HandTracker:
                     while j < n and not pres[j]:
                         j += 1
                     gap = j - i
-                    if 0 < i and j < n and gap <= 5:
+                    max_gap = int(getattr(self.config, "max_gap_frames", 5))
+                    max_dist = float(getattr(self.config, "max_gap_distance", 0.15))
+                    if 0 < i and j < n and gap <= max_gap:
                         a, b = recs[i-1], recs[j]
-                        for k in range(i, j):
-                            t = (k - (i-1)) / (j - (i-1))
-                            ka, kb = a[f"{side}_keypoints"], b[f"{side}_keypoints"]
-                            recs[k][f"{side}_keypoints"] = [
-                                xa + t*(xb-xa) for xa, xb in zip(ka, kb)]
-                            recs[k][f"{side}_present"] = True
-                            recs[k][f"{side}_interpolated"] = True
+                        ka, kb = a[f"{side}_keypoints"], b[f"{side}_keypoints"]
+                        jump = float(np.hypot(ka[0] - kb[0], ka[1] - kb[1]))
+                        if jump <= max_dist * (gap + 1):
+                            for k in range(i, j):
+                                t = (k - (i-1)) / (j - (i-1))
+                                recs[k][f"{side}_keypoints"] = [
+                                    xa + t*(xb-xa) for xa, xb in zip(ka, kb)]
+                                recs[k][f"{side}_present"] = True
+                                recs[k][f"{side}_interpolated"] = True
+                                recs[k][f"{side}_world"] = None
+                                recs[k][f"{side}_score"] = min(
+                                    a[f"{side}_score"], b[f"{side}_score"])
                     i = j
                 else:
                     i += 1
@@ -228,13 +300,17 @@ class HandTracker:
             for side in ("left", "right"):
                 if rec[f"{side}_present"]:
                     kp = np.array(rec[f"{side}_keypoints"], dtype=np.float32).reshape(21, 3)
+                    world = rec.get(f"{side}_world")
                     frm_res[side] = HandLandmarks(
                         x=kp[:, 0],
                         y=kp[:, 1],
                         z=kp[:, 2],
-                        confidence=0.8,
+                        confidence=float(rec.get(f"{side}_score", 0.0)),
                         handedness=side.capitalize(),
                         is_interpolated=rec.get(f"{side}_interpolated", False),
+                        world_xyz=(np.array(world, dtype=np.float64).reshape(21, 3)
+                                   if world is not None else None),
+                        image_size=rec.get("image_size"),
                     )
             results.append(frm_res)
         return results
