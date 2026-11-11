@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from .datatypes import ActionSegment
+from .datatypes import ActionSegment, CandidateSegment
+from .segment_labeler import (
+    EpisodeAnnotation,
+    EpisodeAnnotator,
+    build_instruction,
+    is_null_backend,
+)
 from .vlm_backend import (
     VLMBackend,
     VLMRequest,
@@ -25,6 +31,12 @@ class LanguageGeneratorConfig:
     """Configuration for the GeminiLanguageGenerator."""
     gemini_model: str = "gemini-2.5-flash"
     vlm_backend: Optional[str] = None
+    # True: task instruction comes from the shared one-request-per-episode
+    # annotation (keyframes, not a video upload). None: batch iff the backend
+    # is a ManagedBackend (has a request budget) or is ``none``.
+    batched: Optional[bool] = None
+    keyframes_per_request: int = 5
+    keyframe_max_side: int = 448
     episode_prompt: str = (
         "Summarize the overall physical manipulation task performed in this egocentric video in one concise sentence."
     )
@@ -37,7 +49,12 @@ class LanguageGeneratorConfig:
 class GeminiLanguageGenerator:
     """Generates natural language descriptions without silent canned fallbacks."""
 
-    def __init__(self, config: LanguageGeneratorConfig, vlm: Optional[VLMBackend] = None):
+    def __init__(
+        self,
+        config: LanguageGeneratorConfig,
+        vlm: Optional[VLMBackend] = None,
+        annotator: Optional[EpisodeAnnotator] = None,
+    ):
         self.config = config
         self.model = None
         self._vlm: VLMBackend = (
@@ -45,10 +62,56 @@ class GeminiLanguageGenerator:
             if vlm is not None
             else resolve_stage_backend(config.vlm_backend, config.gemini_model)
         )
+        self._annotator = annotator
+        self.last_annotation: Optional[EpisodeAnnotation] = None
         print(f"[LanguageGenerator] Using VLM backend: {self._vlm.name}")
 
+    @property
+    def annotator(self) -> EpisodeAnnotator:
+        if self._annotator is None:
+            self._annotator = EpisodeAnnotator.for_backend(
+                self._vlm,
+                keyframes=self.config.keyframes_per_request,
+                keyframe_max_side=self.config.keyframe_max_side,
+            )
+        return self._annotator
+
+    def _batched(self) -> bool:
+        if is_null_backend(self._vlm):
+            return True
+        if self.config.batched is not None:
+            return bool(self.config.batched)
+        return hasattr(self._vlm, "budget")
+
+    def generate_episode_annotation(
+        self,
+        video_path: str,
+        candidates: Optional[List[CandidateSegment]] = None,
+        object_names: Optional[List[str]] = None,
+    ) -> EpisodeAnnotation:
+        """Task instruction with its source. Never raises; degrades to a template.
+
+        Reuses the annotation the segment labeler already produced for this
+        video (same backend), so the episode costs one request in total.
+        """
+        if candidates is None:
+            ann = self.annotator.latest(video_path)
+            if ann is None:
+                ann = self.annotator.annotate([], video_path, object_names)
+        else:
+            ann = self.annotator.annotate(candidates, video_path, object_names)
+        self.last_annotation = ann
+        return ann
+
     def generate_episode_description(self, video_path: str) -> str:
-        """Generate one-sentence task description. Raises RuntimeError on failure (never canned text)."""
+        """Generate one-sentence task description.
+
+        Batched/managed backends: shared single request, template fallback
+        (see :meth:`generate_episode_annotation` for the source). Legacy raw
+        backends: raises RuntimeError on failure (never canned text).
+        """
+        if self._batched():
+            return self.generate_episode_annotation(video_path).task_instruction
         prompt = (
             self.config.episode_prompt
             or "Describe the physical task in this video in one sentence. Be specific. Return ONLY the sentence."
@@ -74,6 +137,12 @@ class GeminiLanguageGenerator:
         """Generate descriptions for segments. Raises RuntimeError on VLM failure."""
         if not segments:
             return []
+        if self._batched():
+            # Names/descriptions already came from the batched annotation; no extra request.
+            return [
+                s.description or build_instruction(s.name, s.object_name, s.hands or ["right"])
+                for s in segments
+            ]
 
         segment_info = "\n".join([
             f"Segment {i+1}: name='{seg.name}', start_time={seg.start_time}s, "
