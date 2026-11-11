@@ -30,12 +30,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CameraIntrinsics:
-    """Pinhole camera intrinsics (pixels)."""
+    """Pinhole camera intrinsics (pixels) with optional distortion coefficients."""
 
     fx: float
     fy: float
     cx: float
     cy: float
+    dist_coeffs: Optional[Sequence[float]] = None  # [k1, k2, p1, p2(, k3...)]
 
     def __post_init__(self) -> None:
         for name in ("fx", "fy", "cx", "cy"):
@@ -47,6 +48,12 @@ class CameraIntrinsics:
             raise ValueError(
                 f"CameraIntrinsics focal lengths must be positive, got fx={self.fx}, fy={self.fy}"
             )
+        if self.dist_coeffs is not None:
+            self.dist_coeffs = np.asarray(self.dist_coeffs, dtype=np.float64).reshape(-1)
+
+    def scaled(self, sx: float, sy: float) -> "CameraIntrinsics":
+        """Intrinsics for an image resized by ``(sx, sy)``; distortion is unchanged."""
+        return CameraIntrinsics(self.fx * sx, self.fy * sy, self.cx * sx, self.cy * sy, self.dist_coeffs)
 
     @property
     def matrix(self) -> np.ndarray:
@@ -69,7 +76,8 @@ class CameraIntrinsics:
             vals = [d.get(k) for k in ("fx", "fy", "cx", "cy")]
             if any(v is None for v in vals):
                 return None
-            return cls(fx=float(vals[0]), fy=float(vals[1]), cx=float(vals[2]), cy=float(vals[3]))
+            return cls(fx=float(vals[0]), fy=float(vals[1]), cx=float(vals[2]), cy=float(vals[3]),
+                       dist_coeffs=d.get("dist_coeffs"))
         except (TypeError, ValueError) as e:
             logger.warning("Ignoring invalid camera intrinsics %r: %s", d, e)
             return None
@@ -147,7 +155,8 @@ def solve_pnp_pose(
         object_points_3d: ``(N, 3)`` 3D points in the object frame (meters).
         image_points_2d: ``(N, 2)`` corresponding pixel coordinates.
         intrinsics: Camera intrinsics.
-        dist_coeffs: Optional distortion coefficients (4/5/8,); None = zero.
+        dist_coeffs: Optional distortion coefficients (4/5/8,); None = use
+            ``intrinsics.dist_coeffs`` (zero when that is unset).
         ransac_reproj_threshold_px: RANSAC inlier threshold in pixels.
         ransac_iterations: RANSAC iteration budget.
 
@@ -180,6 +189,8 @@ def solve_pnp_pose(
         )
 
     kmat = intrinsics.matrix
+    if dist_coeffs is None:
+        dist_coeffs = intrinsics.dist_coeffs
     dist = None if dist_coeffs is None else np.asarray(dist_coeffs, dtype=np.float64).reshape(-1, 1)
 
     try:
@@ -244,18 +255,16 @@ _MIDDLE_MCP_IDX = 9
 
 
 class HandPnPRefiner:
-    """Metric hand pose from MediaPipe landmarks via PnP.
+    """Generic PnP for one hand from independent pixel and 3D inputs.
 
-    Builds a canonical 3D hand model from MediaPipe's 21x3 *relative* landmarks
-    (wrist at origin, uniformly scaled so wrist->middle-MCP equals the
-    anthropometric 0.090 m reference, +/-15% population variation documented in
-    ``MetricCalibrator``), then runs :func:`solve_pnp_pose` against the 2D
-    pixel landmarks. The recovered ``tvec`` is the metric wrist translation in
-    the camera frame — an upgrade over MediaPipe's relative-z depth.
-
-    Caveat: MediaPipe z is only *approximately* the same scale as x/y, so the
-    canonical model is approximate; treat the translation as metric within the
-    anthropometric error bounds, not as ground truth.
+    Builds a canonical model from ``landmarks_3d_rel`` (wrist at origin,
+    uniformly scaled so wrist->middle-MCP equals the anthropometric 0.090 m
+    reference) and runs :func:`solve_pnp_pose` against pixel landmarks. The
+    3D input must have isotropic, consistent axes (e.g. MediaPipe *world*
+    landmarks) -- never image-normalised x/y plus relative z. The pipeline path
+    does not use this class: :func:`refine_poses_pnp` delegates to
+    :mod:`src.perception.metric_hand_pose`, which keeps MediaPipe's own metric
+    scale instead of imposing the 0.090 m reference.
     """
 
     def __init__(
@@ -273,10 +282,7 @@ class HandPnPRefiner:
             raise ValueError("reference_wrist_to_mcp_m must be positive")
 
     def canonical_hand_model(self, landmarks_3d_rel: np.ndarray) -> np.ndarray:
-        """Scale MediaPipe-relative landmarks to a metric canonical model.
-
-        Args:
-            landmarks_3d_rel: ``(21, 3)`` MediaPipe relative landmarks.
+        """Scale isotropic hand landmarks to a metric canonical model.
 
         Returns:
             ``(21, 3)`` float64, wrist at origin, wrist->middle-MCP == reference_m.
@@ -294,15 +300,7 @@ class HandPnPRefiner:
     def refine(
         self, landmarks_2d_px: np.ndarray, landmarks_3d_rel: np.ndarray
     ) -> PnPResult:
-        """Run PnP for one hand.
-
-        Args:
-            landmarks_2d_px: ``(21, 2)`` pixel coordinates.
-            landmarks_3d_rel: ``(21, 3)`` MediaPipe relative landmarks.
-
-        Returns:
-            :class:`PnPResult` with metric ``tvec`` on success.
-        """
+        """Run PnP for one hand (``(21, 2)`` pixels, ``(21, 3)`` isotropic 3D)."""
         canonical = self.canonical_hand_model(landmarks_3d_rel)
         img = np.asarray(landmarks_2d_px, dtype=np.float64).reshape(-1, 2)
         return solve_pnp_pose(canonical, img, self.intrinsics)
@@ -315,60 +313,63 @@ def refine_poses_pnp(
     image_height: int,
     enabled: bool = True,
 ) -> int:
-    """Post-stage: metric wrist translation for each tracked hand via PnP.
+    """Post-stage: metric wrist translation per tracked hand (thin wrapper).
 
-    Results are stored additively in ``frame.metadata["hand_pnp"]`` as
-    ``{"left": {"tvec_m": [x, y, z], "reproj_err_px": e, "inliers": n}, ...}``
-    (JSON-safe). Per-frame failures are logged at debug level and skipped —
-    this function never raises, so the pipeline always falls back to the
-    existing (MediaPipe-relative) estimates.
+    Delegates to :func:`src.perception.metric_hand_pose.lift_hand` using the
+    tracker's MediaPipe world landmarks, pixel coordinates at the tracked
+    resolution and ``intrinsics`` (given at ``image_width`` x ``image_height``,
+    rescaled when a hand was tracked at another size). Hands without world
+    landmarks (interpolated, or tracked by an older cache) are skipped: nothing
+    is derived from image-normalised coordinates.
 
-    Args:
-        frames: Sequence of :class:`AnnotationFrame`.
-        intrinsics: Camera intrinsics for the frame resolution.
-        image_width/image_height: Resolution the normalized landmarks refer to.
-        enabled: Master switch (honors ``pnp_refinement.enabled``).
+    Results go to ``frame.metadata["hand_pnp"]`` as
+    ``{"left": {"tvec_m": [x, y, z], "reproj_err_px": e}, ...}`` (JSON-safe).
+    Never raises for per-frame problems. Prefer
+    :func:`src.perception.metric_hand_pose.lift_frames`, which fills
+    ``left_hand_metric`` / ``right_hand_metric``.
 
     Returns:
-        Number of hands successfully refined.
+        Number of hands successfully lifted.
     """
     if not enabled:
         return 0
-    refiner = HandPnPRefiner(intrinsics)
-    scale = np.array([float(image_width), float(image_height)], dtype=np.float64)
+    from .metric_hand_pose import lift_hand
+
     n_ok = 0
     for frame in frames:
         entry: Dict[str, dict] = {}
         for side in ("left", "right"):
             hand = getattr(frame, f"{side}_hand", None)
-            if hand is None:
+            if hand is None or hand.world_xyz is None:
                 continue
+            w, h = hand.image_size if hand.image_size is not None else (image_width, image_height)
+            intr = intrinsics.scaled(w / float(image_width), h / float(image_height))
+            if hand.image_size is None:
+                hand = _with_size(hand, (w, h))
             try:
-                pts2d = np.stack([np.asarray(hand.x), np.asarray(hand.y)], axis=-1) * scale
-                pts3d = np.stack(
-                    [np.asarray(hand.x), np.asarray(hand.y), np.asarray(hand.z)], axis=-1
-                )
-                res = refiner.refine(pts2d, pts3d)
-                if res.success:
-                    entry[side] = {
-                        "tvec_m": [float(v) for v in res.tvec.ravel().tolist()],
-                        "reproj_err_px": float(res.mean_reproj_error_px),
-                        "inliers": int(res.inliers.size),
-                    }
-                    n_ok += 1
-            except Exception as e:
-                logger.debug(
-                    "PnP refinement skipped for frame %s hand %s: %s",
-                    getattr(frame, "frame_idx", "?"),
-                    side,
-                    e,
-                )
+                pose = lift_hand(hand, intr.matrix, intr.dist_coeffs, "calibrated")
+            except ValueError as e:
+                logger.debug("PnP skipped for frame %s hand %s: %s", getattr(frame, "frame_idx", "?"), side, e)
+                continue
+            if pose is None:
+                continue
+            entry[side] = {
+                "tvec_m": [float(v) for v in pose.wrist_position_m],
+                "reproj_err_px": float(pose.reprojection_error_px),
+            }
+            n_ok += 1
         if entry:
             if not isinstance(frame.metadata, dict):
                 frame.metadata = {}
             frame.metadata["hand_pnp"] = entry
     logger.info("PnP hand-pose refinement: %d/%d hands refined", n_ok, len(frames) * 2)
     return n_ok
+
+
+def _with_size(hand, size):
+    import dataclasses
+
+    return dataclasses.replace(hand, image_size=tuple(size))
 
 
 __all__ = [

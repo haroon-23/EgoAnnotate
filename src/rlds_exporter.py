@@ -1,303 +1,242 @@
-"""RLDS-compatible HDF5 exporter for annotated egocentric video episodes."""
+"""RLDS-style HDF5 export of an annotated episode.
+
+This is NOT an RLDS / TFDS dataset. It is a single HDF5 file whose group layout
+follows the RLDS episode/step convention (``<episode_id>/steps/{observation,
+action,is_first,is_last,is_terminal}``), so RLDS-minded tooling can be adapted
+to it, but it has no TFDS builder, no ``dataset_info.json`` and no TFRecords.
+Use the LeRobot export (``src/lerobot_exporter.py``) for training; use
+``tfds``-based pipelines only after writing a converter.
+
+Layout (N = number of annotated frames; nothing is trimmed)::
+
+    <episode_id>/steps/observation/image            (N,H,W,3) uint8, RGB [optional]
+    <episode_id>/steps/observation/image_valid      (N,) bool
+    <episode_id>/steps/observation/state            (N,52) float32  human state
+    <episode_id>/steps/observation/hands/<side>/{valid,wrist_position,rotation_6d,
+                                                  keypoints,aperture_m}
+    <episode_id>/steps/observation/robot_joint_angles (N,nq) NaN where unknown
+    <episode_id>/steps/observation/robot_gripper_opening_m (N,) NaN where unknown
+    <episode_id>/steps/observation/robot_valid      (N,) bool (robot_reachable & data)
+    <episode_id>/steps/observation/language_instruction (N,) utf-8
+    <episode_id>/steps/action                       (N,52) float32  next-step state
+    <episode_id>/steps/{is_first,is_last,is_terminal}
+    <episode_id>/metadata/...
+
+Missing data is never fabricated: a frame whose image cannot be read makes the
+export fail (``allow_missing_images=True`` records it in ``image_valid``
+instead), and frames without hand or robot data are flagged invalid, with NaN
+(never zero) in the robot arrays.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import tempfile
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import List, Optional, Sequence
 
 import cv2
 import h5py
 import numpy as np
 
+from .datatypes import AnnotatedEpisode
+from .lerobot_exporter import (
+    build_human_arrays, human_dimension_names, resolve_image_path, rot6d_from_matrix,
+    _tracked, _world_transform,
+)
+
 logger = logging.getLogger(__name__)
 
-# Grasp mapping: power_wrap=0, precision_pinch=1, lateral_pinch=2, hook=3, open=4, unknown=5
-GRASP_MAPPING = {
-    "power_wrap": 0,
-    "precision_pinch": 1,
-    "lateral_pinch": 2,
-    "hook": 3,
-    "open": 4,
-    "unknown": 5,
-}
+FORMAT_NAME = "rlds_style_hdf5"
+FORMAT_NOTE = ("RLDS-style HDF5 (RLDS group layout, custom file). Not RLDS/TFDS: no TFRecords, "
+               "no tfds builder.")
 
 
-def rot6d_from_normal(normal_vec: np.ndarray) -> np.ndarray:
-    """Convert a 3D normal vector to rotation matrix using Gram-Schmidt.
+def export_episode_to_rlds_hdf5(
+    episode: AnnotatedEpisode,
+    output_path: Path | str,
+    *,
+    include_images: bool = True,
+    image_size: Optional[tuple] = (224, 224),
+    allow_missing_images: bool = False,
+    human_frame: str = "auto",
+    image_search_dirs: Sequence[Path | str] = (),
+) -> Path:
+    """Write the RLDS-style HDF5 for ``episode`` (atomic replace). ``image_size`` is (w, h) or None."""
+    frames = episode.frames
+    n = len(frames)
+    if n == 0:
+        raise ValueError(f"No frames found in episode {episode.episode_id}")
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    search = [Path(d) for d in image_search_dirs]
 
-    Then flatten the first two columns to get a rot6d representation.
-    Handles near-zero normal by falling back to identity rotation.
-    """
-    norm = np.linalg.norm(normal_vec)
-    if norm < 1e-6:
-        # Fallback to identity rotation matrix
-        # [1, 0, 0] for X, [0, 1, 0] for Y
-        return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    sides = ("left", "right")
+    human = None
+    try:
+        human = build_human_arrays(frames, human_frame)
+    except ValueError as exc:
+        logger.warning("RLDS HDF5 for %s has no metric hand state: %s", episode.episode_id, exc)
+    use_world = human is not None and human.frame == "world"
 
-    # Orthonormal basis calculation (Gram-Schmidt)
-    z = normal_vec / norm
+    hands = {s: {"valid": np.zeros(n, bool), "wrist_position": np.full((n, 3), np.nan, np.float32),
+                 "rotation_6d": np.full((n, 6), np.nan, np.float32),
+                 "keypoints": np.full((n, 21, 3), np.nan, np.float32),
+                 "aperture_m": np.full(n, np.nan, np.float32)} for s in sides}
+    for t, fr in enumerate(frames):
+        T = _world_transform(fr) if use_world else None
+        for s in sides:
+            pose = getattr(fr, f"{s}_hand_metric")
+            if not _tracked(pose) or (use_world and T is None):
+                continue
+            R = np.asarray(pose.wrist_rotation, dtype=np.float64)
+            p = np.asarray(pose.wrist_position_m, dtype=np.float64)
+            kp = np.asarray(pose.keypoints_m, dtype=np.float64)
+            if use_world:
+                p, R, kp = T[:3, :3] @ p + T[:3, 3], T[:3, :3] @ R, kp @ T[:3, :3].T + T[:3, 3]
+            h = hands[s]
+            h["valid"][t] = True
+            h["wrist_position"][t] = p
+            h["rotation_6d"][t] = rot6d_from_matrix(R)
+            h["keypoints"][t] = kp
+            h["aperture_m"][t] = pose.aperture_m()
 
-    # Choose a stable reference vector that is not parallel to z
-    if np.abs(z[0]) < 0.9:
-        v_ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    else:
-        v_ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    images = image_valid = None
+    if include_images:
+        w, h = image_size if image_size else (None, None)
+        imgs: List[Optional[np.ndarray]] = []
+        missing: List[str] = []
+        for fr in frames:
+            path = resolve_image_path(fr.image_path, search)
+            bgr = cv2.imread(str(path)) if path else None
+            if bgr is None:
+                missing.append(fr.image_path)
+                imgs.append(None)
+                continue
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            if image_size and rgb.shape[:2] != (h, w):
+                rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
+            imgs.append(rgb)
+        if missing and not allow_missing_images:
+            raise FileNotFoundError(
+                f"{len(missing)} of {n} frame images are unreadable (first: {missing[:3]}); "
+                "refusing to write placeholder images (allow_missing_images=True records absence)")
+        shapes = {i.shape for i in imgs if i is not None}
+        if len(shapes) > 1:
+            raise ValueError(f"frames have differing sizes {sorted(shapes)}; pass image_size")
+        image_valid = np.array([i is not None for i in imgs], dtype=bool)
+        shape = next(iter(shapes)) if shapes else (0, 0, 3)
+        images = np.zeros((n, *shape), dtype=np.uint8)
+        for i, img in enumerate(imgs):
+            if img is not None:
+                images[i] = img
 
-    # Project v_ref onto the plane perpendicular to z
-    x = v_ref - np.dot(v_ref, z) * z
-    x_norm = np.linalg.norm(x)
-    if x_norm < 1e-6:
-        return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-    x = x / x_norm
+    nq = len(episode.robot_joint_names)
+    has_robot = nq > 0 and any(f.robot_joint_angles is not None for f in frames)
+    if has_robot:
+        q = np.full((n, nq), np.nan, np.float32)
+        grip = np.full(n, np.nan, np.float32)
+        robot_valid = np.zeros(n, bool)
+        for i, fr in enumerate(frames):
+            if fr.robot_joint_angles is not None:
+                arr = np.asarray(fr.robot_joint_angles, dtype=np.float64)
+                if arr.shape != (nq,):
+                    raise ValueError(f"frame {fr.frame_idx}: {arr.size} joints, expected {nq}")
+                q[i] = arr
+            if fr.robot_gripper_opening_m is not None:
+                grip[i] = fr.robot_gripper_opening_m
+            robot_valid[i] = bool(fr.robot_reachable is True and np.all(np.isfinite(q[i])))
 
-    y = np.cross(z, x)
+    utf8 = h5py.string_dtype(encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(dir=str(out.parent), prefix=f".{out.name}.", suffix=".tmp")
+    os.close(fd)
+    try:
+        with h5py.File(tmp, "w") as f:
+            f.attrs["format"] = FORMAT_NAME
+            f.attrs["format_note"] = FORMAT_NOTE
+            f.attrs["rlds_compliant"] = False
+            ep = f.create_group(episode.episode_id)
+            steps = ep.create_group("steps")
+            obs = steps.create_group("observation")
+            if images is not None:
+                obs.create_dataset("image", data=images, compression="gzip", compression_opts=4)
+                obs.create_dataset("image_valid", data=image_valid)
+            if human is not None:
+                st = obs.create_dataset("state", data=human.state)
+                st.attrs["names"] = np.array(human_dimension_names(), dtype=object).astype(utf8)
+                st.attrs["frame"] = human.frame
+                steps.create_dataset("action", data=human.action)
+            elif has_robot:
+                nxt = np.concatenate([q, grip[:, None]], axis=1)
+                nxt = np.concatenate([nxt[1:], nxt[-1:]], axis=0)
+                ac = steps.create_dataset("action", data=nxt)
+                ac.attrs["note"] = "robot next-step [joints, gripper_m]; NaN where unknown"
+            else:
+                raise ValueError(
+                    f"episode {episode.episode_id} has neither metric hand poses nor robot data")
+            for s in sides:
+                g = obs.create_group(f"hands/{s}")
+                for k, v in hands[s].items():
+                    g.create_dataset(k, data=v)
+                g.attrs["frame"] = "world" if use_world else "camera"
+            if has_robot:
+                ds = obs.create_dataset("robot_joint_angles", data=q)
+                ds.attrs["joint_names"] = np.array(list(episode.robot_joint_names), dtype=object).astype(utf8)
+                obs.create_dataset("robot_gripper_opening_m", data=grip)
+                obs.create_dataset("robot_valid", data=robot_valid)
+            lang = obs.create_dataset("language_instruction", (n,), dtype=utf8)
+            for i, fr in enumerate(frames):
+                lang[i] = fr.frame_description or episode.task_description
+            is_first = np.zeros(n, bool)
+            is_first[0] = True
+            is_last = np.zeros(n, bool)
+            is_last[-1] = True
+            steps.create_dataset("is_first", data=is_first)
+            steps.create_dataset("is_last", data=is_last)
+            steps.create_dataset("is_terminal", data=np.zeros(n, bool))
+            meta = ep.create_group("metadata")
+            meta.create_dataset("task_description", data=episode.task_description, dtype=utf8)
+            meta.create_dataset("num_frames", data=n, dtype=np.int32)
+            meta.create_dataset("duration_seconds", data=float(episode.duration_seconds), dtype=np.float64)
+            meta.create_dataset("effective_fps", data=float(episode.effective_fps or np.nan), dtype=np.float64)
+            meta.create_dataset("source_frame_idx", data=np.array([x.frame_idx for x in frames], np.int64))
+            meta.create_dataset("source_timestamp_s", data=np.array([x.timestamp for x in frames], np.float64))
+        os.replace(tmp, out)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return out
 
-    # Columns of rotation matrix are [x, y, z]
-    # Return first two columns flattened: [x_x, x_y, x_z, y_x, y_y, y_z]
-    rot6d = np.concatenate([x, y]).astype(np.float32)
-    return rot6d
 
-
-def parse_hand_keypoints(
-    frame: Dict[str, Any]
-) -> tuple[np.ndarray | None, bool]:
-    """Extract keypoints for the dominant hand (right if present, else left).
-
-    Returns:
-        A tuple of (keypoints_array (21, 3) or None, is_right_hand).
-    """
-    if frame.get("right_hand_present", False):
-        kp = np.array(frame["right_hand_keypoints"], dtype=np.float32).reshape(21, 3)
-        return kp, True
-    elif frame.get("left_hand_present", False):
-        kp = np.array(frame["left_hand_keypoints"], dtype=np.float32).reshape(21, 3)
-        return kp, False
-    return None, False
-
-
-def export_to_rlds(episode_id: str, output_dir: str) -> Path:
-    """Read annotations for an episode and export them in RLDS HDF5 format."""
-    output_path = Path(output_dir)
-    episode_dir = output_path / episode_id
-
+def export_to_rlds(episode_id: str, output_dir: str, **kwargs) -> Path:
+    """Export ``<output_dir>/<episode_id>/annotations.json`` to ``episode_rlds.hdf5``."""
+    episode_dir = Path(output_dir) / episode_id
     if not episode_dir.exists():
         raise FileNotFoundError(f"Episode directory not found: {episode_dir}")
-
-    frame_annot_path = episode_dir / "frame_annotations.json"
-    metadata_path = episode_dir / "metadata.json"
-
-    if not frame_annot_path.exists():
-        raise FileNotFoundError(f"Frame annotations JSON not found: {frame_annot_path}")
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Metadata JSON not found: {metadata_path}")
-
-    with open(frame_annot_path, "r") as f:
-        frames = json.load(f)
-    with open(metadata_path, "r") as f:
-        meta = json.load(f)
-
-    num_frames = len(frames)
-    if num_frames == 0:
-        raise ValueError(f"No frames found in annotations for episode {episode_id}")
-
-    # 1. Initialize arrays
-    images = np.zeros((num_frames, 224, 224, 3), dtype=np.uint8)
-    wrist_translations = np.zeros((num_frames, 3), dtype=np.float32)
-    wrist_rotations = np.zeros((num_frames, 6), dtype=np.float32)
-    hand_poses = np.zeros((num_frames, 15), dtype=np.float32)
-    proprioceptions = np.zeros((num_frames, 8), dtype=np.float32)
-    language_instructions = []
-    actions = np.zeros((num_frames, 24), dtype=np.float32)
-
-    # Retargeted robot joint angles / gripper trajectory
-    has_robot_retargeting = any(f.get("robot_joint_angles") is not None for f in frames)
-    n_robot_dof = 0
-    if has_robot_retargeting:
-        for f in frames:
-            if f.get("robot_joint_angles"):
-                n_robot_dof = len(f["robot_joint_angles"])
-                break
-    robot_joint_angles = np.zeros((num_frames, n_robot_dof), dtype=np.float32) if has_robot_retargeting else None
-    robot_gripper_openings = np.zeros((num_frames, 1), dtype=np.float32) if has_robot_retargeting else None
-    robot_reachabilities = np.zeros((num_frames,), dtype=bool) if has_robot_retargeting else None
-
-    is_first = np.zeros(num_frames, dtype=bool)
-    is_last = np.zeros(num_frames, dtype=bool)
-    is_terminal = np.zeros(num_frames, dtype=bool)
-
-    is_first[0] = True
-    is_last[-1] = True
-    is_terminal[-1] = True
-
-    # 2. Process frames
-    project_root = Path(__file__).resolve().parent.parent
-
-    for idx, frame in enumerate(frames):
-        # Image Loading & Resizing (BGR -> RGB)
-        img_rel_path = frame["image_path"]
-        img_path = project_root / img_rel_path
-        if not img_path.exists():
-            # Try absolute path or fallback to current working directory
-            img_path = Path(img_rel_path)
-            if not img_path.exists():
-                img_path = Path(os.getcwd()) / img_rel_path
-
-        if img_path.exists():
-            img_bgr = cv2.imread(str(img_path))
-            if img_bgr is not None:
-                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                if img_rgb.shape[:2] != (224, 224):
-                    img_rgb = cv2.resize(img_rgb, (224, 224), interpolation=cv2.INTER_AREA)
-                images[idx] = img_rgb
-            else:
-                logger.warning("Could not read image: %s", img_path)
-        else:
-            logger.warning("Image path does not exist: %s", img_path)
-
-        # Dominant Hand Extraction
-        kp, is_right = parse_hand_keypoints(frame)
-
-        # 2.1 wrist_translation
-        if kp is not None:
-            # keypoint 0 is the wrist
-            wrist_normalized = kp[0]
-            # Convert [0,1] to metric space by multiplying by [0.5, 0.5, 0.5]
-            wrist_translations[idx] = wrist_normalized * 0.5
-        else:
-            wrist_translations[idx] = np.zeros(3, dtype=np.float32)
-
-        # 2.2 wrist_rotation
-        if kp is not None:
-            p0 = kp[0]
-            p5 = kp[5]
-            p17 = kp[17]
-
-            v_index = p5 - p0
-            v_pinky = p17 - p0
-            normal = np.cross(v_index, v_pinky)
-            wrist_rotations[idx] = rot6d_from_normal(normal)
-        else:
-            # Fallback to identity rotation
-            wrist_rotations[idx] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-
-        # 2.3 hand_pose (proxy using finger angles)
-        finger_angles = np.array(frame.get("action_finger_angles", [0.0] * 15), dtype=np.float32)
-        hand_poses[idx] = finger_angles
-
-        # 2.4 proprioception
-        # [wrist_x, wrist_y, wrist_z, gripper_openness, left_contact_bool, right_contact_bool, left_grasp_onehot_idx, right_grasp_onehot_idx]
-        gripper_open = float(frame.get("action_gripper_openness", 1.0))
-        left_contact = 1.0 if frame.get("left_contact", False) else 0.0
-        right_contact = 1.0 if frame.get("right_contact", False) else 0.0
-
-        left_grasp = frame.get("left_grasp_type")
-        left_grasp_idx = GRASP_MAPPING.get(left_grasp, 5) if left_grasp is not None else 5
-
-        right_grasp = frame.get("right_grasp_type")
-        right_grasp_idx = GRASP_MAPPING.get(right_grasp, 5) if right_grasp is not None else 5
-
-        proprioceptions[idx] = np.array(
-            [
-                wrist_translations[idx][0],
-                wrist_translations[idx][1],
-                wrist_translations[idx][2],
-                gripper_open,
-                left_contact,
-                right_contact,
-                float(left_grasp_idx),
-                float(right_grasp_idx),
-            ],
-            dtype=np.float32,
-        )
-
-        # Retargeted robot arrays
-        if has_robot_retargeting:
-            ja = frame.get("robot_joint_angles")
-            if ja is not None:
-                robot_joint_angles[idx] = np.array(ja, dtype=np.float32)
-            g_op = frame.get("robot_gripper_opening_m")
-            if g_op is not None:
-                robot_gripper_openings[idx] = float(g_op)
-            robot_reachabilities[idx] = bool(frame.get("robot_reachable", False))
-
-        # 2.5 language instruction
-        language_instructions.append(frame.get("language_instruction", ""))
-
-        # 2.6 action: [wrist_delta(3), wrist_rot_delta(6), finger_angles(15)]
-        wrist_delta = np.array(frame.get("action_wrist_delta", [0.0] * 3), dtype=np.float32)
-        if idx == 0:
-            wrist_rot_delta = np.zeros(6, dtype=np.float32)
-        else:
-            wrist_rot_delta = wrist_rotations[idx] - wrist_rotations[idx - 1]
-
-        actions[idx] = np.concatenate([wrist_delta, wrist_rot_delta, finger_angles]).astype(np.float32)
-
-    # 3. Create HDF5 dataset
-    rlds_file_path = episode_dir / "episode_rlds.hdf5"
-    logger.info("Saving RLDS dataset to: %s", rlds_file_path)
-
-    with h5py.File(rlds_file_path, "w") as f:
-        # Create groups
-        ep_group = f.create_group(episode_id)
-        steps_group = ep_group.create_group("steps")
-        obs_group = steps_group.create_group("observation")
-        meta_group = ep_group.create_group("metadata")
-
-        # Save step observation datasets
-        obs_group.create_dataset("image", data=images, dtype=np.uint8)
-        obs_group.create_dataset("wrist_translation", data=wrist_translations, dtype=np.float32)
-        obs_group.create_dataset("wrist_rotation", data=wrist_rotations, dtype=np.float32)
-        
-        hand_pose_ds = obs_group.create_dataset("hand_pose", data=hand_poses, dtype=np.float32)
-        hand_pose_ds.attrs["hand_pose_note"] = "proxy using finger angles, labs should fit MANO PCA"
-
-        obs_group.create_dataset("proprioception", data=proprioceptions, dtype=np.float32)
-
-        if has_robot_retargeting:
-            obs_group.create_dataset("robot_joint_angles", data=robot_joint_angles, dtype=np.float32)
-            obs_group.create_dataset("robot_gripper_opening_m", data=robot_gripper_openings, dtype=np.float32)
-            obs_group.create_dataset("robot_reachable", data=robot_reachabilities, dtype=bool)
-
-        # String arrays in HDF5
-        utf8_type = h5py.string_dtype(encoding="utf-8")
-        lang_ds = obs_group.create_dataset("language_instruction", (num_frames,), dtype=utf8_type)
-        for i, text in enumerate(language_instructions):
-            lang_ds[i] = text
-
-        # Save step datasets
-        steps_group.create_dataset("action", data=actions, dtype=np.float32)
-        steps_group.create_dataset("is_first", data=is_first, dtype=bool)
-        steps_group.create_dataset("is_last", data=is_last, dtype=bool)
-        steps_group.create_dataset("is_terminal", data=is_terminal, dtype=bool)
-
-        # Save episode metadata
-        meta_group.create_dataset("task_description", data=meta.get("task_description", ""), dtype=utf8_type)
-        meta_group.create_dataset("num_frames", data=int(meta.get("num_frames", num_frames)), dtype=np.int32)
-        meta_group.create_dataset("duration_seconds", data=float(meta.get("duration_seconds", 0.0)), dtype=np.float32)
-
-    return rlds_file_path
+    ann = episode_dir / "annotations.json"
+    if not ann.exists():
+        raise FileNotFoundError(f"annotations.json not found: {ann}")
+    episode = AnnotatedEpisode.load_json(ann)
+    kwargs.setdefault("image_search_dirs", [episode_dir])
+    return export_episode_to_rlds_hdf5(episode, episode_dir / "episode_rlds.hdf5", **kwargs)
 
 
 def export_all_episodes(output_dir: str = "data/output") -> List[Path]:
-    """Scan output directory and export all annotated episodes to RLDS format."""
+    """Export every episode directory that has ``annotations.json``."""
     output_path = Path(output_dir)
     if not output_path.exists():
         logger.warning("Output directory %s does not exist. Nothing to export.", output_dir)
         return []
-
-    exported_paths = []
-    # Identify episode directories (any folder that contains frame_annotations.json)
-    for path in output_path.iterdir():
-        if path.is_dir() and (path / "frame_annotations.json").exists():
+    exported = []
+    for path in sorted(output_path.iterdir()):
+        if path.is_dir() and (path / "annotations.json").exists():
             try:
                 rlds_path = export_to_rlds(path.name, str(output_path))
-                exported_paths.append(rlds_path)
-                print(f"Successfully exported RLDS for episode: {path.name} -> {rlds_path.name}")
+                exported.append(rlds_path)
+                print(f"Successfully exported RLDS-style HDF5 for episode: {path.name} -> {rlds_path.name}")
             except Exception as e:
                 logger.error("Failed to export episode %s: %s", path.name, e, exc_info=True)
-                print(f"Error exporting RLDS for episode {path.name}: {e}")
-
-    return exported_paths
+                print(f"Error exporting RLDS-style HDF5 for episode {path.name}: {e}")
+    return exported
