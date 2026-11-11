@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -38,6 +38,11 @@ class HandLandmarks:
     confidence: float
     handedness: str
     is_interpolated: bool = False
+    # MediaPipe world landmarks: (21, 3) metres, hand-local frame. None when
+    # the tracker did not provide them (e.g. interpolated frames).
+    world_xyz: Optional[np.ndarray] = None
+    # (width, height) in pixels of the image the tracker ran on (native aspect).
+    image_size: Optional[Tuple[int, int]] = None
 
     # -- helper constants ---------------------------------------------------
     # MediaPipe hand landmark indices for each fingertip.
@@ -75,17 +80,70 @@ class HandLandmarks:
             "confidence": self.confidence,
             "handedness": self.handedness,
             "is_interpolated": self.is_interpolated,
+            "world_xyz": (
+                np.asarray(self.world_xyz).tolist() if self.world_xyz is not None else None
+            ),
+            "image_size": list(self.image_size) if self.image_size is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> HandLandmarks:
         """Reconstruct from a dictionary produced by :meth:`to_dict`."""
+        world = data.get("world_xyz")
+        size = data.get("image_size")
         return cls(
             x=np.asarray(data["x"], dtype=np.float32),
             y=np.asarray(data["y"], dtype=np.float32),
             z=np.asarray(data["z"], dtype=np.float32),
             confidence=float(data["confidence"]),
             handedness=str(data["handedness"]),
+            is_interpolated=bool(data.get("is_interpolated", False)),
+            world_xyz=np.asarray(world, dtype=np.float32) if world is not None else None,
+            image_size=(int(size[0]), int(size[1])) if size is not None else None,
+        )
+
+
+@dataclass
+class MetricHandPose:
+    """One hand in the camera optical frame (x right, y down, z forward), metres.
+
+    The hand frame has its origin at the wrist, +x from the wrist to the middle
+    finger MCP, +z out of the palm (palmar side) and +y = z cross x, for both
+    left and right hands. ``wrist_rotation`` maps hand-frame vectors into the
+    camera frame.
+    """
+
+    wrist_position_m: np.ndarray  # shape (3,)
+    wrist_rotation: np.ndarray  # shape (3, 3)
+    keypoints_m: np.ndarray  # shape (21, 3), camera frame
+    reprojection_error_px: float
+    intrinsics_source: str  # "calibrated" | "assumed_fov"
+    is_interpolated: bool = False
+
+    def aperture_m(self) -> float:
+        """Thumb-tip to index-tip distance in metres."""
+        return float(np.linalg.norm(self.keypoints_m[4] - self.keypoints_m[8]))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise to a JSON-safe dictionary."""
+        return {
+            "wrist_position_m": np.asarray(self.wrist_position_m).tolist(),
+            "wrist_rotation": np.asarray(self.wrist_rotation).tolist(),
+            "keypoints_m": np.asarray(self.keypoints_m).tolist(),
+            "reprojection_error_px": float(self.reprojection_error_px),
+            "intrinsics_source": self.intrinsics_source,
+            "is_interpolated": bool(self.is_interpolated),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> MetricHandPose:
+        """Reconstruct from a dictionary produced by :meth:`to_dict`."""
+        return cls(
+            wrist_position_m=np.asarray(data["wrist_position_m"], dtype=np.float64),
+            wrist_rotation=np.asarray(data["wrist_rotation"], dtype=np.float64),
+            keypoints_m=np.asarray(data["keypoints_m"], dtype=np.float64),
+            reprojection_error_px=float(data["reprojection_error_px"]),
+            intrinsics_source=str(data["intrinsics_source"]),
             is_interpolated=bool(data.get("is_interpolated", False)),
         )
 
@@ -334,6 +392,13 @@ class AnnotationFrame:
     robot_gripper_method: Optional[str] = None
     robot_reachable: Optional[bool] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    left_hand_metric: Optional[MetricHandPose] = None
+    right_hand_metric: Optional[MetricHandPose] = None
+    # 4x4 camera-to-world transform for this frame; None when unknown.
+    T_world_cam: Optional[np.ndarray] = None
+    # Measured end-effector tracking error of robot_joint_angles vs the target.
+    robot_ee_pos_error_m: Optional[float] = None
+    robot_ee_ori_error_deg: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -364,6 +429,17 @@ class AnnotationFrame:
             "robot_gripper_method": self.robot_gripper_method,
             "robot_reachable": self.robot_reachable,
             "metadata": self.metadata,
+            "left_hand_metric": (
+                self.left_hand_metric.to_dict() if self.left_hand_metric else None
+            ),
+            "right_hand_metric": (
+                self.right_hand_metric.to_dict() if self.right_hand_metric else None
+            ),
+            "T_world_cam": (
+                np.asarray(self.T_world_cam).tolist() if self.T_world_cam is not None else None
+            ),
+            "robot_ee_pos_error_m": self.robot_ee_pos_error_m,
+            "robot_ee_ori_error_deg": self.robot_ee_ori_error_deg,
         }
 
     @classmethod
@@ -427,6 +503,31 @@ class AnnotationFrame:
                 else None
             ),
             metadata=dict(data.get("metadata", {})),
+            left_hand_metric=(
+                MetricHandPose.from_dict(data["left_hand_metric"])
+                if data.get("left_hand_metric")
+                else None
+            ),
+            right_hand_metric=(
+                MetricHandPose.from_dict(data["right_hand_metric"])
+                if data.get("right_hand_metric")
+                else None
+            ),
+            T_world_cam=(
+                np.asarray(data["T_world_cam"], dtype=np.float64)
+                if data.get("T_world_cam") is not None
+                else None
+            ),
+            robot_ee_pos_error_m=(
+                float(data["robot_ee_pos_error_m"])
+                if data.get("robot_ee_pos_error_m") is not None
+                else None
+            ),
+            robot_ee_ori_error_deg=(
+                float(data["robot_ee_ori_error_deg"])
+                if data.get("robot_ee_ori_error_deg") is not None
+                else None
+            ),
         )
 
 
@@ -561,6 +662,14 @@ class AnnotatedEpisode:
     camera_motion_px_per_sec: float = 0.0
     physics_verified: bool = False
     physics_report_path: Optional[str] = None
+    # Sampled frame rate actually present in ``frames`` (not the source fps).
+    effective_fps: Optional[float] = None
+    # Camera model, world-frame source and metric tier used for this episode.
+    geometry: Dict[str, Any] = field(default_factory=dict)
+    # Joint order of AnnotationFrame.robot_joint_angles.
+    robot_joint_names: List[str] = field(default_factory=list)
+    # Measured retargeting + replay report (see docs/ARCHITECTURE.md).
+    retargeting: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -577,6 +686,10 @@ class AnnotatedEpisode:
             "camera_motion_px_per_sec": float(getattr(self, "camera_motion_px_per_sec", 0.0)),
             "physics_verified": bool(self.physics_verified),
             "physics_report_path": self.physics_report_path,
+            "effective_fps": self.effective_fps,
+            "geometry": self.geometry,
+            "robot_joint_names": list(self.robot_joint_names),
+            "retargeting": self.retargeting,
         }
 
     @classmethod
@@ -599,6 +712,12 @@ class AnnotatedEpisode:
             camera_motion_px_per_sec=float(data.get("camera_motion_px_per_sec", 0.0)),
             physics_verified=bool(data.get("physics_verified", False)),
             physics_report_path=data.get("physics_report_path"),
+            effective_fps=(
+                float(data["effective_fps"]) if data.get("effective_fps") is not None else None
+            ),
+            geometry=dict(data.get("geometry") or {}),
+            robot_joint_names=list(data.get("robot_joint_names") or []),
+            retargeting=dict(data.get("retargeting") or {}),
         )
 
     def save_json(self, path: str | Path) -> None:
