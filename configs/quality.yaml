@@ -1,0 +1,9 @@
+# Data-Quality Acceptance Thresholds (Used to compute accept_episode & quality_tier)
+min_valid_hand_ratio: 0.80
+min_detected_hand_ratio: 0.40
+min_left_hand_ratio: 0.05
+min_untruncated_hand_ratio: 0.85
+min_segment_duration_s: 0.50
+max_segment_duration_s: 10.00
+max_template_caption_ratio: 0.20
+min_ik_convergence_pct: 80.0

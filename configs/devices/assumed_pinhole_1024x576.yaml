@@ -1,0 +1,13 @@
+device_id: assumed_pinhole_1024x576
+image_width: 1024
+image_height: 576
+fx: 870.4
+fy: 870.4
+cx: 512.0
+cy: 288.0
+distortion_model: none
+dist_coeffs: [0.0, 0.0, 0.0, 0.0]
+calibrated: false
+source: assumed
+scale_source: assumed
+is_metric: false

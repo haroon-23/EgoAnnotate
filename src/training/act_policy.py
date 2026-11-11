@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Vendored minimal ACT policy (Phase B) — no dependency on the lerobot package.
 
 Faithful to the ACT paper (Zhao et al.), shrunk for CPU smoke-training on a
@@ -16,7 +17,6 @@ Faithful to the ACT paper (Zhao et al.), shrunk for CPU smoke-training on a
 raises a helpful error via :func:`src.training.require_torch`.
 """
 
-from __future__ import annotations
 
 from . import require_torch
 

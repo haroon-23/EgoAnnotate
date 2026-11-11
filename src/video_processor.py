@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Video loading, frame extraction, and sampling.
 
 Handles both uniform FPS-based extraction and timestamp-targeted extraction
 for downstream annotation stages.
 """
 
-from __future__ import annotations
 
 import logging
 import math

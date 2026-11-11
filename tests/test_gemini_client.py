@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Unit tests for the Gemini API resilience layer (Fix I, 2026-10-09).
 
 Background: every verification run sprinkled "VLM call failed" errors through
@@ -14,7 +15,6 @@ hint indicates the DAILY quota is gone (retrying inside the run is useless).
 
 All tests use a fake client: no network, no quota burned.
 """
-from __future__ import annotations
 
 import sys
 import types

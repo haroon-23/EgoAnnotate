@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Torch Dataset over a merged LeRobot v3 root (Phase B).
 
 Reads ``meta/info.json`` (dims, fps), ``meta/stats.json`` (normalization),
@@ -9,7 +10,6 @@ mp4 file — frames are never preloaded (old-Mac RAM discipline).
 :class:`LeRobotParquetDataset` without torch raises a helpful error.
 """
 
-from __future__ import annotations
 
 import json
 import logging

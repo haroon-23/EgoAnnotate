@@ -99,7 +99,8 @@ class TestPipelineIntegration(unittest.TestCase):
             "output": {
                 "format": "json",
                 "include_image_bytes": False,
-                "save_viz_video": True
+                "save_viz_video": True,
+                "internal_test_no_consent": True
             }
         }
 
@@ -112,10 +113,7 @@ class TestPipelineIntegration(unittest.TestCase):
 
     @patch("src.hand_tracker.mp")
     @patch("src.hand_tracker.vision.HandLandmarker.create_from_options")
-    @patch("google.generativeai.configure")
-    @patch("google.generativeai.GenerativeModel")
-    @patch("google.generativeai.upload_file")
-    def test_full_pipeline_integration(self, mock_upload, mock_gen_model, mock_gen_configure, mock_landmarker_create, mock_mp):
+    def test_full_pipeline_integration(self, mock_landmarker_create, mock_mp):
         """Run full integration test of the pipeline and assert output file schemas."""
         # Set dummy env key to satisfy initialization validation
         os.environ["GEMINI_API_KEY"] = "mock-api-key"
@@ -190,7 +188,7 @@ class TestPipelineIntegration(unittest.TestCase):
             ("metadata.json", out_dir / "metadata.json"),
             ("action_segments.json", out_dir / "action_segments.json"),
             ("summary.json", out_dir / "summary.json"),
-            ("debug_hud_preview.mp4", out_dir / "debug_hud_preview.mp4")
+            ("overlay_annotated.mp4", out_dir / "overlay_annotated.mp4")
         ]
         
         for name, path in expected_files:

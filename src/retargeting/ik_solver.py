@@ -1,3 +1,4 @@
+from __future__ import annotations
 """IK solver using PyBullet's calculateInverseKinematics with strict joint-limit enforcement.
 
 Task 3 of the retargeting pipeline.
@@ -14,7 +15,6 @@ DESIGN PRINCIPLES (per project spec):
     reachable=False.
   - All these decisions are logged and surfaced in the IKResult, never hidden.
 """
-from __future__ import annotations
 
 import logging
 import time
@@ -274,7 +274,7 @@ class IKSolver:
 
         best_angles = None
         best_residual = float("inf")
-        best_score = float("inf")
+        best_cost = float("inf")
         best_q_full: Optional[list] = None
 
         # Bias PyBullet's null-space toward the previous exported solution so
@@ -319,7 +319,7 @@ class IKSolver:
 
             # raw contains values for ALL active joints (arm + gripper fingers)
             # We take only the arm DOFs (first n_arm values)
-            arm_angles = np.array(raw[:n_arm], dtype=np.float64)
+            arm_angles = np.clip(np.array(raw[:n_arm], dtype=np.float64), kin.lower_limits, kin.upper_limits)
 
             # Apply to simulation and measure actual residual
             self._set_joint_state(arm_angles)
@@ -331,15 +331,15 @@ class IKSolver:
             )
             if cont_ref is not None:
                 continuity_pen = float(np.max(np.abs(arm_angles - cont_ref)))
-                score = residual + cfg.continuity_weight * continuity_pen
+                cost = residual + cfg.continuity_weight * continuity_pen
             else:
-                score = residual
+                cost = residual
             if collides:
                 # Selection-only: ik_residual_m stays the true residual.
-                score += cfg.collision_penalty
+                cost += cfg.collision_penalty
 
-            if score < best_score:
-                best_score = score
+            if cost < best_cost:
+                best_cost = cost
                 best_residual = residual
                 best_angles = arm_angles.copy()
                 best_q_full = list(raw)

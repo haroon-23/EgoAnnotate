@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Regression tests for the 2026-10-08 real-verification failure (Run #2).
 
 Episode ``whatsapp_video`` (729 frames) failed the physics gate after Fix G:
@@ -19,7 +20,6 @@ Fix H:
      flags penetrating solutions (``IKResult.has_table_collision``).
   3. ``apply_retargeting_gates`` gains a table-collision gate.
 """
-from __future__ import annotations
 
 import sys
 import types

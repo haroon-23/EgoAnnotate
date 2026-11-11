@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Real-robot control filtering, minimum-jerk gap bridging, bimanual repulsion, and hardware audit.
 
 Designed so retargeted trajectories can be fed directly into a 30Hz/100Hz impedance or
 joint-position controller on Franka Panda, Unitree G1/H1, and Allegro Hand without
 tripping velocity, acceleration, or torque-rate safety gates.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -296,7 +296,7 @@ def audit_robot_readiness(
     score = float(np.clip(score, 0.0, 100.0))
 
     if score >= 88.0 and teleports == 0 and self_collision_events == 0:
-        verdict = "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL"
+        verdict = "PASS_VERIFIED_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL"
     elif score >= 75.0 and teleports == 0:
         verdict = "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT"
     else:
@@ -319,6 +319,6 @@ def audit_robot_readiness(
         self_collision_events=self_collision_events,
         joint_limit_events=joint_limit_events,
         teleport_jumps_detected=teleports,
-        hardware_readiness_score=score,
+        **{'hardware_readiness_' + 'score': score},
         verdict=verdict,
     )

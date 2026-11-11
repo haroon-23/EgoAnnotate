@@ -1,3 +1,4 @@
+from __future__ import annotations
 """FLORA-inspired Process Reward, Outcome Reward, and Rubric Evaluation Engine.
 
 Computes:
@@ -9,7 +10,6 @@ Computes:
      - Clean placement / release completion: 0.95 -> 1.00
   2. Episode-level outcome reward in {0.0, 1.0} and 5-axis quality rubric (0.0 - 5.0).
 """
-from __future__ import annotations
 
 from typing import Any, Dict, List
 import numpy as np

@@ -1,5 +1,5 @@
-"""Phase 3 tests: MCAP v0 export, delivery validator, documentation & embodiment H1/Allegro fixes."""
 from __future__ import annotations
+"""Phase 3 tests: MCAP v0 export, delivery validator, documentation & embodiment H1/Allegro fixes."""
 
 from pathlib import Path
 import numpy as np

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Shared hermetic-test helpers: stub or block heavy third-party modules.
 
 These helpers make retargeting/perception tests hermetic in environments where
@@ -13,7 +14,6 @@ affecting machines where they are installed:
 This module is named ``hermetic_stubs.py`` (not ``test_*``) so pytest does not
 collect it as a test file.
 """
-from __future__ import annotations
 
 import sys
 import types

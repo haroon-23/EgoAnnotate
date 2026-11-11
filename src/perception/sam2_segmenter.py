@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SAM 2 box-prompted instance masks (optional, off by default).
 
 :class:`Sam2Segmenter` wraps ``SAM2ImagePredictor`` with the same guarded-import
@@ -10,7 +11,6 @@ image on the 2017 Intel Mac — keep ``sam2.enabled: false`` unless masks are
 needed, and run on detection keyframes only.
 """
 
-from __future__ import annotations
 
 import logging
 import os

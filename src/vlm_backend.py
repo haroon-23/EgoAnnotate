@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Dual VLM backend: Gemini API (production) + local SmolVLM (offline/dev).
 
 Phase D. Mirrors the Phase-C ``Detector2D`` pattern:
@@ -23,7 +24,6 @@ Rules (same as Phase C):
     transformers / torch are absent (all heavy imports are lazy/guarded).
 """
 
-from __future__ import annotations
 
 import json
 import logging

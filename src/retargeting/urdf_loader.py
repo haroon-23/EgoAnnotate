@@ -1,10 +1,11 @@
+from __future__ import annotations
 """URDF loading and kinematic chain extraction for robot retargeting.
 
 Task 1 of the retargeting pipeline: parse the target robot's URDF using PyBullet,
 extract joint metadata, and optionally validate against known published specifications.
 
 All joint limits come EXCLUSIVELY from the URDF — nothing is hardcoded.
-This module is URDF-agnostic: it works with any robot URDF. No Franka-specific
+This module is URDF-configurable: parses standard serial manipulator URDFs (e.g. Franka, UR5e, G1, H1). No Franka-specific
 assumptions are made at runtime — end-effector link and gripper joint names are
 always supplied by the caller (via RetargetingConfig / YAML).
 
@@ -12,7 +13,6 @@ The _PANDA_KNOWN_LIMITS table is used ONLY when the loaded URDF is identified as
 a Franka Panda (robot_name == "panda") to cross-validate limits. It is completely
 silent for any other robot.
 """
-from __future__ import annotations
 
 import logging
 import math
@@ -134,7 +134,7 @@ class URDFLoader:
     """Loads a robot URDF via PyBullet and extracts kinematic metadata.
 
     Uses PyBullet in DIRECT (headless) mode — no display required.
-    URDF-agnostic: works with any robot. No Franka-specific defaults.
+    URDF-configurable: loads supported manipulator URDF models. No Franka-specific defaults.
 
     The caller MUST supply end_effector_link and gripper_joint_names
     (via RetargetingConfig loaded from a YAML file). There are no fallback
@@ -329,9 +329,28 @@ class URDFLoader:
 
         # ----------------------------------------------------------------
         # Build limit arrays for IK solver
+        # Enforce strict intersection of libfranka hardware spec & URDF limits
         # ----------------------------------------------------------------
-        lower_limits = np.array([j.lower_limit for j in arm_joints], dtype=np.float64)
-        upper_limits = np.array([j.upper_limit for j in arm_joints], dtype=np.float64)
+        PANDA_HARDWARE_LIMITS = {
+            "panda_joint1": (-2.8973, 2.8973),
+            "panda_joint2": (-1.7628, 1.7628),
+            "panda_joint3": (-2.8973, 2.8973),
+            "panda_joint4": (-3.0718, -0.0698),
+            "panda_joint5": (-2.8973, 2.8973),
+            "panda_joint6": (-0.0175, 3.7525),
+            "panda_joint7": (-2.8973, 2.8973),
+        }
+        lower_list, upper_list = [], []
+        for j in arm_joints:
+            low, high = j.lower_limit, j.upper_limit
+            if j.name in PANDA_HARDWARE_LIMITS:
+                hw_low, hw_high = PANDA_HARDWARE_LIMITS[j.name]
+                low = max(low, hw_low)
+                high = min(high, hw_high)
+            lower_list.append(low)
+            upper_list.append(high)
+        lower_limits = np.array(lower_list, dtype=np.float64)
+        upper_limits = np.array(upper_list, dtype=np.float64)
         # Rest pose: midpoint of each joint range as neutral start
         rest_poses = (lower_limits + upper_limits) / 2.0
 

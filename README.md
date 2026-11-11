@@ -1,111 +1,27 @@
-# EgoAnnotate v1.0.0
+# EgoAnnotate: Egocentric Video to Verified Robot & VLA Training Data Pipeline
 
-**Auditable, Single-Machine Egocentric Video-to-Robot Training Data Pipeline (CPU-First)**
+EgoAnnotate converts raw egocentric manipulation videos (`30.00 Hz`) into verified 24-D camera-frame hand state/action trajectories, 7-DoF arm kinematic trajectories, and standardized **HuggingFace LeRobot v3**, **HDF5 (`episode_hdf5.h5`)**, **Safetensors**, and **Foxglove MCAP** datasets.
 
-EgoAnnotate converts raw first-person (egocentric) video of human hand manipulation into validated, multi-embodiment robot training datasets (**LeRobot v3**, **RLDS HDF5**, **MCAP v0**, **JSON**, plus native-resolution **overlay** and **side-by-side MuJoCo proof videos**).
+## 1. Capability & Verification Truth Table
 
-Designed specifically for small robotics teams running on commodity hardware (verified on a 2017 Intel MacBook Air, x86_64 CPU-only, 8 GB RAM), EgoAnnotate enforces **fail-loud execution**, **atomic file writes**, **stage-level and VLM disk caching**, and **honest physical telemetry**.
+See [`docs/STATUS.md`](docs/STATUS.md) (auto-generated from `gates_report.json`) and [`docs/PHYSICS_FINDINGS.md`](docs/PHYSICS_FINDINGS.md) for full technical disclosures:
 
----
+| Capability | Status | Notes |
+| :--- | :--- | :--- |
+| **21-Keypoint 2D Hand Detection (MediaPipe CPU)** | `REAL` | Runs per-frame on CPU; outputs 21 landmarks with persistent bipartite Left/Right tracking. |
+| **24-D Camera-Frame State/Action & Validity Mask** | `REAL` | `[wrist_xyz(3), rot6(6), gripper(1), fingers_f0_f13(14)]` + `observation.hand_valid` (`[2] int64`). |
+| **Metric 3D Hand Scale & Intrinsics** | `PARTIAL` | Uses pinhole back-projection with 85 mm palm prior (`is_metric: false`) unless chessboard-calibrated YAML (`scripts/calibrate_camera.py`) is provided. |
+| **6-DoF Camera Pose / SLAM** | `NOT VERIFIED` | Baseline uses 2D planar KLT homography; 6-DoF SLAM/ARKit/ARCore sidecar supported when supplied. |
+| **Franka Panda 7-DoF Kinematic Retargeting & FK Audit** | `REAL` | Workspace-scaled damped-least-squares IK + independent PyBullet FK position (`mm`) & orientation (`deg`) verification (`gates/g08_retarget_independent.py`). |
+| **MuJoCo 3.3.4 Unwelded Dynamic Actuator Replay** | `REAL` | Verified via unwelded position actuators (`gates/g09_physics_replay.py`) with 0 self-collisions. |
+| **Humanoid & Dexterous Retargeting (G1, H1, Allegro)** | `EXPERIMENTAL` | Kinematic mapping only; not dynamically closed-loop verified on physical humanoid hardware. |
+| **LeRobot v3 Dataset Export** | `REAL` | Strict `float32` Parquet + `ffprobe` packet-synced MP4s + verified via `LeRobotDataset` PyTorch `DataLoader` (`gates/g06_lerobot_v3.py`). |
+| **HDF5 Episode Export (`episode_hdf5.h5`)** | `REAL` | Gzip-compressed HDF5 (`< 500 MB/hr`); TFDS RLDS builder is `NOT VERIFIED` unless `tensorflow_datasets` is installed (`gates/g07_hdf5_honesty.py`). |
+| **Privacy (Face Blur, Audio `-an`, DPDP Consent)** | `REAL` | MediaPipe face redaction prior to VLM/export, FFmpeg audio removal, and `consent_manifest.json` gate (`gates/g10_privacy.py`). |
 
-## Architecture: 10-Stage Resumable Pipeline
-
-1. **VideoProcessor:** Uniform frame sampling with native resolution preservation.
-2. **HandTracker:** MediaPipe 21-keypoint 3D hand tracking in `VIDEO` mode with short-gap interpolation ($\le 5$ frames, flagged `is_interpolated=True`) and **persistent Left/Right hand identity** (never swaps hands mid-clip).
-3. **GeminiObjectDetector + Local Grounding:** Dynamic open-vocabulary object discovery via `gemini-2.5-flash` (cached in `cache/vlm_cache.json`) paired with local 2D bounding-box detection (`OWL-ViT` / `GroundingDINO`).
-4. **ContactDetector:** Geometric fingertip-to-bbox proximity state machine with depth consistency scoring (zero no-bbox contact hallucinations).
-5. **GraspClassifier:** 5-class grasp taxonomy (`pinch`, `power_wrap`, `lateral`, `tripod`, `open`) with temporal majority smoothing.
-6. **SignalSegmenter & SegmentLabeler:** Deterministic contact/grasp boundary detection labeled with `gemini-2.5-flash`.
-7. **GeminiLanguageGenerator:** Fail-loud natural-language task & segment instruction generation.
-8. **CameraMotion & ActionComputer:** Background sparse optical flow (`camera_motion_flag`, `camera_motion_px_per_sec`) + 24-D embodiment-agnostic human action primitives.
-9. **Universal Embodiment Retargeter (`mink` + `MuJoCo` / `PyBullet`):** Fixed-anchor anthropometric metric scaling ($0.085\text{ m}$ palm reference, $\pm 15\%$ error margin) feeding config-driven adapters (`configs/embodiments/*.yaml`) for single arms, dual-arm humanoids, and dexterous multi-finger hands.
-10. **DatasetExporter & DeliveryValidator:** Atomic exports to `episode_rlds.hdf5`, `lerobot_v3/`, `episode.mcap`, `annotations.json`, `summary.json`, `manifest.json`, `overlay_annotated.mp4`, and `side_by_side.mp4`.
-
----
-
-## Quickstart (Intel macOS / Linux CPU)
+## 2. Running the Read-Only 12-Gate Verification Suite
 
 ```bash
-git clone https://github.com/haroon-23/EgoAnnotate.git
-cd EgoAnnotate
-python3.10 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # Add your GEMINI_API_KEY
+.venv/bin/python gates/run_all.py data/output/test_10s --labels-csv data/chirality_labels.csv --report-out gates_report.json
+.venv/bin/python gates/run_all.py data/output/whatsapp_video --labels-csv data/chirality_labels.csv --report-out data/output/whatsapp_video/gates_report.json
 ```
-
-### 1. Process a Demonstration Video
-
-```bash
-# Run complete end-to-end pipeline with Franka Panda retargeting (default)
-.venv/bin/python scripts/run.py --input data/raw_videos/whatsapp_video.mp4 --config configs/default.yaml
-
-# Run with Unitree G1 Bimanual Humanoid
-.venv/bin/python scripts/run.py --input data/raw_videos/whatsapp_video.mp4 --robot unitree_g1_upper
-
-# Run with Allegro 16-DoF Dexterous Hand
-.venv/bin/python scripts/run.py --input data/raw_videos/whatsapp_video.mp4 --robot allegro_hand_right
-```
-
-### 2. Multi-Robot Retargeting (Batch)
-
-Retarget an already-annotated episode across all 4 robot platforms in one pass:
-
-```bash
-.venv/bin/python scripts/retarget_multi.py data/output/whatsapp_video/annotations.json \
-  --embodiments configs/embodiments/franka_arm.yaml \
-                configs/embodiments/unitree_g1_upper.yaml \
-                configs/embodiments/unitree_h1_upper.yaml \
-                configs/embodiments/allegro_hand.yaml
-```
-
-### 3. Validate Delivery Deliverables
-
-Validate that all 5 deliverable files and native-resolution videos are present and spec-compliant:
-
-```bash
-.venv/bin/python scripts/validate_delivery.py data/output/whatsapp_video --source-video data/raw_videos/whatsapp_video.mp4
-```
-
-### 4. Run the Full Test Suite
-
-```bash
-.venv/bin/pytest tests/ -v
-```
-
----
-
-## Export Deliverables per Episode
-
-Each output directory `data/output/<episode_id>/` contains:
-
-```
-data/output/<episode_id>/
-├── annotations.json          # Primary JSON metadata & full frame annotations
-├── summary.json              # Feasibility summary metrics & grasp distributions
-├── manifest.json             # Atomic run manifest (exit code 0=ok, 1=failed, 2=partial)
-├── episode_rlds.hdf5         # RLDS HDF5 dataset for OpenVLA / Octo
-├── lerobot_v3/               # Hugging Face LeRobot format
-│   ├── meta/info.json
-│   └── data/chunk-000/episode_000000.parquet
-├── episode.mcap              # Foxglove Studio & ROS2 streaming format
-├── overlay_annotated.mp4     # Native-resolution video with 2D/3D tracking overlay
-└── side_by_side.mp4          # Synchronized human vs simulated robot proof video
-```
-
----
-
-## Supported Embodiments
-
-| Embodiment | Kind | Config | URDF |
-|---|---|---|---|
-| **Franka Emika Panda** | 7-DoF Arm + Parallel Gripper | `configs/embodiments/franka_arm.yaml` | `data/urdfs/panda.urdf` |
-| **Unitree G1 Upper** | 29-DoF Bimanual Humanoid | `configs/embodiments/unitree_g1_upper.yaml` | `data/urdfs/embodiments/g1_clean.urdf` |
-| **Unitree H1 Upper** | 19-DoF Humanoid Upper | `configs/embodiments/unitree_h1_upper.yaml` | `data/urdfs/embodiments/h1_clean.urdf` |
-| **Allegro Hand** | 16-DoF Dexterous Hand | `configs/embodiments/allegro_hand.yaml` | `data/urdfs/embodiments/allegro_clean.urdf` |
-
----
-
-## License
-
-This project is licensed under the [MIT License](LICENSE). Bundled third-party URDF models retain their original open-source licenses (Apache-2.0, BSD-3-Clause, BSD-2-Clause).

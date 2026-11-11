@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Batch end-to-end pipeline benchmark, delivery validator, and 4-robot hardware auditor.
 
@@ -5,7 +6,6 @@ Processes all remaining raw videos in data/raw_videos/, measures per-video wall-
 time and throughput (compute_min_per_video_min), runs validate_delivery.py, and runs
 audit_real_robot_readiness.py across Franka, Unitree G1, Unitree H1, and Allegro Hand.
 """
-from __future__ import annotations
 
 import argparse
 import json

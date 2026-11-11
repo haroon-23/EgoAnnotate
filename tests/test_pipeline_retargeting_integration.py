@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Integration test for end-to-end EgoAnnotatePipeline with retargeting enabled."""
 
-from __future__ import annotations
 
 import json
 import os
@@ -54,6 +54,7 @@ class TestPipelineRetargetingIntegration(unittest.TestCase):
                 "image_size": [224, 224],
                 "frames_dir": str(frames_dir),
                 "output_dir": str(out_dir),
+                "internal_test_no_consent": True,
             },
             "hand_tracking": {
                 "running_mode": "VIDEO",

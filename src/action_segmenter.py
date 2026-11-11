@@ -2,6 +2,7 @@
 import time
 import re
 import cv2
+import numpy as np
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
@@ -82,22 +83,34 @@ class GeminiActionSegmenter:
         if segments:
             return segments
         
-        # Fast fallback: single segment covering full duration
-        print("[ActionSegmenter] Using fallback single segment")
+        # Fast fallback: sub-split segments into <= 10.0s chunks covering full duration
+        print("[ActionSegmenter] Using fallback sub-split segments (max 10s)")
         cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 300
         duration = frames / fps if fps > 0 else 10.0
         cap.release()
-        
-        return [ActionSegment(
-            name="manipulate",
-            start_time=0.0,
-            end_time=duration,
-            object_name="unknown",
-            hand_used="right",
-            description="performing manipulation task"
-        )]
+
+        max_dur = 10.0
+        n_chunks = max(1, int(np.ceil(duration / max_dur)))
+        chunk_dur = duration / float(n_chunks)
+        fallback_segs = []
+        for i in range(n_chunks):
+            t0 = round(i * chunk_dur, 3)
+            t1 = round((i + 1) * chunk_dur if i < n_chunks - 1 else duration, 3)
+            suffix = f" phase {i+1}/{n_chunks}" if n_chunks > 1 else ""
+            fallback_segs.append(
+                ActionSegment(
+                    name="manipulate",
+                    start_time=t0,
+                    end_time=t1,
+                    object_name="unknown",
+                    hand_used="right",
+                    description=f"performing manipulation task{suffix}",
+                    caption_source="template",
+                )
+            )
+        return fallback_segs
     
     def _try_video_upload(self, video_path: Path) -> Optional[List[ActionSegment]]:
         for attempt in range(MAX_RETRIES):
@@ -228,9 +241,21 @@ class GeminiActionSegmenter:
                         object_name=str(object_name).strip(),
                         hand_used=str(hand_used).strip().lower(),
                         description=str(description).strip(),
+                        caption_source="vlm",
                     )
                 )
-        return segments
+        cleaned: List[ActionSegment] = []
+        for s in segments:
+            if not cleaned:
+                cleaned.append(s)
+            elif (s.end_time - s.start_time) < 0.50:
+                cleaned[-1].end_time = s.end_time
+            else:
+                cleaned.append(s)
+        if len(cleaned) > 1 and (cleaned[0].end_time - cleaned[0].start_time) < 0.50:
+            cleaned[1].start_time = cleaned[0].start_time
+            cleaned.pop(0)
+        return cleaned
         
     def _parse_text_fallback(self, text: str) -> List[ActionSegment]:
         """Parse structured text lines using regex matching fallback."""
@@ -284,6 +309,18 @@ class GeminiActionSegmenter:
                     object_name=object_name,
                     hand_used=hand_used,
                     description=rest,
+                    caption_source="vlm",
                 )
             )
-        return segments
+        cleaned: List[ActionSegment] = []
+        for s in segments:
+            if not cleaned:
+                cleaned.append(s)
+            elif (s.end_time - s.start_time) < 0.50:
+                cleaned[-1].end_time = s.end_time
+            else:
+                cleaned.append(s)
+        if len(cleaned) > 1 and (cleaned[0].end_time - cleaned[0].start_time) < 0.50:
+            cleaned[1].start_time = cleaned[0].start_time
+            cleaned.pop(0)
+        return cleaned

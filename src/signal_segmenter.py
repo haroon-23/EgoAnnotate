@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Signal-based temporal segmentation.
 
 Derives candidate segment boundaries from frame-level contact and grasp signals,
@@ -5,7 +6,6 @@ then labels them using a VLM. Grounds segmentation in real per-frame detections
 rather than guessing from raw video.
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

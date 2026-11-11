@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Empirical verification script for Trajectory Smoothing (Change A) & Metric Scaling (Change B).
 
 Runs retargeting on test_10s and new_video with:
   1. Smoothing OFF vs Smoothing ON: compares IK reachability and joint angle jitter ||q_k - q_{k-1}||.
   2. Metric Calibration: computes estimated scale factor, physical wrist motion range (m), and cumulative travel path.
 """
-from __future__ import annotations
 
 import json
 import numpy as np

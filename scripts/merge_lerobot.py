@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Merge per-episode LeRobot v3 exports into ONE training dataset.
 
@@ -28,11 +29,11 @@ Usage:
     python scripts/merge_lerobot.py --scan data/output -o <out>/merged_lerobot_v3
 """
 
-from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -281,7 +282,10 @@ def merge_lerobot_datasets(
                 raise FileNotFoundError(
                     f"Episode {e['dir']} declares total_videos>0 but {src} is missing")
             dst = videos_root / "chunk-000" / f"file-{v:03d}.mp4"
-            shutil.copy2(src, dst)
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
             video_sizes += dst.stat().st_size
             ep_video_file.append(v)
             v += 1

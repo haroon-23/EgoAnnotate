@@ -1,0 +1,23 @@
+# Nebius Physical AI Workbench (npa) Composable Workflow Specification
+apiVersion: physical-ai.nebius.com/v1alpha1
+kind: PhysicalAIWorkflow
+metadata:
+  name: ego-annotate-wam-production-flywheel
+  namespace: physical-ai-workbench
+spec:
+  sharedDataContract:
+    storageBackend: s3://nebius-physical-ai-datasets/ego_annotate_v3
+    canonicalFps: 30.0
+    formats: [mp4, json, safetensors, urdf, lerobot, mcap]
+  waves:
+    - name: wave-1-egocentric-perception-and-roboverify-qc
+      runtime: local-or-skypilot
+      command: .venv/bin/python scripts/process_new_videos.py
+    - name: wave-2-paidf-cosmos3-world-augmentation
+      runtime: skypilot
+      accelerator: NVIDIA-B200:4
+      image: ghcr.io/nebius/nebius-physical-ai/cosmos-data-factory:v3.0
+    - name: wave-3-isaac-lab-arena-and-wam-training
+      runtime: skypilot
+      accelerator: NVIDIA-H100:8
+      image: ghcr.io/nebius/nebius-physical-ai/groot-wam-trainer:latest

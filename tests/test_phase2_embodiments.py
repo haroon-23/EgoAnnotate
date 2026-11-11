@@ -1,5 +1,5 @@
-"""Phase 2 tests: Persistent Left/Right hand identity and 3-platform Embodiment Layer validation."""
 from __future__ import annotations
+"""Phase 2 tests: Persistent Left/Right hand identity and 3-platform Embodiment Layer validation."""
 
 import numpy as np
 import pytest

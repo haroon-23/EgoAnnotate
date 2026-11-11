@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """ACT CPU smoke-train (Phase B): wiring proof, not a good policy.
 
@@ -17,7 +18,6 @@ Usage:
         [--out runs/smoke]
 """
 
-from __future__ import annotations
 
 import argparse
 import json

@@ -1,5 +1,5 @@
-"""Per-episode camera ego-motion estimation via background sparse optical flow."""
 from __future__ import annotations
+"""Per-episode camera ego-motion estimation via background sparse optical flow."""
 
 from dataclasses import dataclass
 from typing import Any, Dict, List

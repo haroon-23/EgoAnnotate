@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Config-driven retargeting adapters: single arms, dual-arm humanoids, and dexterous hands.
 
 v1.1 Upgrade:
@@ -7,7 +8,6 @@ v1.1 Upgrade:
   - Adaptive multi-substep differential IK (reduces FK tracking residuals by ~70-85%)
   - Zero-phase joint smoothing + velocity/acceleration clamping + 16-step action chunking
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -67,6 +67,7 @@ class EmbodimentEpisodeReport:
     action_chunks_16: np.ndarray
     reachable_mask: np.ndarray
     hardware_audit: HardwareAuditReport
+    target_poses: Optional[Sequence[Tuple[np.ndarray, np.ndarray]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -352,8 +353,12 @@ class Adapter:
 
         med = np.median(np.stack(valid_pts, axis=0), axis=0)
         # Scale excursion around FK home so multi-link humanoids stay well inside their manipulability ellipsoid
-        motion_gain = 0.35 if self.kind == "humanoid" else 0.50
-        max_delta = 0.10 if self.kind == "humanoid" else 0.16
+        if self.name == "unitree_h1_upper":
+            motion_gain = 0.12
+            max_delta = 0.025
+        else:
+            motion_gain = 0.35 if self.kind == "humanoid" else 0.50
+            max_delta = 0.10 if self.kind == "humanoid" else 0.16
 
         aligned: List[Tuple[np.ndarray, np.ndarray]] = []
         for p, q in traj:
@@ -484,6 +489,7 @@ class Adapter:
             action_chunks_16=chunks_16,
             reachable_mask=reach_mask,
             hardware_audit=audit,
+            target_poses=r_bridged,
         )
 
     def retarget_episode(self, annotations_path: str) -> Dict[str, Any]:
@@ -535,6 +541,13 @@ class Adapter:
             for i in range(len(frames))
         ]
 
+        if rep.target_poses is not None:
+            target_ee_pos = np.array([p for p, _ in rep.target_poses], dtype=np.float32)
+            target_ee_quat_xyzw = np.array([q for _, q in rep.target_poses], dtype=np.float32)
+        else:
+            target_ee_pos = np.array([p for p, _ in r_seq], dtype=np.float32)
+            target_ee_quat_xyzw = np.array([q for _, q in r_seq], dtype=np.float32)
+
         return {
             "summary": rep.to_dict(),
             "hardware_audit": rep.hardware_audit.to_dict(),
@@ -544,6 +557,8 @@ class Adapter:
             "action_chunks_16": rep.action_chunks_16,
             "finger_curls": curls_arr,
             "gripper_trajectory": np.array(grips_seq, dtype=np.float32),
+            "target_ee_pos": target_ee_pos,
+            "target_ee_quat_xyzw": target_ee_quat_xyzw,
             "frames": frame_list,
         }
 

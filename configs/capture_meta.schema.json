@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EgoAnnotate Per-Clip Capture & Consent Metadata Sidecar",
+  "type": "object",
+  "required": [
+    "clip_id",
+    "device_id",
+    "mount_type",
+    "lens_mode",
+    "eis_state",
+    "mirrored_input",
+    "consent"
+  ],
+  "properties": {
+    "clip_id": { "type": "string" },
+    "device_id": {
+      "type": "string",
+      "description": "References configs/devices/<device_id>.yaml"
+    },
+    "mount_type": {
+      "type": "string",
+      "enum": ["headband", "chest_mount", "glasses", "tripod_static", "handheld_unknown"]
+    },
+    "lens_mode": {
+      "type": "string",
+      "enum": ["wide_1x", "ultrawide_0.5x", "fisheye", "unknown_recompressed"]
+    },
+    "eis_state": {
+      "type": "string",
+      "enum": ["off", "standard_on", "action_mode", "unknown"]
+    },
+    "mirrored_input": {
+      "type": "boolean",
+      "description": "True if selfie/horizontally mirrored; False for native rear/headband camera."
+    },
+    "imu_path": {
+      "type": ["string", "null"],
+      "description": "Optional path to time-synchronized IMU gyro/accel log (.csv or .json)"
+    },
+    "camera_pose_path": {
+      "type": ["string", "null"],
+      "description": "Optional path to per-frame SLAM/ARKit/ARCore camera-to-world poses"
+    },
+    "consent": {
+      "type": "object",
+      "required": [
+        "consent_id",
+        "collector_id",
+        "collection_date",
+        "purpose",
+        "license",
+        "retention_policy",
+        "dpdp_lawful_basis",
+        "subject_acknowledged"
+      ],
+      "properties": {
+        "consent_id": { "type": "string" },
+        "collector_id": { "type": "string" },
+        "collection_date": { "type": "string" },
+        "purpose": { "type": "string" },
+        "license": { "type": "string" },
+        "retention_policy": { "type": "string" },
+        "dpdp_lawful_basis": { "type": "string" },
+        "subject_acknowledged": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Tests for the human-to-robot kinematic retargeting module.
 
 Tests cover:
@@ -12,7 +13,6 @@ Tests cover:
      low-confidence uses continuous_distance.
   6. End-to-end Retargeter smoke test on minimal synthetic data.
 """
-from __future__ import annotations
 
 import math
 import sys

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Weld-grasp semantics for physics verification (Phase E).
 
 "What weld grasp means" (concrete, given the current representation): today a
@@ -12,7 +13,6 @@ attachment stability* rather than friction luck.
 This module is pure numpy — no heavy dependencies. The MuJoCo weld itself is
 implemented by :mod:`src.retargeting.episode_verifier`.
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field

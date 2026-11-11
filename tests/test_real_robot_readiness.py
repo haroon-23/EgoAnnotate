@@ -1,5 +1,5 @@
-"""Tests for v1.1 Real-Robot Control Filter: minimum-jerk gap bridging, bimanual repulsion, and hardware audit."""
 from __future__ import annotations
+"""Tests for v1.1 Real-Robot Control Filter: minimum-jerk gap bridging, bimanual repulsion, and hardware audit."""
 
 import numpy as np
 from src.retargeting.control_filter import (

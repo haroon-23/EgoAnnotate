@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Swappable metric-depth backends.
 
 Backends
@@ -13,7 +14,6 @@ use :func:`src.perception.pnp_pose.backproject_to_3d` (real intrinsics) or
 :func:`localize_objects_3d` below.
 """
 
-from __future__ import annotations
 
 import logging
 import os

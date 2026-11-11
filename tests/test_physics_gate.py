@@ -74,14 +74,14 @@ def test_gate_disabled_never_touches_verifier(tmp_path):
 def test_gate_pass_sets_label_and_persists(tmp_path):
     p = _pipeline(tmp_path, enabled=True, verifier=FakeVerifier(passed=True))
     ep = _episode()
-    _write_hdf5(Path(p.dataset_exporter.output_path) / "ep001" / "episode_rlds.hdf5")
+    _write_hdf5(Path(p.dataset_exporter.output_path) / "ep001" / "episode_hdf5.h5")
     (Path(p.dataset_exporter.output_path) / "ep001" / "metadata.json").write_text("{}")
     p._maybe_verify_physics(ep)
 
     assert len(p.episode_verifier.calls) == 1
     call = p.episode_verifier.calls[0]
     assert call["episode_id"] == "ep001"
-    assert call["hdf5"].endswith("episode_rlds.hdf5")
+    assert call["hdf5"].endswith("episode_hdf5.h5")
 
     assert ep.physics_verified is True
     assert ep.physics_report_path is not None
@@ -92,14 +92,14 @@ def test_gate_pass_sets_label_and_persists(tmp_path):
         (Path(p.dataset_exporter.output_path) / "ep001" / "metadata.json").read_text())
     assert meta["physics_verified"] is True
     with h5py.File(
-            str(Path(p.dataset_exporter.output_path) / "ep001" / "episode_rlds.hdf5"), "r") as f:
+            str(Path(p.dataset_exporter.output_path) / "ep001" / "episode_hdf5.h5"), "r") as f:
         assert bool(f.attrs["physics_verified"]) is True
 
 
 def test_gate_fail_keeps_episode_and_withholds_label(tmp_path):
     p = _pipeline(tmp_path, enabled=True, verifier=FakeVerifier(passed=False))
     ep = _episode()
-    _write_hdf5(Path(p.dataset_exporter.output_path) / "ep001" / "episode_rlds.hdf5")
+    _write_hdf5(Path(p.dataset_exporter.output_path) / "ep001" / "episode_hdf5.h5")
     p._maybe_verify_physics(ep)  # must not raise: the gate never drops episodes
 
     assert ep.physics_verified is False
@@ -131,7 +131,7 @@ def test_persist_physics_verification_real_exporter(tmp_path):
     ep_dir = Path(exp.output_path) / "ep001"
     ep_dir.mkdir(parents=True)
     (ep_dir / "metadata.json").write_text(json.dumps({"episode_id": "ep001"}))
-    _write_hdf5(ep_dir / "episode_rlds.hdf5")
+    _write_hdf5(ep_dir / "episode_hdf5.h5")
 
     ep = _episode()
     ep.physics_verified = True
@@ -141,7 +141,7 @@ def test_persist_physics_verification_real_exporter(tmp_path):
     meta = json.loads((ep_dir / "metadata.json").read_text())
     assert meta["physics_verified"] is True
     assert meta["physics_report_path"] == str(ep_dir / "physics_verification.json")
-    with h5py.File(str(ep_dir / "episode_rlds.hdf5"), "r") as f:
+    with h5py.File(str(ep_dir / "episode_hdf5.h5"), "r") as f:
         assert bool(f.attrs["physics_verified"]) is True
         assert f.attrs["physics_report_path"] == str(ep_dir / "physics_verification.json")
 

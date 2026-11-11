@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Dataclass definitions for the ego_annotate_vla_pipeline.
 
 All annotation data structures used across the pipeline — from per-frame
@@ -5,7 +6,6 @@ hand landmarks and object detections through to full annotated episodes
 ready for VLA model training.
 """
 
-from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
@@ -38,6 +38,7 @@ class HandLandmarks:
     confidence: float
     handedness: str
     is_interpolated: bool = False
+    source: str = "detected"  # "detected" | "interpolated" | "held" | "rescued"
 
     # -- helper constants ---------------------------------------------------
     # MediaPipe hand landmark indices for each fingertip.
@@ -72,21 +73,26 @@ class HandLandmarks:
             "x": self.x.tolist(),
             "y": self.y.tolist(),
             "z": self.z.tolist(),
-            "confidence": self.confidence,
+            "confidence": round(float(self.confidence), 4),
             "handedness": self.handedness,
-            "is_interpolated": self.is_interpolated,
+            "is_interpolated": bool(self.is_interpolated or self.source == "interpolated"),
+            "source": str(self.source),
+            "landmarks": [{"x": float(self.x[i]), "y": float(self.y[i]), "z": float(self.z[i])} for i in range(len(self.x))],
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> HandLandmarks:
         """Reconstruct from a dictionary produced by :meth:`to_dict`."""
+        is_interp = bool(data.get("is_interpolated", False))
+        src = str(data.get("source", "interpolated" if is_interp else "detected"))
         return cls(
             x=np.asarray(data["x"], dtype=np.float32),
             y=np.asarray(data["y"], dtype=np.float32),
             z=np.asarray(data["z"], dtype=np.float32),
-            confidence=float(data["confidence"]),
-            handedness=str(data["handedness"]),
-            is_interpolated=bool(data.get("is_interpolated", False)),
+            confidence=float(data.get("confidence", 0.8)),
+            handedness=str(data.get("handedness", "Right")),
+            is_interpolated=is_interp or (src == "interpolated"),
+            source=src,
         )
 
 
@@ -370,9 +376,9 @@ class AnnotationFrame:
     def from_dict(cls, data: Dict[str, Any]) -> AnnotationFrame:
         """Reconstruct from a dictionary produced by :meth:`to_dict`."""
         return cls(
-            frame_idx=int(data["frame_idx"]),
-            timestamp=float(data["timestamp"]),
-            image_path=str(data["image_path"]),
+            frame_idx=int(data.get("frame_idx", 0)),
+            timestamp=float(data.get("timestamp", 0.0)),
+            image_path=str(data.get("image_path", "")),
             left_hand=(
                 HandLandmarks.from_dict(data["left_hand"])
                 if data.get("left_hand")
@@ -487,6 +493,7 @@ class ActionSegment:
     hand_used: str
     description: str = ""
     hands: List[str] = field(default_factory=lambda: ["right"])
+    caption_source: str = "template"
 
     @property
     def duration(self) -> float:
@@ -503,6 +510,7 @@ class ActionSegment:
             "hand_used": self.hand_used,
             "hands": self.hands,
             "description": self.description,
+            "caption_source": self.caption_source,
         }
 
     @classmethod
@@ -520,6 +528,7 @@ class ActionSegment:
             hand_used=str(data.get("hand_used", "both" if len(hands_val) == 2 else hands_val[0])),
             description=str(data.get("description", "")),
             hands=list(hands_val),
+            caption_source=str(data.get("caption_source", "template")),
         )
 
 
@@ -582,19 +591,19 @@ class AnnotatedEpisode:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AnnotatedEpisode:
         """Reconstruct from a dictionary produced by :meth:`to_dict`."""
+        meta = data.get("metadata", {}) if isinstance(data.get("metadata"), dict) else {}
+        frames_list = [AnnotationFrame.from_dict(f) for f in data.get("frames", [])]
         return cls(
-            episode_id=str(data["episode_id"]),
-            video_path=str(data["video_path"]),
-            task_description=str(data["task_description"]),
-            frames=[
-                AnnotationFrame.from_dict(f) for f in data.get("frames", [])
-            ],
+            episode_id=str(data.get("episode_id", meta.get("episode_id", "unknown_episode"))),
+            video_path=str(data.get("video_path", meta.get("video_path", ""))),
+            task_description=str(data.get("task_description", meta.get("task_description", ""))),
+            frames=frames_list,
             segments=[
                 ActionSegment.from_dict(s) for s in data.get("segments", [])
             ],
-            num_frames=int(data["num_frames"]),
-            duration_seconds=float(data["duration_seconds"]),
-            target_robot=str(data.get("target_robot", "humanoid_generic")),
+            num_frames=int(data.get("num_frames", meta.get("num_frames", len(frames_list)))),
+            duration_seconds=float(data.get("duration_seconds", meta.get("duration_seconds", max(0.0, (len(frames_list) - 1) / 30.0)))),
+            target_robot=str(data.get("target_robot", meta.get("target_robot", "humanoid_generic"))),
             camera_motion_flag=bool(data.get("camera_motion_flag", False)),
             camera_motion_px_per_sec=float(data.get("camera_motion_px_per_sec", 0.0)),
             physics_verified=bool(data.get("physics_verified", False)),

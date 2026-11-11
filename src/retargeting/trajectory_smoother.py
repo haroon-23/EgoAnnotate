@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Trajectory smoothing for wrist target poses before Inverse Kinematics.
 
 Applies Savitzky-Golay filtering to 3D position trajectories and rotation vector
@@ -13,7 +14,6 @@ RATIONALE FOR DEFAULT PARAMETERS (window_length=9, polyorder=2):
     before filtering, then converted back and normalized. This avoids quaternion sign
     flipping (q == -q ambiguity) and norm degradation associated with naive component filtering.
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

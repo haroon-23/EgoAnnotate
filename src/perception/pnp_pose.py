@@ -1,3 +1,4 @@
+from __future__ import annotations
 """PnP pose refinement and pinhole back-projection (pure cv2 + numpy).
 
 No heavyweight dependencies: everything here runs on the CPU-only 2017 Intel
@@ -11,7 +12,6 @@ Failure contract for :func:`solve_pnp_pose`
   silent garbage. A warning is logged.
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """mink-based IK backend for the retargeter (Phase E, opt-in).
 
 Wraps the ``mink`` library (MuJoCo-native differential IK, pip-installable,
@@ -33,7 +34,6 @@ fallbacks).
 
 All mink/mujoco imports are lazy: importing this module never raises.
 """
-from __future__ import annotations
 
 import logging
 import time

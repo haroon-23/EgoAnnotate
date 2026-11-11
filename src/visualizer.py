@@ -1,5 +1,5 @@
-"""Resolution-adaptive Egocentric HUD and Multi-Object Segmentation Overlay."""
 from __future__ import annotations
+"""Resolution-adaptive Egocentric HUD and Multi-Object Segmentation Overlay."""
 
 import os
 import subprocess
@@ -389,6 +389,27 @@ class EgoVisualizer:
         self._draw_panels(img, frame, w, h, episode)
         self._draw_ik_status(img, frame, episode, w, h)
         self.draw_segment_timeline(img, frame.frame_idx, episode.segments, 30.0, total_frames)
+
+        canvas = img
+        frame_data = frame
+        # Draw VRB Contact Affordance POI Reticle & EgoMimic End-Effector Direction Vector
+        for h_ct, h_lm in ((frame_data.left_contact, frame_data.left_hand), (frame_data.right_contact, frame_data.right_hand)):
+            if h_lm is not None:
+                wx_px = int(round(float(h_lm.x[0]) * w))
+                wy_px = int(round(float(h_lm.y[0]) * h))
+                hx_px = int(round(0.5 * (float(h_lm.x[4]) + float(h_lm.x[8])) * w))
+                hy_px = int(round(0.5 * (float(h_lm.y[4]) + float(h_lm.y[8])) * h))
+                # EgoMimic embodiment-agnostic end-effector direction ray (wrist -> pinch center)
+                cv2.arrowedLine(canvas, (wx_px, wy_px), (hx_px, hy_px), (60, 80, 255), 2, cv2.LINE_AA, tipLength=0.18)
+                if h_ct is not None and getattr(h_ct, "in_contact", False):
+                    r_ret = max(8, int(round(min(w, h) * 0.018)))
+                    cv2.circle(canvas, (hx_px, hy_px), r_ret, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.circle(canvas, (hx_px, hy_px), 3, (0, 60, 255), -1, cv2.LINE_AA)
+                    cv2.putText(
+                        canvas, "CONTACT POI", (hx_px + r_ret + 4, hy_px + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, max(0.32, min(w, h) / 1400.0), (0, 255, 255), 1, cv2.LINE_AA
+                    )
+
         return img
 
 
@@ -404,14 +425,25 @@ def render_annotated_video(
     final_path = Path(output_path)
     write_target = final_path.with_suffix(".tmp.mp4") if atomic else final_path
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+    cap = cv2.VideoCapture(str(video_path)) if video_path else None
+    if cap is not None and not cap.isOpened():
+        cap.release()
+        cap = None
 
-    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    orig_fps = float(cap.get(cv2.CAP_PROP_FPS) or fps)
-    orig_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or len(episode.frames))
+    if cap is not None:
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        orig_fps = float(cap.get(cv2.CAP_PROP_FPS) or fps)
+        orig_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or len(episode.frames))
+    else:
+        orig_w, orig_h = 224, 224
+        if episode.frames and episode.frames[0].image_path:
+            first_img = cv2.imread(episode.frames[0].image_path)
+            if first_img is not None:
+                orig_h, orig_w = first_img.shape[:2]
+        orig_fps = fps
+        orig_total = len(episode.frames)
+
     total_frames = len(episode.frames)
 
     # Calculate true episode FPS from episode timestamps so duration matches 100%
@@ -419,56 +451,87 @@ def render_annotated_video(
     out_fps = float(total_frames / max(ep_dur, 0.1)) if ep_dur > 0 else 30.0
     out_fps = float(np.clip(round(out_fps, 2), 10.0, 60.0))
 
+    ffmpeg_proc = None
+    writer = None
     raw_tmp_path = write_target.with_name(write_target.stem + "_raw.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, out_fps, (orig_w, orig_h))
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError(f"Failed to create video writer for {raw_tmp_path}")
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+            "-s", f"{orig_w}x{orig_h}", "-pix_fmt", "bgr24", "-r", f"{out_fps:.2f}",
+            "-i", "-", "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
+            "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-movflags", "+faststart",
+            "-preset", "veryfast", "-crf", "23", "-loglevel", "error", str(write_target),
+        ]
+        ffmpeg_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        ffmpeg_proc = None
 
+    if ffmpeg_proc is None or ffmpeg_proc.stdin is None:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(raw_tmp_path), fourcc, out_fps, (orig_w, orig_h))
+        if not writer.isOpened():
+            if cap is not None:
+                cap.release()
+            raise RuntimeError(f"Failed to create video writer for {raw_tmp_path}")
+
+    from .privacy import FacePrivacyTracker, strip_audio_from_mp4
+    privacy_tracker = FacePrivacyTracker()
     try:
         cur_raw_idx = 0
         for idx, ep_frame in enumerate(episode.frames):
-            # Map ep_frame.timestamp to exact native video frame index (handles 60fps -> 30fps cleanly!)
-            target_raw_idx = int(round(float(ep_frame.timestamp) * orig_fps))
-            target_raw_idx = max(0, min(orig_total - 1, target_raw_idx))
-            while cur_raw_idx < target_raw_idx:
-                cap.grab()
+            orig_frame = None
+            if cap is not None:
+                # Map ep_frame.timestamp to exact native video frame index (handles 60fps -> 30fps cleanly!)
+                target_raw_idx = int(round(float(ep_frame.timestamp) * orig_fps))
+                target_raw_idx = max(0, min(orig_total - 1, target_raw_idx))
+                while cur_raw_idx < target_raw_idx:
+                    cap.grab()
+                    cur_raw_idx += 1
+                ret, orig_frame = cap.read()
                 cur_raw_idx += 1
-            ret, orig_frame = cap.read()
-            cur_raw_idx += 1
 
-            if not ret or orig_frame is None:
+            if orig_frame is None:
                 if ep_frame.image_path and Path(ep_frame.image_path).exists():
                     orig_frame = cv2.imread(ep_frame.image_path)
+                else:
+                    orig_frame = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
             if orig_frame is None:
                 continue
-            if orig_frame.shape[1] != orig_w or orig_frame.shape[0] != orig_h:
-                orig_frame = cv2.resize(orig_frame, (orig_w, orig_h))
+            orig_frame, _, _ = privacy_tracker.process_frame(orig_frame)
 
             rendered = visualizer._render_frame_with_all_overlays(
                 orig_frame, ep_frame, episode, total_frames
             )
-            writer.write(rendered)
+            if ffmpeg_proc is not None and ffmpeg_proc.stdin is not None:
+                ffmpeg_proc.stdin.write(rendered.tobytes())
+            elif writer is not None:
+                writer.write(rendered)
     finally:
-        cap.release()
-        writer.release()
+        if cap is not None:
+            cap.release()
+        if ffmpeg_proc is not None:
+            if ffmpeg_proc.stdin is not None:
+                ffmpeg_proc.stdin.close()
+            ffmpeg_proc.wait()
+        if writer is not None:
+            writer.release()
 
-    try:
-        cmd = [
-            "ffmpeg", "-y", "-i", str(raw_tmp_path),
-            "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
-            "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-movflags", "+faststart",
-            "-loglevel", "error", str(write_target),
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res.returncode == 0 and write_target.exists():
-            raw_tmp_path.unlink(missing_ok=True)
-        elif raw_tmp_path.exists():
-            raw_tmp_path.replace(write_target)
-    except Exception:
-        if raw_tmp_path.exists():
-            raw_tmp_path.replace(write_target)
+    if writer is not None and raw_tmp_path.exists():
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(raw_tmp_path),
+                "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
+                "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-movflags", "+faststart",
+                "-loglevel", "error", str(write_target),
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode == 0 and write_target.exists():
+                raw_tmp_path.unlink(missing_ok=True)
+            elif raw_tmp_path.exists():
+                raw_tmp_path.replace(write_target)
+        except Exception:
+            if raw_tmp_path.exists():
+                raw_tmp_path.replace(write_target)
 
     if atomic:
         if write_target.exists():
@@ -476,5 +539,63 @@ def render_annotated_video(
         else:
             raise RuntimeError(f"Atomic overlay rendering failed: {write_target}")
 
+    strip_audio_from_mp4(final_path)
     print(f"[Visualizer] Saved full-res overlay video: {final_path}")
     return final_path
+
+
+class _FastFFmpegVideoWriter:
+    """Single-pass direct FFmpeg H.264 stdin pipe writer (eliminates 2-pass disk I/O bottleneck)."""
+    def __init__(self, output_path: str, width: int, height: int, fps: float) -> None:
+        import shutil, subprocess
+        self.output_path = str(output_path)
+        self.width = int(width) if int(width) % 2 == 0 else int(width) - 1
+        self.height = int(height) if int(height) % 2 == 0 else int(height) - 1
+        ffmpeg_bin = shutil.which("ffmpeg")
+        self._proc = None
+        self._fallback = None
+        if ffmpeg_bin:
+            cmd = [
+                ffmpeg_bin, "-y", "-loglevel", "error",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{self.width}x{self.height}", "-pix_fmt", "bgr24",
+                "-r", f"{fps:.2f}", "-i", "-",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                self.output_path,
+            ]
+            try:
+                self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            except Exception:
+                self._proc = None
+        if self._proc is None:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self._fallback = cv2.VideoWriter(self.output_path, fourcc, fps, (self.width, self.height))
+
+    def isOpened(self) -> bool:
+        return (self._proc is not None) or (self._fallback is not None and self._fallback.isOpened())
+
+    def write(self, frame_bgr: np.ndarray) -> None:
+        if frame_bgr.shape[1] != self.width or frame_bgr.shape[0] != self.height:
+            frame_bgr = cv2.resize(frame_bgr, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        if self._proc is not None and self._proc.stdin is not None:
+            try:
+                self._proc.stdin.write(frame_bgr.tobytes())
+                return
+            except Exception:
+                pass
+        if self._fallback is not None:
+            self._fallback.write(frame_bgr)
+
+    def release(self) -> None:
+        if self._proc is not None:
+            try:
+                if self._proc.stdin:
+                    self._proc.stdin.close()
+                self._proc.wait(timeout=60)
+            except Exception:
+                pass
+            self._proc = None
+        if self._fallback is not None:
+            self._fallback.release()
+            self._fallback = None

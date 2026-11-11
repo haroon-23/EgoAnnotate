@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Shared Gemini client helpers (google-genai SDK).
 
 The legacy ``google-generativeai`` package is deprecated and its 1.5-era
@@ -12,7 +13,6 @@ Verified against google-genai 2.25.0:
   - types.Part.from_bytes(data=..., mime_type=...) for images
   - File.state is a FileState enum (PROCESSING / ACTIVE / FAILED)
 """
-from __future__ import annotations
 
 import io
 import logging
@@ -87,13 +87,26 @@ def create_client(api_key: Optional[str] = None, timeout_s: float = 120.0):
 def pil_to_part(pil_image):
     """Encode a PIL image as a JPEG-bytes Part for the new SDK.
 
-    The old SDK accepted PIL images directly in ``contents``; the new one
-    requires explicit bytes, so we convert once here.
+    Ensures any faces in the image are redacted/blurred before transmission to Gemini.
     """
-    buf = io.BytesIO()
     img = pil_image.convert("RGB") if pil_image.mode != "RGB" else pil_image
+    try:
+        from .privacy import blur_faces_in_frame
+        import numpy as np
+        import cv2
+        from PIL import Image
+        rgb_arr = np.array(img)
+        bgr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
+        blurred_bgr, _ = blur_faces_in_frame(bgr)
+        blurred_rgb = cv2.cvtColor(blurred_bgr, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(blurred_rgb)
+    except Exception:
+        pass
+
+    buf = io.BytesIO()
     img.save(buf, format="JPEG")
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
+
 
 
 # ---------------------------------------------------------------------------

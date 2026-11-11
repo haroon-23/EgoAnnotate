@@ -1,9 +1,9 @@
+from __future__ import annotations
 """Zero-dependency spec-compliant MCAP v0 exporter for EgoAnnotate episodes.
 
 Writes standard MCAP v0 files (\x89MCAP0\r\n magic bytes) readable by Foxglove Studio
 and mcap CLI tools, separating embodiment-agnostic /human/* topics from /robot/* topics.
 """
-from __future__ import annotations
 
 import json
 import os

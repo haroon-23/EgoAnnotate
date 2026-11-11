@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Unified 2D object-detection interface with swappable backends.
 
 Backends
@@ -27,7 +28,6 @@ optional dependencies. Factories return ``None`` instead of raising when a
 backend cannot be built.
 """
 
-from __future__ import annotations
 
 import logging
 import os
@@ -484,11 +484,11 @@ class GroundingDinoDetector(Detector2D):
         for p in prompts:
             if p.lower().strip() == pl:
                 return p
-        best, best_score = phrase, 0.5
+        best, best_sim = phrase, 0.5
         for p in prompts:
-            s = SequenceMatcher(None, pl, p.lower().strip()).ratio()
-            if s > best_score:
-                best, best_score = p, s
+            sim = SequenceMatcher(None, pl, p.lower().strip()).ratio()
+            if sim > best_sim:
+                best, best_sim = p, sim
         return best
 
     @staticmethod

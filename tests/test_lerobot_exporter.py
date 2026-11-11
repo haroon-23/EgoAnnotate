@@ -23,9 +23,9 @@ from src.lerobot_exporter import (
 def _make_episode(ep_dir: Path, episode_id: str, n_frames: int = 4,
                   with_robot: bool = False, video_path: str | None = None,
                   target_robot: str | None = None):
-    """Build a synthetic episode dir: episode_rlds.hdf5 + metadata.json."""
+    """Build a synthetic episode dir: episode_hdf5.h5 + metadata.json."""
     rng = np.random.default_rng(0)
-    with h5py.File(ep_dir / "episode_rlds.hdf5", "w") as f:
+    with h5py.File(ep_dir / "episode_hdf5.h5", "w") as f:
         ep_grp = f.create_group(episode_id)
         steps_grp = ep_grp.create_group("steps")
         obs_grp = steps_grp.create_group("observation")
@@ -66,6 +66,19 @@ def _make_episode(ep_dir: Path, episode_id: str, n_frames: int = 4,
         meta["target_robot"] = target_robot
     with open(ep_dir / "metadata.json", "w") as f:
         json.dump(meta, f)
+
+    consent_doc = {
+        "consent_id": f"TEST-CONSENT-{episode_id}",
+        "collector_id": "TEST-COLLECTOR",
+        "collection_date": "2026-11-09T00:00:00Z",
+        "purpose": "unit_tests",
+        "license": "test_license",
+        "retention_policy": "immediate_deletion",
+        "dpdp_lawful_basis": "informed_consent",
+        "subject_acknowledged": True,
+    }
+    with open(ep_dir / "consent_manifest.json", "w") as f:
+        json.dump(consent_doc, f)
 
 
 def _make_mp4(path: Path, n_frames: int = 4, w: int = 64, h: int = 48, fps: float = 10.0):
@@ -110,8 +123,8 @@ class TestLeRobotExporter(unittest.TestCase):
             with open(ep_dir / "metadata.json", "w") as f:
                 json.dump({"episode_id": episode_id, "task_description": "test task"}, f)
 
-            # 2. Create mock episode_rlds.hdf5
-            hdf5_path = ep_dir / "episode_rlds.hdf5"
+            # 2. Create mock episode_hdf5.h5
+            hdf5_path = ep_dir / "episode_hdf5.h5"
             with h5py.File(hdf5_path, "w") as f:
                 ep_grp = f.create_group(episode_id)
                 steps_grp = ep_grp.create_group("steps")

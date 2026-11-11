@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Phase-C perception subpackage: 2D detection, metric depth, SAM 2 masks, PnP pose.
 
 Heavy third-party backends (Grounding DINO, UniDepth ONNX, SAM 2) are imported
@@ -10,7 +11,6 @@ Box convention everywhere in this subpackage is **normalized [0, 1] xyxy**,
 matching :class:`src.datatypes.ObjectAnnotation`.
 """
 
-from __future__ import annotations
 
 import importlib
 from typing import Any

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Regression tests for the 2026-10-03 real-verification failure.
 
 Episode ``whatsapp_video`` (729 frames) failed the physics gate:
@@ -19,7 +20,6 @@ Root causes fixed here:
      gap the sim resumed from a stale pose. The sim is now placed at the
      commanded pose at each reachable segment start.
 """
-from __future__ import annotations
 
 import sys
 import types

@@ -1,0 +1,21 @@
+# Pluggable Perception & Retargeting Backend Registry (Rule R4 Statuses)
+hand_pose_backend:
+  active: mediapipe_baseline
+  mediapipe_baseline:
+    status: REAL
+    frame: camera
+    scale_source: assumed_palm_85mm
+    is_metric: false
+  hamer_wilor_optional:
+    status: NOT VERIFIED
+camera_pose_backend:
+  active: klt_homography_2d
+  klt_homography_2d:
+    status: PARTIAL
+  droid_slam_optional:
+    status: NOT VERIFIED
+retargeting_backend:
+  franka_panda_7dof:
+    status: REAL
+  humanoid_and_dexterous:
+    status: EXPERIMENTAL

@@ -1,0 +1,15 @@
+device_id: wide_fisheye_actioncam
+calibrated: false
+distortion_model: fisheye
+scale_source: assumed
+source: assumed
+is_metric: false
+image_width: 1920
+image_height: 1080
+intrinsics:
+  fx: 985.42
+  fy: 986.15
+  cx: 962.30
+  cy: 538.75
+  dist_coeffs: [-0.0425, 0.0152, -0.0084, 0.0021]
+fov_degrees: 122.5

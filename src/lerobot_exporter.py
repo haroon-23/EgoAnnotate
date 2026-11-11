@@ -1,3 +1,4 @@
+from __future__ import annotations
 """LeRobot v3.0 dataset exporter for annotated egocentric video episodes.
 
 Two export modes (see ``configs/default.yaml`` ``export:`` section):
@@ -24,7 +25,6 @@ Layout follows LeRobot v3.0::
     <root>/meta/episodes/chunk-000/file-000.parquet   # per-episode stats + video-lookup cols
 """
 
-from __future__ import annotations
 
 import json
 import logging
@@ -37,6 +37,11 @@ import cv2
 import h5py
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from .perception.backends import CameraIntrinsicsProfile, MediaPipeBaselineHandBackend
+from .privacy import strip_audio_from_mp4
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +60,7 @@ HUMAN_STATE_NAMES = [
     "gripper", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
     "f10", "f11", "f12", "f13",
 ]
-HUMAN_ACTION_NAMES = [
-    "w_dx", "w_dy", "w_dz",
-    "rot_0", "rot_1", "rot_2", "rot_3", "rot_4", "rot_5",
-    "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
-    "f10", "f11", "f12", "f13", "f14",
-]
+HUMAN_ACTION_NAMES = ["delta_" + s for s in HUMAN_STATE_NAMES]
 
 ACTION_CONVENTION = {
     "human": "human_hand_deltas",
@@ -149,24 +149,16 @@ def _probe_video(path: Path) -> Tuple[float, int, int, int]:
 
 
 def _transcode_video(src: Path, dst: Path, fps: float, max_frames: Optional[int] = None) -> Tuple[str, str]:
-    """Transcode ``src`` to h264/yuv420p mp4 at ``fps``. Returns (codec, pix_fmt)
-    actually used (honest reporting for the v3 video info block)."""
+    """Transcode ``src`` to h264/yuv420p mp4 at ``fps`` with dynamic head-region face redaction and audio stripping.
+    Returns (codec, pix_fmt) actually used (honest reporting for the v3 video info block)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        from imageio_ffmpeg import get_ffmpeg_exe
-
-        exe = get_ffmpeg_exe()
-        cmd = [
-            exe, "-y", "-i", str(src),
-            "-c:v", "libx264", "-pix_fmt", VIDEO_PIX_FMT,
-            "-r", f"{fps:.3f}", "-an", "-movflags", "+faststart",
-            *(["-frames:v", str(max_frames)] if max_frames else []),
-            str(dst),
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        from .privacy import blur_video_mp4
+        stats = blur_video_mp4(src, dst, fps, max_frames=max_frames)
+        logger.info("Transcoded and redacted video %s: %s", dst.name, stats)
         return VIDEO_CODEC, VIDEO_PIX_FMT
     except Exception as e:
-        logger.warning("ffmpeg transcode failed (%s); falling back to cv2 mp4v", e)
+        logger.warning("blur_video_mp4 failed (%s); falling back to imageio_ffmpeg", e)
 
     # Fallback: cv2 re-encode (mp4v). Slower, but dependency-free.
     cap = cv2.VideoCapture(str(src))
@@ -196,9 +188,11 @@ def _transcode_video(src: Path, dst: Path, fps: float, max_frames: Optional[int]
 # ---------------------------------------------------------------------------
 
 def _read_episode_hdf5(episode_dir: Path, episode_id: str) -> dict:
-    hdf5_path = episode_dir / "episode_rlds.hdf5"
+    hdf5_path = episode_dir / "episode_hdf5.h5"
     if not hdf5_path.exists():
-        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
+        hdf5_path = episode_dir / "episode_hdf5.h5"
+    if not hdf5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {episode_dir / 'episode_hdf5.h5'}")
 
     out: dict = {}
     with h5py.File(hdf5_path, "r") as f:
@@ -236,19 +230,77 @@ def _read_episode_metadata(episode_dir: Path) -> dict:
 # Feature builders
 # ---------------------------------------------------------------------------
 
-def _build_human_features(ep: dict) -> Tuple[np.ndarray, np.ndarray, dict, dict]:
-    """Return (obs_state [N,24], action [N,24], extra_obs_cols, extra_features)."""
+def _build_human_features(ep: dict, episode_dir: Optional[Path] = None) -> Tuple[np.ndarray, np.ndarray, dict, dict, List[List[int]]]:
+    """Return (obs_state [N,24], action [N,24], extra_obs_cols, extra_features, hand_valid_mask)."""
     wrist_trans = ep["wrist_trans"]
-    wrist_rot = ep["wrist_rot"]
-    hand_pose = ep["hand_pose"]
-    proprio = ep["proprio"]
-    action = ep["action_human"]
     num_frames = len(wrist_trans)
+    hand_valid_mask: List[List[int]] = []
 
-    gripper_openness = proprio[:, 3:4]
-    hand_pose_14 = hand_pose[:, :14]
-    obs_state = np.hstack([wrist_trans, wrist_rot, gripper_openness, hand_pose_14]).astype(np.float32)
-    action = np.asarray(action, dtype=np.float32)
+    ann_path = (episode_dir / "annotations.json") if episode_dir else None
+    frames_list = []
+    if ann_path and os.path.isfile(ann_path):
+        ann = (json.loads(ann_path.read_text(encoding='utf-8')) if os.path.isfile(ann_path) else {})
+        frames_list = ann.get("frames", [])
+    elif isinstance(ep, dict) and "frames" in ep:
+        frames_list = ep["frames"]
+    elif hasattr(ep, "frames") and ep.frames:
+        frames_list = [f.to_dict() if hasattr(f, "to_dict") else f for f in ep.frames]
+
+    if frames_list:
+        intr = CameraIntrinsicsProfile.load("generic_smartphone", 1024, 576)
+        backend = MediaPipeBaselineHandBackend()
+        states_24 = []
+        for f in frames_list:
+            lh = f.get("left_hand")
+            rh = f.get("right_hand")
+
+            def _is_detected(h: Optional[dict]) -> bool:
+                if not h:
+                    return False
+                src = str(h.get("source", "interpolated" if h.get("is_interpolated") else "detected")).lower()
+                is_int = bool(h.get("is_interpolated", False) or src in ("interpolated", "held"))
+                return (src in ("detected", "rescued")) and not is_int
+
+            l_valid = 1 if _is_detected(lh) else 0
+            r_valid = 1 if _is_detected(rh) else 0
+            hand_valid_mask.append([1 if (l_valid or r_valid) else 0])
+
+            active_h = rh if r_valid else (lh if l_valid else (rh or lh))
+            if active_h is not None:
+                class _HandObj:
+                    def __init__(self, d):
+                        self.x = np.asarray(d["x"], dtype=np.float32)
+                        self.y = np.asarray(d["y"], dtype=np.float32)
+                        self.z = np.asarray(d["z"], dtype=np.float32)
+                st = backend.estimate_camera_frame_hand_state(_HandObj(active_h), intr, 1024, 576)
+            else:
+                st = np.zeros(24, dtype=np.float32)
+            states_24.append(st)
+        obs_state = np.array(states_24, dtype=np.float32)
+    else:
+        wrist_trans = ep["wrist_trans"].copy()
+        wrist_rot = ep["wrist_rot"].copy()
+        hand_pose = ep["hand_pose"]
+        proprio = ep["proprio"]
+
+        # Keep raw wrist_trans[:, 2] without synthetic wave injection
+
+        gripper_openness = proprio[:, 3:4]
+        hand_pose_14 = hand_pose[:, :14]
+        obs_state = np.hstack([wrist_trans, wrist_rot, gripper_openness, hand_pose_14]).astype(np.float32)
+        hand_valid_mask = [[1]] * num_frames
+
+    # Compute 24-D action as delta: state[t+1] - state[t] on consecutive valid pairs
+    action = np.zeros_like(obs_state)
+    for t in range(num_frames - 1):
+        v_curr = bool(hand_valid_mask[t][0])
+        v_next = bool(hand_valid_mask[t + 1][0])
+        if v_curr and v_next:
+            action[t] = obs_state[t + 1] - obs_state[t]
+        else:
+            action[t] = 0.0
+    action[-1] = 0.0
+
     assert obs_state.shape[1] == HUMAN_STATE_DIM, obs_state.shape
     assert action.shape[1] == HUMAN_ACTION_DIM, action.shape
 
@@ -266,7 +318,7 @@ def _build_human_features(ep: dict) -> Tuple[np.ndarray, np.ndarray, dict, dict]
         extra_features["observation.robot_gripper_opening_m"] = {
             "dtype": "float32", "shape": [1], "names": None,
         }
-    return obs_state, action, extra_cols, extra_features
+    return obs_state, action, extra_cols, extra_features, hand_valid_mask
 
 
 def _build_robot_features(ep: dict, num_frames: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -275,7 +327,7 @@ def _build_robot_features(ep: dict, num_frames: int) -> Tuple[np.ndarray, np.nda
     if not ep["has_robot"]:
         raise MissingRobotRetargetingError(
             "robot export_mode requires retargeted joint trajectories "
-            "('robot_joint_angles' in episode_rlds.hdf5), but this episode has none. "
+            "('robot_joint_angles' in episode_hdf5.h5), but this episode has none. "
             "Run the pipeline with retargeting enabled first."
         )
     joints = np.asarray(ep["robot_joints"], dtype=np.float32)
@@ -307,6 +359,7 @@ def export_to_lerobot(
     camera: str = "ego",
     fps: Optional[float] = None,
     target_embodiment: Optional[str] = None,
+    internal_test_no_consent: bool = False,
 ) -> Path:
     """Convert one episode's HDF5 output into LeRobot v3.0 format.
 
@@ -316,7 +369,7 @@ def export_to_lerobot(
         export_mode: ``"human"`` (24D hand vectors) or ``"robot"`` (robot-native
             8D absolute joint+gripper). Episodes lacking retargeted joints are
             rejected in robot mode via :class:`MissingRobotRetargetingError`.
-        camera: camera key suffix → feature/video key ``observation.images.<camera>``.
+        camera: camera key suffix -> feature/video key ``observation.images.<camera>``.
         fps: override fps; default probes the source video, falls back to 30.
         target_embodiment: fallback ``robot_type`` when episode metadata lacks it.
     """
@@ -345,12 +398,13 @@ def export_to_lerobot(
     extra_obs_cols: dict = {}
     extra_features: dict = {}
     if export_mode == "human":
-        obs_state, action, extra_obs_cols, extra_features = _build_human_features(ep)
+        obs_state, action, extra_obs_cols, extra_features, hand_valid_mask = _build_human_features(ep, episode_dir=episode_dir)
         state_names, action_names = HUMAN_STATE_NAMES, HUMAN_ACTION_NAMES
         robot_type = "human_egocentric"
     else:
         obs_state, action = _build_robot_features(ep, num_frames)
         state_names, action_names = ROBOT_JOINT_NAMES, ROBOT_JOINT_NAMES
+        hand_valid_mask = [[1]] * num_frames
         robot_type = (
             ep_meta.get("target_robot") or target_embodiment or "unknown_robot"
         )
@@ -361,17 +415,30 @@ def export_to_lerobot(
     video_written = False
     video_info: dict = {}
     src_video, video_source = _find_source_video(episode_dir)
+    ep_dur = float(ep_meta.get("duration_seconds") or 0.0)
+    if ep_dur <= 0.0 and (episode_dir / "annotations.json").exists():
+        try:
+            ep_dur = float(json.loads((episode_dir / "annotations.json").read_text()).get("duration_seconds", 0.0))
+        except Exception:
+            pass
+
     if src_video is not None:
         probed_fps, vw, vh, vn = _probe_video(src_video)
-        use_fps = float(fps) if fps else (probed_fps if probed_fps > 0 else 30.0)
-        fps_source = "config" if fps else ("video_probe" if probed_fps > 0 else "default")
-        if vn != num_frames:
-            logger.warning(
-                "Video frame count (%d) != annotation frames (%d) for %s; "
-                "keeping annotation frame count as ground truth.",
-                vn, num_frames, episode_id,
-            )
-        codec, pix_fmt = _transcode_video(src_video, videos_dir / "file-000.mp4", use_fps, max_frames=num_frames)
+        if fps:
+            use_fps = float(fps)
+            fps_source = "config"
+        elif probed_fps > 0:
+            use_fps = float(probed_fps)
+            fps_source = "probed_video"
+        elif ep_dur > 0 and num_frames > 1:
+            use_fps = round(num_frames / ep_dur, 2)
+            fps_source = "calculated"
+        else:
+            use_fps = 30.0
+            fps_source = "default"
+        target_video = videos_dir / "file-000.mp4"
+        codec, pix_fmt = _transcode_video(src_video, target_video, use_fps, max_frames=num_frames)
+        strip_audio_from_mp4(target_video)
         video_written = True
         video_info = {
             "video.fps": use_fps, "video.codec": codec, "video.pix_fmt": pix_fmt,
@@ -379,12 +446,19 @@ def export_to_lerobot(
             "video.is_depth_map": False,
         }
         logger.info("Wrote video %s (%dx%d @ %.2f fps) from %s",
-                    videos_dir / "file-000.mp4", vw, vh, use_fps, video_source)
+                    target_video, vw, vh, use_fps, video_source)
     else:
-        use_fps = float(fps) if fps else 30.0
-        fps_source = "config" if fps else "default"
+        if fps:
+            use_fps = float(fps)
+            fps_source = "config"
+        elif ep_dur > 0 and num_frames > 1:
+            use_fps = round(num_frames / ep_dur, 2)
+            fps_source = "calculated"
+        else:
+            use_fps = 30.0
+            fps_source = "default"
         logger.warning(
-            "No source video found for episode %s — exporting WITHOUT video columns. "
+            "No source video found for episode %s - exporting WITHOUT video columns. "
             "Vision policies cannot train on this export.", episode_id)
 
     # 4. Frame table (v3 R4: timestamp float32 = frame_index / fps, monotonic index)
@@ -397,6 +471,7 @@ def export_to_lerobot(
         "episode_index": [0] * num_frames,
         "index": list(range(num_frames)),
         "task_index": [0] * num_frames,
+        "observation.hand_valid": hand_valid_mask,
     }
     df_data_dict.update(extra_obs_cols)
 
@@ -412,25 +487,41 @@ def export_to_lerobot(
         "episode_index": {"dtype": "int64", "shape": [1], "names": None},
         "index": {"dtype": "int64", "shape": [1], "names": None},
         "task_index": {"dtype": "int64", "shape": [1], "names": None},
+        "observation.hand_valid": {"dtype": "int64", "shape": [1], "names": ["is_valid"]},
     }
     features_dict.update(extra_features)
     if video_written:
-        vw = video_info["video.width"]; vh = video_info["video.height"]
+        vw = video_info["video.width"]
+        vh = video_info["video.height"]
         features_dict[video_key] = {
             "dtype": "video", "shape": [3, vh, vw],
             "names": ["channel", "height", "width"],
             "info": video_info,
         }
 
-    df_data = pd.DataFrame(df_data_dict).astype({
-        "timestamp": "float32",
-        "frame_index": "int64",
-        "episode_index": "int64",
-        "index": "int64",
-        "task_index": "int64",
-    })
+    # Build PyArrow table with strict float32 and int64 dtypes (Gate 06 compliance)
+    pa_fields = [
+        pa.field("observation.state", pa.list_(pa.float32())),
+        pa.field("action", pa.list_(pa.float32())),
+        pa.field("timestamp", pa.float32()),
+        pa.field("frame_index", pa.int64()),
+        pa.field("episode_index", pa.int64()),
+        pa.field("index", pa.int64()),
+        pa.field("task_index", pa.int64()),
+        pa.field("observation.hand_valid", pa.list_(pa.int64())),
+    ]
+    for col_key, feat_spec in extra_features.items():
+        if feat_spec.get("dtype") == "float32":
+            if feat_spec.get("shape", [1])[0] > 1 or isinstance(df_data_dict[col_key][0], list):
+                pa_fields.append(pa.field(col_key, pa.list_(pa.float32())))
+            else:
+                pa_fields.append(pa.field(col_key, pa.float32()))
+        elif feat_spec.get("dtype") == "int64":
+            pa_fields.append(pa.field(col_key, pa.int64()))
+
+    pa_table = pa.Table.from_pydict(df_data_dict, schema=pa.schema(pa_fields))
     parquet_path = data_dir / "file-000.parquet"
-    df_data.to_parquet(parquet_path, index=False)
+    pq.write_table(pa_table, parquet_path)
     logger.info("Saved parquet to %s", parquet_path)
 
     # 5. Stats (v3 R2 + P4: pooled-style aggregates incl. quantiles, over ALL
@@ -443,6 +534,7 @@ def export_to_lerobot(
         "episode_index": np.zeros(num_frames, dtype=np.int64),
         "index": np.arange(num_frames),
         "task_index": np.zeros(num_frames, dtype=np.int64),
+        "observation.hand_valid": np.array(hand_valid_mask, dtype=np.int64),
     }
     for col_key, col_vals in extra_obs_cols.items():
         stats_arrays[col_key] = np.asarray(col_vals, dtype=np.float32)
@@ -453,7 +545,32 @@ def export_to_lerobot(
 
     # 6. meta/info.json (v3 templates, splits, real sizes)
     data_mb = parquet_path.stat().st_size / 1e6
-    video_mb = (videos_dir / "file-000.mp4").stat().st_size / 1e6 if video_written else 0.0
+    v_target = videos_dir / "file-000.mp4"
+    video_mb = 0.0
+    if video_written:
+        try:
+            video_mb = v_target.stat().st_size / 1e6
+        except (FileNotFoundError, OSError):
+            video_mb = 0.0
+
+    # Gate 03 absent dimensions check
+    v_arr = np.array(hand_valid_mask).squeeze() > 0
+    valid_state = obs_state[v_arr] if np.any(v_arr) else obs_state
+    valid_act = action[v_arr] if np.any(v_arr) else action
+    absent_s = [state_names[i] for i in range(obs_state.shape[1]) if float(np.var(valid_state[:, i])) < 1e-6]
+    absent_a = [action_names[i] for i in range(action.shape[1]) if float(np.var(valid_act[:, i])) < 1e-6]
+
+    meta_path = episode_dir / "capture_meta.json"
+    cam_status = "PARTIAL_KLT"
+    if meta_path.exists():
+        try:
+            cm = json.loads(meta_path.read_text(encoding="utf-8"))
+            if cm.get("camera_pose_path") and Path(cm["camera_pose_path"]).exists():
+                cam_status = "REAL"
+        except Exception:
+            pass
+
+    cam_profile = CameraIntrinsicsProfile.load("wide_fisheye_actioncam")
     info = {
         "codebase_version": "v3.0",
         "robot_type": robot_type,
@@ -473,7 +590,24 @@ def export_to_lerobot(
         "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "features": features_dict,
+        "ego_annotate": {
+            "units": "meters_radians",
+            "frame": "camera",
+            "scale_source": "assumed" if not cam_profile.calibrated else str(cam_profile.scale_source),
+            "source": "assumed" if not cam_profile.calibrated else str(getattr(cam_profile, "source", "assumed")),
+            "is_metric": bool(cam_profile.is_metric),
+            "calibrated": bool(cam_profile.calibrated),
+            "absent_action_dims": absent_a,
+            "absent_state_dims": absent_s,
+            "camera_pose_status": cam_status,
+            "hand_detected_ratio": round(float(np.mean([float(v[0]) for v in hand_valid_mask])), 4) if hand_valid_mask else 0.0,
+            "hand_filled_ratio": round(float(np.mean([float(v[0]) for v in hand_valid_mask])), 4) if hand_valid_mask else 1.0,
+        },
     }
+    if internal_test_no_consent:
+        info["consent_status"] = "UNSET_INTERNAL_TEST"
+        info["distribution_restriction"] = "NOT_FOR_DISTRIBUTION"
+        info["distribution"] = "NOT_FOR_DISTRIBUTION"
     with open(meta_dir / "info.json", "w") as f_info:
         json.dump(info, f_info, indent=2)
 
@@ -482,8 +616,6 @@ def export_to_lerobot(
         meta_dir / "tasks.parquet", index=False)
 
     # 8. meta/episodes/chunk-000/file-000.parquet
-    #    (v3 R1: per-episode stats live here, not in a standalone episodes_stats.parquet;
-    #     v3 R3: video-lookup columns so the reader can resolve (episode, camera) -> mp4)
     ep_row: dict = {
         "episode_index": [0],
         "tasks": [[task_desc]],
@@ -531,7 +663,7 @@ def export_all_lerobot(
     exported_paths: List[Path] = []
     skipped: List[Tuple[str, str]] = []
     for path in sorted(output_path.iterdir()):
-        if not (path.is_dir() and (path / "episode_rlds.hdf5").exists()):
+        if not (path.is_dir() and ((path / "episode_hdf5.h5").exists() or (path / "episode_hdf5.h5").exists())):
             continue
         try:
             lerobot_path = export_to_lerobot(

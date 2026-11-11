@@ -1,0 +1,15 @@
+# First-Party World Action Model (WAM) & FAST Tokenization Config
+embodiment_tag: franka_panda
+max_state_dim: 64
+relative_action: true
+action_horizon: 24
+num_frames: 25
+fast_dct_tokenization: true
+relative_action_keys:
+  - joint_pos
+  - gripper_pos
+normalization_modes:
+  state.joint_pos: q99
+  state.gripper_pos: q99
+  action.joint_pos: q99
+  action.gripper_pos: q99

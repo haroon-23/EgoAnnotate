@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Action primitive computation from hand trajectories.
 
 Computes robot-agnostic actions (wrist deltas, finger joint angles, gripper openness,
 and palm orientation) from tracked hand landmarks across frames.
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

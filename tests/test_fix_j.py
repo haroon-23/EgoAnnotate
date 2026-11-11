@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Fix J regression tests.
 
 Run #3 produced a fresh retargeting line (213/729 reachable) but a
@@ -10,11 +11,10 @@ reachable ceiling:
    remains the winning attempt's true geometric residual.
 2. Parquet frame export is additive: frame_annotations.json (the file the
    RLDS exporter re-reads from disk) is ALWAYS refreshed.
-3. The pipeline physics verifier fails closed when episode_rlds.hdf5 is
+3. The pipeline physics verifier fails closed when episode_hdf5.h5 is
    missing, predates the export, or disagrees with the in-memory episode's
    robot_reachable count.
 """
-from __future__ import annotations
 
 import json
 import os
@@ -245,7 +245,7 @@ def test_fixj_reexport_replaces_stale_json_before_rlds_export(
     exporter._export_frames(episode, episode_dir)
     exporter._export_metadata(episode, episode_dir)
     exporter._export_rlds(episode, episode_dir)
-    hdf5_path = episode_dir / "episode_rlds.hdf5"
+    hdf5_path = episode_dir / "episode_hdf5.h5"
     assert _read_reachable(hdf5_path, episode.episode_id) == [True, False]
 
     # Mutate the same in-memory episode, as a later run over the same episode
@@ -296,7 +296,7 @@ def _export_episode(exporter, episode):
     exporter._export_frames(episode, episode_dir)
     exporter._export_metadata(episode, episode_dir)
     exporter._export_rlds(episode, episode_dir)
-    return episode_dir, episode_dir / "episode_rlds.hdf5"
+    return episode_dir, episode_dir / "episode_hdf5.h5"
 
 
 def _read_physics_report(episode_dir):

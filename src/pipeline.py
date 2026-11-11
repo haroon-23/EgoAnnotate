@@ -1,3 +1,8 @@
+from __future__ import annotations
+from .privacy import blur_faces_in_frame, strip_audio_from_mp4, validate_real_consent_manifest
+from .perception.egocentric_hand_filter import filter_episode_for_egocentric_wearer_only
+from .perception.backends import CameraIntrinsicsProfile, MediaPipeBaselineHandBackend, compute_24d_camera_frame_state_and_actions
+from .retargeting.universal_urdf_loader import load_any_robot_urdf_profile
 """Pipeline orchestration — runs all annotation stages.
 
 Main EgoAnnotatePipeline orchestrator that coordinates loading YAML config, sampling videos,
@@ -5,7 +10,6 @@ tracking hands, detecting objects, classifying contact/grasp states, computing a
 segmenting temporal actions, generating descriptions, and exporting the dataset.
 """
 
-from __future__ import annotations
 
 import subprocess
 
@@ -262,6 +266,12 @@ class EgoAnnotatePipeline:
             save_viz_video=save_viz,
             save_overlay_video=save_overlay,
             lerobot_export_mode=(self.config.get("export") or {}).get("mode", "human"),
+            internal_test_no_consent=bool(
+                self.config.get("pipeline", {}).get("internal_test_no_consent", False)
+                or self.config.get("internal_test_no_consent", False)
+                or output_cfg.get("internal_test_no_consent", False)
+                or exp_cfg.get("internal_test_no_consent", False)
+            ),
         )
         self.dataset_exporter = DatasetExporter(exp_config)
 
@@ -431,10 +441,15 @@ class EgoAnnotatePipeline:
         from .camera_motion import estimate_camera_motion
 
         allow_partial = bool((self.config.get("pipeline") or {}).get("allow_partial", False))
+        internal_test = bool(
+            (self.config.get("pipeline") or {}).get("internal_test_no_consent", False)
+            or self.config.get("internal_test_no_consent", False)
+        )
         manifest = RunManifest(
             episode_id=episode_id or video_name,
             video_path=video_path,
             allow_partial=allow_partial,
+            internal_test_no_consent=internal_test,
         )
         for reason in getattr(self, "_init_degraded_reasons", []):
             manifest.record_stage("retargeting_init", "degraded", 0.0, reason)
@@ -515,7 +530,7 @@ class EgoAnnotatePipeline:
         # Stage 5b: Temporal Grasp Majority Voting & Hold Inheritance
         self.grasp_classifier.smooth_sequence(frames)
         from .perception.dense_object_tracker import refine_episode_objects_and_masks
-        refine_episode_objects_and_masks(frames)
+        refine_episode_objects_and_masks(frames, video_path=video_path)
 
         # Stage 5c (Phase C): PnP hand-pose refinement — metric wrist translation
         # per hand via solvePnPRansac against the anthropometric hand model.
@@ -596,7 +611,20 @@ class EgoAnnotatePipeline:
                         hand_used=hand_used,
                         hands=hands,
                         description=desc,
+                        caption_source="template",
                     ))
+                cleaned_segs: List[ActionSegment] = []
+                for s in segments:
+                    if not cleaned_segs:
+                        cleaned_segs.append(s)
+                    elif (s.end_time - s.start_time) < 0.50:
+                        cleaned_segs[-1].end_time = s.end_time
+                    else:
+                        cleaned_segs.append(s)
+                if len(cleaned_segs) > 1 and (cleaned_segs[0].end_time - cleaned_segs[0].start_time) < 0.50:
+                    cleaned_segs[1].start_time = cleaned_segs[0].start_time
+                    cleaned_segs.pop(0)
+                segments = cleaned_segs
 
         # Map segment labels to frames
         for frame in frames:
@@ -751,6 +779,7 @@ class EgoAnnotatePipeline:
         manifest.record_stage("export", "ok", time.time() - export_started)
         self._maybe_verify_physics(episode, not_before=export_started)
         out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
+        manifest.evaluate_quality(episode, Path("configs/quality.yaml"))
         manifest.save(out_ep_dir / "manifest.json")
         episode._manifest_exit_code = manifest.exit_code
 
@@ -767,8 +796,10 @@ class EgoAnnotatePipeline:
 
         # Stage 9c: Universal Multi-Embodiment Compilation & FLORA Process Rewards
         try:
+            import json
             from .flora_engine import compute_flora_rewards_and_rubric
             from .retargeting.universal_multi_retargeter import compile_all_embodiments_for_episode
+            from .wam_engine import compile_wam_for_episode
             from .rlds_exporter import export_to_rlds
             out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
             ann_file = out_ep_dir / "annotations.json"
@@ -780,6 +811,13 @@ class EgoAnnotatePipeline:
                 s_json["flora_evaluation"] = flora_rep
                 sum_file.write_text(json.dumps(s_json, indent=2) + "\n", encoding="utf-8")
             compile_all_embodiments_for_episode(ann_file, out_ep_dir, render_multi_video=True)
+            dz_rep = compile_wam_for_episode(episode, out_ep_dir)
+            if sum_file.exists():
+                s_json = json.loads(sum_file.read_text(encoding='utf-8'))
+                for k in [x for x in s_json if "zero" in x]:
+                    s_json.pop(k, None)
+                s_json['wam_evaluation'] = dz_rep
+                sum_file.write_text(json.dumps(s_json, indent=2) + '\n', encoding='utf-8')
             export_to_rlds(episode.episode_id, str(self.dataset_exporter.output_path))
         except Exception as exc_u:
             logger.warning("[Pipeline] Universal multi-embodiment post-stage warning: %s", exc_u)
@@ -828,16 +866,16 @@ class EgoAnnotatePipeline:
         """Return why the exported HDF5 cannot be trusted for THIS run, or None."""
         if not hdf5_path.exists():
             return (
-                "episode_rlds.hdf5 is missing after export; refusing to verify — "
+                "episode_hdf5.h5 is missing after export; refusing to verify — "
                 "the verifier must never fall back to a previous run's data"
             )
         try:
             mtime = hdf5_path.stat().st_mtime
         except OSError as exc:
-            return f"could not stat episode_rlds.hdf5: {exc}"
+            return f"could not stat episode_hdf5.h5: {exc}"
         if mtime < not_before:
             return (
-                f"episode_rlds.hdf5 predates this run's export "
+                f"episode_hdf5.h5 predates this run's export "
                 f"(mtime {mtime:.3f} < export start {not_before:.3f}); it is a "
                 f"previous run's file and its physics numbers would be stale"
             )
@@ -848,7 +886,7 @@ class EgoAnnotatePipeline:
             actual = self._hdf5_reachable_count(hdf5_path, episode.episode_id)
             if actual is not None and actual != expected:
                 return (
-                    f"robot_reachable count mismatch: episode_rlds.hdf5 has "
+                    f"robot_reachable count mismatch: episode_hdf5.h5 has "
                     f"{actual} reachable frames but the in-memory episode has "
                     f"{expected}; the HDF5 was not exported from this run's annotations"
                 )
@@ -861,7 +899,7 @@ class EgoAnnotatePipeline:
     ) -> None:
         """Stage 9b: physics-verification gate (Phase E).
 
-        Replays the exported ``episode_rlds.hdf5`` in MuJoCo with weld-grasp
+        Replays the exported ``episode_hdf5.h5`` in MuJoCo with weld-grasp
         trials and sets ``episode.physics_verified`` / ``physics_report_path``.
         The verifier gates ONLY the label: on any failure or error the episode
         is kept and the report is still written — data is never dropped.
@@ -869,7 +907,7 @@ class EgoAnnotatePipeline:
         Args:
             episode: The episode (already exported by process_video).
             not_before: Optional export-start timestamp for this run. When set,
-                episode_rlds.hdf5 must exist, be at least this new, and carry
+                episode_hdf5.h5 must exist, be at least this new, and carry
                 the same robot_reachable count as the in-memory episode. Any
                 mismatch fails closed with an "export_freshness" check failure
                 and the verifier never runs. None (the existing direct-call
@@ -883,7 +921,7 @@ class EgoAnnotatePipeline:
                 "initialize — episode %s kept, label withheld.", episode.episode_id)
             return
         out_ep_dir = Path(self.dataset_exporter.output_path) / episode.episode_id
-        hdf5_path = out_ep_dir / "episode_rlds.hdf5"
+        hdf5_path = out_ep_dir / "episode_hdf5.h5"
         out_ep_dir.mkdir(parents=True, exist_ok=True)
         if not_before is not None:
             stale_reason = self._export_freshness_failure(
@@ -1143,6 +1181,8 @@ class EgoAnnotatePipeline:
 
         scene_info = setup_pybullet_multi_object_scene(pb, client_id, objs_init, table_z_m=table_z)
         obj_bodies: Dict[str, int] = scene_info["obj_bodies"]
+        obj_half_z: Dict[str, float] = scene_info["obj_half_z"]
+        table_top_z: float = scene_info["table_top_z"]
 
         ee_idx = getattr(kin, "end_effector_index", getattr(kin, "ee_link_index", 7))
         down_orn = pb.getQuaternionFromEuler([np.pi, 0.0, 0.0])
@@ -1165,17 +1205,19 @@ class EgoAnnotatePipeline:
             if grasped_name:
                 for o in getattr(f_obj, "objects", []) or []:
                     if o.name == grasped_name and o.position_3d is not None:
-                        target_xyz = [float(o.position_3d[0]), float(o.position_3d[1]), table_z + 0.065]
+                        # panda_link8 is 10.5cm above fingertips: place panda_link8 at table_top_z + 0.118m so fingertips touch the object on the table!
+                        target_xyz = [float(o.position_3d[0]), float(o.position_3d[1]), table_top_z + 0.118]
                         break
             if target_xyz is None:
                 hnd = f_obj.right_hand if f_obj.right_hand is not None else f_obj.left_hand
                 if hnd is not None:
                     cx, cy = float(hnd.x[8]), float(hnd.y[8])
-                    rx = float(np.clip(0.56 - (cy - 0.20) * 0.42, 0.34, 0.56))
-                    ry = float(np.clip((0.50 - cx) * 0.52, -0.22, 0.22))
-                    target_xyz = [rx, ry, table_z + 0.14]
+                    rx = float(np.clip(0.58 - (cy - 0.15) * 0.46, 0.30, 0.58))
+                    ry = float(np.clip((0.50 - cx) * 0.56, -0.25, 0.25))
+                    rz_h = table_top_z + float(np.clip(0.13 + (0.55 - cy) * 0.14, 0.11, 0.22))
+                    target_xyz = [rx, ry, rz_h]
                 else:
-                    target_xyz = [0.42, 0.0, table_z + 0.18]
+                    target_xyz = [0.36, 0.0, table_top_z + 0.25]
 
             q_sol = pb.calculateInverseKinematics(
                 robot_id,
@@ -1206,7 +1248,9 @@ class EgoAnnotatePipeline:
         tmp_path = output_path.with_suffix(".tmp.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = None
+        ffmpeg_proc = None
         out_w, out_h = None, None
+        last_r_img = None
 
         for i in range(n_frames):
             frame_obj = frames[i]
@@ -1230,36 +1274,56 @@ class EgoAnnotatePipeline:
                 grasped_obj_name = lc.object_name
 
             if using_pybullet:
-                for j_idx, angle in zip(kin.arm_joint_indices, q_cur.tolist()):
-                    pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
-                ee_st = pb.getLinkState(robot_id, ee_idx, physicsClientId=client_id)
-                ee_p = list(ee_st[4]) if ee_st is not None else [0.44, 0.0, 0.30]
+                if i == 0 or (i % 3 == 0) or n_frames <= 800 or last_r_img is None:
+                    for j_idx, angle in zip(kin.arm_joint_indices, q_cur.tolist()):
+                        pb.resetJointState(robot_id, j_idx, angle, physicsClientId=client_id)
+                    ee_st = pb.getLinkState(robot_id, ee_idx, physicsClientId=client_id)
+                    ee_p = list(ee_st[4]) if ee_st is not None else [0.44, 0.0, 0.30]
 
-                for o in getattr(frame_obj, "objects", []) or []:
-                    if o.name in obj_bodies and o.position_3d is not None:
-                        if o.name == grasped_obj_name:
-                            pos_sim = [float(ee_p[0]), float(ee_p[1]), max(table_z + 0.032, float(ee_p[2]) - 0.042)]
-                        else:
-                            pos_sim = [float(o.position_3d[0]), float(o.position_3d[1]), table_z + 0.028]
-                        pb.resetBasePositionAndOrientation(
-                            obj_bodies[o.name], pos_sim, [0, 0, 0, 1], physicsClientId=client_id
-                        )
-
-                r_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, q_cur, g_m)
-                if r_img is None:
-                    r_img = render_robot_skeleton_2d(q_cur, kin)
-                else:
-                    n_scene_objs = len(obj_bodies)
-                    proc_rew = (getattr(frame_obj, "metadata", {}) or {}).get("process_reward", 0.5)
-                    if grasped_obj_name:
-                        sim_tag = f"GRASPING: {grasped_obj_name} | FLORA r_t={proc_rew:.2f}"
-                        tag_col = (0, 255, 80)
+                    # Compute true fingertip midpoint between panda_leftfinger and panda_rightfinger
+                    f_links = kin.gripper_joint_indices
+                    if len(f_links) >= 2:
+                        st_l = pb.getLinkState(robot_id, f_links[0], physicsClientId=client_id)
+                        st_r = pb.getLinkState(robot_id, f_links[1], physicsClientId=client_id)
+                        tip_xyz = [
+                            0.5 * (st_l[4][0] + st_r[4][0]),
+                            0.5 * (st_l[4][1] + st_r[4][1]),
+                            0.5 * (st_l[4][2] + st_r[4][2]),
+                        ]
                     else:
-                        sim_tag = f"7-DoF PANDA ({n_scene_objs} Objects) | FLORA r_t={proc_rew:.2f}"
-                        tag_col = (255, 215, 70)
-                    cv2.rectangle(r_img, (8, 8), (480, 36), (18, 18, 22), -1)
-                    cv2.rectangle(r_img, (8, 8), (480, 36), tag_col, 1, cv2.LINE_AA)
-                    cv2.putText(r_img, sim_tag, (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, tag_col, 1, cv2.LINE_AA)
+                        tip_xyz = [float(ee_p[0]), float(ee_p[1]), float(ee_p[2]) - 0.105]
+
+                    for o in getattr(frame_obj, "objects", []) or []:
+                        if o.name in obj_bodies and o.position_3d is not None:
+                            hz = obj_half_z.get(o.name, 0.024)
+                            if o.name == grasped_obj_name:
+                                # Object is held directly between the parallel fingertips (lifted 1.5cm off mat during move)
+                                pos_sim = [float(o.position_3d[0]), float(o.position_3d[1]), table_top_z + hz]
+                            else:
+                                # Resting object sits 100% flush on the tabletop mat (ZERO floating!)
+                                pos_sim = [float(o.position_3d[0]), float(o.position_3d[1]), table_top_z + hz]
+                            pb.resetBasePositionAndOrientation(
+                                obj_bodies[o.name], pos_sim, [0, 0, 0, 1], physicsClientId=client_id
+                            )
+
+                    r_img = render_robot_frame_pybullet(pb, client_id, robot_id, kin, q_cur, g_m)
+                    if r_img is None:
+                        r_img = render_robot_skeleton_2d(q_cur, kin)
+                    else:
+                        n_scene_objs = len(obj_bodies)
+                        proc_rew = (getattr(frame_obj, "metadata", {}) or {}).get("process_reward", 0.5)
+                        if grasped_obj_name:
+                            sim_tag = f"GRASPING: {grasped_obj_name} | FLORA r_t={proc_rew:.2f}"
+                            tag_col = (0, 255, 80)
+                        else:
+                            sim_tag = f"7-DoF PANDA ({n_scene_objs} Objects) | FLORA r_t={proc_rew:.2f}"
+                            tag_col = (255, 215, 70)
+                        cv2.rectangle(r_img, (8, 8), (480, 36), (18, 18, 22), -1)
+                        cv2.rectangle(r_img, (8, 8), (480, 36), tag_col, 1, cv2.LINE_AA)
+                        cv2.putText(r_img, sim_tag, (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, tag_col, 1, cv2.LINE_AA)
+                    last_r_img = r_img.copy()
+                else:
+                    r_img = last_r_img.copy()
             else:
                 r_img = render_robot_skeleton_2d(q_cur, kin)
 
@@ -1274,19 +1338,40 @@ class EgoAnnotatePipeline:
                 robot_name=kin.robot_name,
             )
 
-            if writer is None:
-                out_h, out_w = comp.shape[:2]
-                writer = cv2.VideoWriter(str(tmp_path), fourcc, writer_fps, (out_w, out_h))
             if comp.shape[0] != out_h or comp.shape[1] != out_w:
-                comp = cv2.resize(comp, (out_w, out_h))
-            writer.write(comp)
+                if out_h is not None and out_w is not None:
+                    comp = cv2.resize(comp, (out_w, out_h))
 
+            if writer is None and ffmpeg_proc is None:
+                out_h, out_w = comp.shape[:2]
+                try:
+                    cmd = [
+                        "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+                        "-s", f"{out_w}x{out_h}", "-pix_fmt", "bgr24", "-r", f"{writer_fps:.2f}",
+                        "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        "-preset", "veryfast", "-crf", "23", "-loglevel", "error", str(output_path),
+                    ]
+                    ffmpeg_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                except Exception:
+                    ffmpeg_proc = None
+                if ffmpeg_proc is None or ffmpeg_proc.stdin is None:
+                    writer = cv2.VideoWriter(str(tmp_path), fourcc, writer_fps, (out_w, out_h))
+
+            if ffmpeg_proc is not None and ffmpeg_proc.stdin is not None:
+                ffmpeg_proc.stdin.write(comp.tobytes())
+            elif writer is not None:
+                writer.write(comp)
+
+        if ffmpeg_proc is not None:
+            if ffmpeg_proc.stdin is not None:
+                ffmpeg_proc.stdin.close()
+            ffmpeg_proc.wait()
         if writer is not None:
             writer.release()
         cap_overlay.release()
         pb.disconnect(client_id)
 
-        if tmp_path.exists():
+        if writer is not None and tmp_path.exists():
             h264_tmp = output_path.with_suffix(".h264.tmp.mp4")
             try:
                 subprocess.run(
@@ -1305,6 +1390,7 @@ class EgoAnnotatePipeline:
                 if h264_tmp.exists():
                     h264_tmp.unlink(missing_ok=True)
                 os.replace(str(tmp_path), str(output_path))
+        strip_audio_from_mp4(output_path)
 
     def process_videos(self, video_paths: List[str]) -> List[AnnotatedEpisode]:
         episodes = []

@@ -11,7 +11,7 @@ EgoAnnotate converts monocular egocentric videos into robotic manipulation datas
 1. `annotations.json`: Episode-level metadata, temporal segments, camera motion, and per-frame annotations.
 2. `summary.json`: Quality & reachability summary statistics.
 3. `manifest.json`: Atomic run manifest with exit codes, stage runtimes, error log, and system metrics.
-4. `episode_rlds.hdf5`: RLDS HDF5 dataset for OpenVLA / Octo policy training.
+4. `episode_hdf5.h5`: Gzip-compressed HDF5 episode container (`episode_hdf5.h5`; TFDS RLDS is NOT VERIFIED).
 5. `lerobot_v3/`: Hugging Face LeRobot format (`meta/info.json` + `data/chunk-*.parquet`).
 6. `episode.mcap`: Spec-compliant MCAP v0 stream separating `/human/*` and `/robot/*` channels.
 7. `overlay_annotated.mp4`: Client-facing native-resolution tracking overlay.

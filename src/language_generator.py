@@ -1,5 +1,5 @@
-"""Natural language instruction generation using a VLM backend (Fail-loud, zero canned text)."""
 from __future__ import annotations
+"""Natural language instruction generation using a VLM backend (Fail-loud, zero canned text)."""
 
 import re
 from dataclasses import dataclass

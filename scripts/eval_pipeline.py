@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Evaluation harness for EgoAnnotate pipeline.
 
@@ -5,7 +6,6 @@ Measures contact detection, grasp classification, and temporal segmentation accu
 against hand-labeled ground truth CSV files.
 """
 
-from __future__ import annotations
 
 import argparse
 import json
@@ -168,18 +168,20 @@ def evaluate_segments(episode: AnnotatedEpisode, gt_df: pd.DataFrame) -> list[Se
         
         # Find nearest GT segment
         best_gt = None
-        best_start_err = float('inf')
-        best_end_err = float('inf')
+        best_diff_sum = float('inf')
+        best_s_diff = float('inf')
+        best_e_diff = float('inf')
         
         for gt_seg in gt_segments:
-            start_err = abs(pred_start - gt_seg["start"])
-            end_err = abs(pred_end - gt_seg["end"])
-            total_err = start_err + end_err
+            s_diff = abs(pred_start - gt_seg["start"])
+            e_diff = abs(pred_end - gt_seg["end"])
+            diff_sum = s_diff + e_diff
             
-            if total_err < best_start_err + best_end_err:
+            if diff_sum < best_diff_sum:
+                best_diff_sum = diff_sum
                 best_gt = gt_seg
-                best_start_err = start_err
-                best_end_err = end_err
+                best_s_diff = s_diff
+                best_e_diff = e_diff
         
         if best_gt:
             results.append(SegmentEvalResult(
@@ -188,8 +190,8 @@ def evaluate_segments(episode: AnnotatedEpisode, gt_df: pd.DataFrame) -> list[Se
                 pred_end=pred_end,
                 gt_start=best_gt["start"],
                 gt_end=best_gt["end"],
-                start_error_sec=best_start_err,
-                end_error_sec=best_end_err
+                start_error_sec=best_s_diff,
+                end_error_sec=best_e_diff
             ))
         else:
             results.append(SegmentEvalResult(

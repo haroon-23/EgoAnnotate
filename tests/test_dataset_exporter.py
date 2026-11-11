@@ -96,6 +96,21 @@ class TestDatasetExporter(unittest.TestCase):
             duration_seconds=0.2
         )
 
+        # Write test consent manifest
+        ep_dir = self.output_dir / self.episode.episode_id
+        ep_dir.mkdir(parents=True, exist_ok=True)
+        consent_doc = {
+            "consent_id": "TEST-CONSENT-001",
+            "collector_id": "TEST-COLLECTOR",
+            "collection_date": "2026-11-09T00:00:00Z",
+            "purpose": "unit_tests",
+            "license": "test_license",
+            "retention_policy": "immediate_deletion",
+            "dpdp_lawful_basis": "informed_consent",
+            "subject_acknowledged": True,
+        }
+        (ep_dir / "consent_manifest.json").write_text(json.dumps(consent_doc))
+
     def tearDown(self):
         self.temp_dir.cleanup()
 

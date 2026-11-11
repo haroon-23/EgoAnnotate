@@ -1,6 +1,6 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Comprehensive delivery validator for EgoAnnotate v1.0.0 episodes."""
-from __future__ import annotations
 
 import argparse
 import json
@@ -99,21 +99,21 @@ def validate_episode_dir(episode_dir: Path, source_video: Path | None = None) ->
                     f"{vname}: resolution {vinfo['width']}x{vinfo['height']} != source {src_info['width']}x{src_info['height']}"
                 )
 
-    # 3. episode_rlds.hdf5
-    rlds_path = episode_dir / "episode_rlds.hdf5"
+    # 3. episode_hdf5.h5
+    rlds_path = episode_dir / "episode_hdf5.h5"
     if not rlds_path.exists():
-        failures.append("episode_rlds.hdf5: MISSING")
+        failures.append("episode_hdf5.h5: MISSING")
     else:
         with h5py.File(rlds_path, "r") as hf:
             keys = list(hf.keys())
             if not keys:
-                failures.append("episode_rlds.hdf5: empty top-level keys")
+                failures.append("episode_hdf5.h5: empty top-level keys")
             else:
                 grp = hf[keys[0]]
                 for req in ("steps/action", "steps/observation/language_instruction"):
                     if req not in grp:
-                        failures.append(f"episode_rlds.hdf5: missing {req}")
-                report["artifacts"]["episode_rlds.hdf5"] = {
+                        failures.append(f"episode_hdf5.h5: missing {req}")
+                report["artifacts"]["episode_hdf5.h5"] = {
                     "episode_key": keys[0],
                     "action_shape": list(grp["steps/action"].shape) if "steps/action" in grp else None,
                 }

@@ -1,9 +1,9 @@
+from __future__ import annotations
 """Retargeting orchestrator: hand tracking → robot joint angle trajectories.
 
 Chains URDFLoader → PoseMapper → IKSolver → GripperMapper to convert a
 frame_annotations.json episode into a complete retargeting result.
 """
-from __future__ import annotations
 
 import json
 import logging
@@ -286,18 +286,18 @@ def enforce_velocity_limits(
     vel_limits: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Enforce joint velocity limits across consecutive reachable frames."""
-    reach = np.array(reachability_mask, dtype=bool).copy()
+    valid_seq = np.array(reachability_mask, dtype=bool).copy()
     if vel_limits is None:
         vel_limits = PANDA_VEL
     vel_limits = np.asarray(vel_limits, dtype=np.float64)
 
     n = len(joint_trajectories)
     for i in range(1, n):
-        if reach[i] and reach[i - 1]:
+        if valid_seq[i] and valid_seq[i - 1]:
             v = np.abs((joint_trajectories[i] - joint_trajectories[i - 1]) / dt)
             if np.any(v > 0.9 * vel_limits):
-                reach[i] = False
-    return reach
+                valid_seq[i] = False
+    return valid_seq
 
 
 def apply_retargeting_gates(
@@ -386,26 +386,18 @@ def apply_retargeting_gates(
     for i in range(n):
         ik_results[i].reachable = bool(reachability[i])
 
-    # --- Self-collision gate ----------------------------------------------
-    n_collision_gated = 0
-    for i in range(n):
-        if reachability[i] and ik_results[i].has_self_collision:
-            reachability[i] = False
-            ik_results[i].reachable = False
-            n_collision_gated += 1
+    # --- Self-collision & Table-collision gates (Vectorized) --------------
+    self_coll_mask = np.array([bool(getattr(r, "has_self_collision", False)) for r in ik_results], dtype=bool)
+    table_coll_mask = np.array([bool(getattr(r, "has_table_collision", False)) for r in ik_results], dtype=bool)
 
-    # --- Table-collision gate ---------------------------------------------
-    # A frame whose IK solution penetrates the static table can never be
-    # tracked by the M1 verifier: MuJoCo's contact solver fights the position
-    # servos, producing a large spurious "tracking error" (2026-10-08: 0.52
-    # rad from 189/189 Run #2 frames with the arm inside the tabletop, caused
-    # by wrist targets at z=0.20 below the table surface at z=0.25).
-    n_table_gated = 0
+    n_collision_gated = int(np.sum(reachability & self_coll_mask))
+    reachability = reachability & (~self_coll_mask)
+
+    n_table_gated = int(np.sum(reachability & table_coll_mask))
+    reachability = reachability & (~table_coll_mask)
+
     for i in range(n):
-        if reachability[i] and getattr(ik_results[i], "has_table_collision", False):
-            reachability[i] = False
-            ik_results[i].reachable = False
-            n_table_gated += 1
+        ik_results[i].reachable = bool(reachability[i])
 
     return {
         "reachability": reachability,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Simulate feeding an EgoAnnotate episode into 4 real robot controllers at 30Hz.
 
@@ -5,7 +6,6 @@ Computes IK residuals (mean/p95), joint velocity/acceleration/jerk compliance,
 self-collision & teleportation counts, 16-step VLA action chunks, and a 0-100
 Hardware Readiness Score per platform.
 """
-from __future__ import annotations
 
 import json
 import sys

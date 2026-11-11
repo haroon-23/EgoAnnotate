@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Training package (Phase B): dataset loader + vendored minimal ACT policy.
 
 ``torch`` is an OPTIONAL dependency: it is imported lazily so that pipeline,
@@ -5,7 +6,6 @@ export, merge and validation code paths never require it. Use
 :func:`require_torch` at construction time of any training class.
 """
 
-from __future__ import annotations
 
 try:
     import torch  # noqa: F401

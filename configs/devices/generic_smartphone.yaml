@@ -1,0 +1,12 @@
+device_id: generic_smartphone
+calibrated: false
+scale_source: assumed_palm_85mm
+is_metric: false
+image_width: 1024
+image_height: 576
+intrinsics:
+  fx_ratio_max_dim: 0.85
+  fy_ratio_max_dim: 0.85
+  cx_ratio_w: 0.5
+  cy_ratio_h: 0.5
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]

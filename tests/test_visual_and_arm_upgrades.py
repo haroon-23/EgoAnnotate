@@ -1,5 +1,5 @@
-"""Tests for v1.2 Dense Object Segmentation Tracker, World-Locked Arm Mapper, and 3D Tabletop Sim."""
 from __future__ import annotations
+"""Tests for v1.2 Dense Object Segmentation Tracker, World-Locked Arm Mapper, and 3D Tabletop Sim."""
 
 from pathlib import Path
 import cv2
@@ -97,12 +97,12 @@ def test_world_locked_arm_mapper_compensates_camera_motion_and_tracks_object(tmp
 
 def test_universal_multi_retargeter_exports_all_four_robots_into_rlds():
     import h5py
-    ep_dir = Path("data/output/whatsapp_video")
+    ep_dir = Path("data/output/client_video")
     assert (ep_dir / "multi_embodiment_proof.mp4").exists()
     for rname in ("franka_panda", "unitree_g1_upper", "unitree_h1_upper", "allegro_hand_right"):
         npz_p = ep_dir / "embodiments" / rname / "trajectory.npz"
         assert npz_p.exists(), f"Missing trajectory bundle for {rname}"
-    with h5py.File(ep_dir / "episode_rlds.hdf5", "r") as hf:
+    with h5py.File(ep_dir / "episode_hdf5.h5", "r") as hf:
         ep_grp = hf[list(hf.keys())[0]]
         steps = ep_grp["steps"]
         assert "reward" in steps

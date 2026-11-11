@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Approximate metric scaling calibration via hand landmark geometry and camera intrinsics fallback.
 
 Task: Estimate a plausible physical scale factor (meters per unit) for egocentric hand trajectories.
@@ -16,7 +17,6 @@ APPROXIMATION RATIONALE & ANTHROPOMETRIC BASES:
        Depth Z_metric = (f * S_hand_ref) / s_hand_pixels.
      - Provides metric depth estimation when camera is calibrated.
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field

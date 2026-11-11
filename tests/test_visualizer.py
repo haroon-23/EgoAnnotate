@@ -43,8 +43,8 @@ class TestEgoVisualizer(unittest.TestCase):
     def test_config_initialization(self):
         """Test default VizConfig connections and BGR hand colors."""
         config = VizConfig()
-        self.assertEqual(config.left_hand_color, (0, 255, 0))
-        self.assertEqual(config.right_hand_color, (255, 0, 255))
+        self.assertEqual(config.left_hand_color, (0, 235, 100))
+        self.assertEqual(config.right_hand_color, (235, 80, 255))
         self.assertTrue(len(config.connections) > 0)
         self.assertIn((0, 1), config.connections)
 

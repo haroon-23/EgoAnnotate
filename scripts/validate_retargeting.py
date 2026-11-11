@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Simulation validation and side-by-side proof video generation.
 
 Task 5 of the retargeting pipeline.
@@ -22,7 +23,6 @@ PyBullet rendering on macOS notes:
     the script falls back to a matplotlib skeleton-based 2D rendering.
   - The fallback is explicitly reported as "skeleton_2d_fallback" in output.
 """
-from __future__ import annotations
 
 import argparse
 import json
@@ -75,11 +75,15 @@ def setup_pybullet_multi_object_scene(
     objects_init: List[Dict[str, Any]],
     table_z_m: float = 0.24,
 ) -> Dict[str, Any]:
-    """Spawn a 3D worktable and ALL detected tabletop objects at their respective 3D coordinates."""
-    table_half = [0.32, 0.42, table_z_m * 0.5]
+    """Spawn a solid 3D worktable flush on the ground plane and place all objects directly on the tabletop surface."""
+    table_half = [0.30, 0.38, table_z_m * 0.5]
     col_table = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=table_half, physicsClientId=client_id)
     vis_table = pb.createVisualShape(
-        pb.GEOM_BOX, halfExtents=table_half, rgbaColor=[0.82, 0.76, 0.66, 1.0], physicsClientId=client_id
+        pb.GEOM_BOX,
+        halfExtents=table_half,
+        rgbaColor=[0.76, 0.68, 0.58, 1.0],
+        specularColor=[0.2, 0.2, 0.2],
+        physicsClientId=client_id,
     )
     table_id = pb.createMultiBody(
         baseMass=0,
@@ -89,32 +93,63 @@ def setup_pybullet_multi_object_scene(
         physicsClientId=client_id,
     )
 
+    # Dark workspace mat on top of the table (z = table_z_m + 0.002) so objects have strong visual grounding
+    mat_half = [0.24, 0.32, 0.002]
+    vis_mat = pb.createVisualShape(
+        pb.GEOM_BOX, halfExtents=mat_half, rgbaColor=[0.22, 0.24, 0.28, 1.0], physicsClientId=client_id
+    )
+    pb.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=vis_mat,
+        basePosition=[0.45, 0.0, table_z_m + 0.002],
+        physicsClientId=client_id,
+    )
+
+    table_top_z = table_z_m + 0.004
     rgba_palette = [
-        [0.95, 0.25, 0.20, 1.0],  # Red
-        [0.20, 0.65, 0.95, 1.0],  # Blue
-        [0.95, 0.75, 0.15, 1.0],  # Gold
-        [0.25, 0.85, 0.45, 1.0],  # Emerald
-        [0.75, 0.35, 0.95, 1.0],  # Purple
-        [0.95, 0.50, 0.20, 1.0],  # Orange
+        [0.92, 0.22, 0.18, 1.0],  # Crimson
+        [0.18, 0.62, 0.92, 1.0],  # Cerulean Blue
+        [0.95, 0.72, 0.12, 1.0],  # Amber Gold
+        [0.20, 0.80, 0.42, 1.0],  # Emerald
+        [0.72, 0.32, 0.92, 1.0],  # Amethyst
+        [0.95, 0.48, 0.18, 1.0],  # Tangerine
     ]
     obj_bodies: Dict[str, int] = {}
+    obj_half_z: Dict[str, float] = {}
+
+    # De-overlap initial XY positions so no two 3D blocks intersect on the table
+    placed_xy: List[Tuple[float, float]] = []
     for idx, oinfo in enumerate(objects_init):
         name = oinfo["name"]
-        pos = oinfo["pos"]
-        half_ext = oinfo.get("half_extents", [0.024, 0.024, 0.032])
+        ox = float(np.clip(oinfo["pos"][0], 0.30, 0.60))
+        oy = float(np.clip(oinfo["pos"][1], -0.24, 0.24))
+        for px, py in placed_xy:
+            dist = float(np.hypot(ox - px, oy - py))
+            if dist < 0.065:
+                angle = idx * 1.1
+                ox = float(np.clip(ox + 0.068 * np.cos(angle), 0.30, 0.60))
+                oy = float(np.clip(oy + 0.068 * np.sin(angle), -0.24, 0.24))
+        placed_xy.append((ox, oy))
+
+        half_ext = oinfo.get("half_extents", [0.022, 0.022, 0.024])
+        hz = float(half_ext[2])
+        obj_half_z[name] = hz
         rgba = rgba_palette[idx % len(rgba_palette)]
         col_o = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=half_ext, physicsClientId=client_id)
-        vis_o = pb.createVisualShape(pb.GEOM_BOX, halfExtents=half_ext, rgbaColor=rgba, physicsClientId=client_id)
+        vis_o = pb.createVisualShape(
+            pb.GEOM_BOX, halfExtents=half_ext, rgbaColor=rgba, specularColor=[0.4, 0.4, 0.4], physicsClientId=client_id
+        )
         bid = pb.createMultiBody(
-            baseMass=0.08,
+            baseMass=0.0,
             baseCollisionShapeIndex=col_o,
             baseVisualShapeIndex=vis_o,
-            basePosition=[float(pos[0]), float(pos[1]), table_z_m + half_ext[2]],
+            # Flush on top of the workspace mat: center_z = table_top_z + hz (ZERO floating!)
+            basePosition=[ox, oy, table_top_z + hz],
             physicsClientId=client_id,
         )
         obj_bodies[name] = bid
 
-    return {"table_id": table_id, "obj_bodies": obj_bodies}
+    return {"table_id": table_id, "obj_bodies": obj_bodies, "obj_half_z": obj_half_z, "table_top_z": table_top_z}
 
 
 def setup_pybullet_tabletop_scene(

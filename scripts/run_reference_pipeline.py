@@ -15,22 +15,22 @@ PANDA_VEL = np.array([2.17,2.17,2.17,2.17,2.61,2.61,2.61])
 VOCAB = ["bottle","container","case","mouse","keys","charger","cable","notebook","cup","phone"]
 TIPS = (4,8,12,16,20)
 
-def sanitize_trajectory(q, reach, reason, dt, vel_limits=PANDA_VEL, lim=PANDA_LIM, tol=1e-3):
+def sanitize_trajectory(q, valid_mask, reason, dt, vel_limits=PANDA_VEL, lim=PANDA_LIM, tol=1e-3):
     """Last word on feasibility. Operates ONLY on final arrays.
-    Holds q[i]=q[i-1] and downgrades reach on any limit or per-frame velocity violation."""
-    q = q.copy(); reach = reach.copy(); reason = list(reason)
+    Holds q[i]=q[i-1] and downgrades valid_mask on any limit or per-frame velocity violation."""
+    q = q.copy(); valid_mask = valid_mask.copy(); reason = list(reason)
     LO = np.array([l[0] for l in lim]); HI = np.array([l[1] for l in lim])
     budget = 0.9 * np.array(vel_limits) * dt
-    if reach[0] and (np.any(q[0] < LO-tol) or np.any(q[0] > HI+tol)):
-        reach[0] = False; reason[0] = "joint_limit"; q[0] = q[0]*0.0
+    if valid_mask[0] and (np.any(q[0] < LO-tol) or np.any(q[0] > HI+tol)):
+        valid_mask[0] = False; reason[0] = "joint_limit"; q[0] = q[0]*0.0
     for i in range(1, len(q)):
-        if not reach[i]:
+        if not valid_mask[i]:
             q[i] = q[i-1]; continue
         if np.any(q[i] < LO-tol) or np.any(q[i] > HI+tol):
-            reach[i] = False; reason[i] = "joint_limit"; q[i] = q[i-1]; continue
+            valid_mask[i] = False; reason[i] = "joint_limit"; q[i] = q[i-1]; continue
         if np.any(np.abs(q[i]-q[i-1]) > budget):
-            reach[i] = False; reason[i] = "joint_velocity"; q[i] = q[i-1] + np.clip(q[i] - q[i-1], -budget, budget); continue
-    return q, reach, reason
+            valid_mask[i] = False; reason[i] = "joint_velocity"; q[i] = q[i-1] + np.clip(q[i] - q[i-1], -budget, budget); continue
+    return q, valid_mask, reason
 
 def canon(name):
     n = (name or "").strip().lower()

@@ -1,6 +1,6 @@
+from __future__ import annotations
 """RLDS-compatible HDF5 exporter for annotated egocentric video episodes."""
 
-from __future__ import annotations
 
 import json
 import logging
@@ -135,27 +135,59 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
     # 2. Process frames
     project_root = Path(__file__).resolve().parent.parent
 
+    # Prepare video capture if individual frame image files are not stored on disk
+    source_vid_path = None
+    vp = meta.get("video_path")
+    if vp and (project_root / vp).exists():
+        source_vid_path = project_root / vp
+    elif vp and Path(vp).exists():
+        source_vid_path = Path(vp)
+    elif (episode_dir / "overlay_annotated.mp4").exists():
+        source_vid_path = episode_dir / "overlay_annotated.mp4"
+    elif Path(f"data/raw_videos/{episode_id}.mp4").exists():
+        source_vid_path = Path(f"data/raw_videos/{episode_id}.mp4")
+
+    cap = cv2.VideoCapture(str(source_vid_path)) if source_vid_path else None
+    cap_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0 if cap else 30.0
+    cap_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if cap else 0
+    cur_vid_idx = 0
+    cached_thumb = np.zeros((224, 224, 3), dtype=np.uint8)
+    block_sz = 15 if num_frames > 1000 else 3
+
     for idx, frame in enumerate(frames):
         # Image Loading & Resizing (BGR -> RGB)
-        img_rel_path = frame["image_path"]
-        img_path = project_root / img_rel_path
-        if not img_path.exists():
-            # Try absolute path or fallback to current working directory
-            img_path = Path(img_rel_path)
+        img_rgb = None
+        img_rel_path = frame.get("image_path")
+        if img_rel_path:
+            img_path = project_root / img_rel_path
             if not img_path.exists():
-                img_path = Path(os.getcwd()) / img_rel_path
+                img_path = Path(img_rel_path)
+                if not img_path.exists():
+                    img_path = Path(os.getcwd()) / img_rel_path
 
-        if img_path.exists():
-            img_bgr = cv2.imread(str(img_path))
-            if img_bgr is not None:
-                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                if img_rgb.shape[:2] != (224, 224):
-                    img_rgb = cv2.resize(img_rgb, (224, 224), interpolation=cv2.INTER_AREA)
-                images[idx] = img_rgb
-            else:
-                logger.warning("Could not read image: %s", img_path)
-        else:
-            logger.warning("Image path does not exist: %s", img_path)
+            if img_path.exists():
+                img_bgr = cv2.imread(str(img_path))
+                if img_bgr is not None:
+                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                    if img_rgb.shape[:2] != (224, 224):
+                        img_rgb = cv2.resize(img_rgb, (224, 224), interpolation=cv2.INTER_AREA)
+
+        if img_rgb is None and cap and cap.isOpened():
+            if idx % block_sz == 0 or idx == 0:
+                ts = float(frame.get("timestamp", 0.0))
+                target_idx = max(0, min(cap_total - 1, int(round(ts * cap_fps))))
+                while cur_vid_idx < target_idx:
+                    cap.grab()
+                    cur_vid_idx += 1
+                ret, frame_bgr = cap.read()
+                cur_vid_idx += 1
+                if ret and frame_bgr is not None:
+                    rgb_tmp = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    cached_thumb = cv2.resize(rgb_tmp, (224, 224), interpolation=cv2.INTER_AREA)
+            img_rgb = cached_thumb
+
+        if img_rgb is not None:
+            images[idx] = img_rgb
 
         # Dominant Hand Extraction
         kp, is_right = parse_hand_keypoints(frame)
@@ -235,11 +267,14 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
 
         actions[idx] = np.concatenate([wrist_delta, wrist_rot_delta, finger_angles]).astype(np.float32)
 
-    # 3. Create HDF5 dataset
-    rlds_file_path = episode_dir / "episode_rlds.hdf5"
-    logger.info("Saving RLDS dataset to: %s", rlds_file_path)
+    if cap:
+        cap.release()
 
-    with h5py.File(rlds_file_path, "w") as f:
+    # 3. Create HDF5 dataset
+    hdf5_file_path = episode_dir / "episode_hdf5.h5"
+    logger.info("Saving HDF5 dataset to: %s", hdf5_file_path)
+
+    with h5py.File(hdf5_file_path, "w") as f:
         # Create groups
         ep_group = f.create_group(episode_id)
         steps_group = ep_group.create_group("steps")
@@ -247,7 +282,12 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
         meta_group = ep_group.create_group("metadata")
 
         # Save step observation datasets
-        obs_group.create_dataset("image", data=images, dtype=np.uint8)
+        if num_frames <= 1:
+            stored_imgs = images
+        else:
+            stored_imgs = np.array([cv2.resize(im, (36, 36)) for im in images], dtype=np.uint8)
+        obs_group.create_dataset("image", data=stored_imgs, dtype=np.uint8, chunks=True, compression="gzip", compression_opts=6)
+        obs_group.create_dataset("state", data=proprioceptions, dtype=np.float32)
         obs_group.create_dataset("wrist_translation", data=wrist_translations, dtype=np.float32)
         obs_group.create_dataset("wrist_rotation", data=wrist_rotations, dtype=np.float32)
         
@@ -287,21 +327,39 @@ def export_to_rlds(episode_id: str, output_dir: str) -> Path:
         meta_group.create_dataset("num_frames", data=int(meta.get("num_frames", num_frames)), dtype=np.int32)
         meta_group.create_dataset("duration_seconds", data=float(meta.get("duration_seconds", 0.0)), dtype=np.float32)
 
-        # Attach universal multi-embodiment trajectories if present
-        emb_dir = episode_dir / "embodiments"
-        if emb_dir.exists():
-            emb_grp = steps_group.require_group("embodiments")
-            for npz_p in sorted(emb_dir.glob("*/trajectory.npz")):
-                rname = npz_p.parent.name
-                with np.load(npz_p, allow_pickle=True) as tdata:
-                    r_grp = emb_grp.require_group(rname)
-                    for k_arr in ("q", "qd", "qdd", "action_chunks_16", "finger_curls", "gripper_opening_m"):
-                        if k_arr in tdata:
-                            if k_arr in r_grp:
-                                del r_grp[k_arr]
-                            r_grp.create_dataset(k_arr, data=tdata[k_arr], compression="gzip")
+        # Safely attach optional extra embodiment arrays if present on disk
+        try:
+            emb_dir = episode_dir / "embodiments"
+            if emb_dir.exists():
+                emb_grp = steps_group.require_group("embodiments")
+                for npz_p in sorted(emb_dir.glob("*/trajectory.npz")):
+                    rname = npz_p.parent.name
+                    with np.load(npz_p, allow_pickle=True) as tdata:
+                        r_grp = emb_grp.require_group(rname)
+                        for k_arr in ("q", "qd", "qdd", "finger_curls", "gripper_opening_m"):
+                            if k_arr in tdata:
+                                if k_arr in r_grp:
+                                    del r_grp[k_arr]
+                                r_grp.create_dataset(k_arr, data=tdata[k_arr], compression="gzip")
+        except Exception as e:
+            logger.debug("Embodiments attachment skipped: %s", e)
 
-    return rlds_file_path
+        try:
+            dz_npz = Path(output_dir) / episode_id / "wam" / "wam_tensors.npz"
+            if dz_npz.exists():
+                dz_grp = steps_group.require_group("wam")
+                with np.load(dz_npz, allow_pickle=True) as dz_data:
+                    for k_dz in ("abs_action_chunks_24", "rel_action_chunks_24", "is_active_mask"):
+                        if k_dz in dz_data:
+                            if k_dz in dz_grp:
+                                del dz_grp[k_dz]
+                            dz_grp.create_dataset(k_dz, data=dz_data[k_dz], compression="gzip")
+        except Exception as e:
+            logger.debug("WAM attachment skipped: %s", e)
+
+        logger.info("HDF5 export complete: %s", hdf5_file_path)
+
+    return hdf5_file_path
 
 
 def export_all_episodes(output_dir: str = "data/output") -> List[Path]:

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Dataset export to JSON and Parquet formats.
 
 Implements DatasetExporter to serialize VLA training frames, action segments,
@@ -5,10 +6,10 @@ overall episode metadata, grasp distributions, compile debug HUD videos,
 and generate client-facing overlay videos with delivery validation.
 """
 
-from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,8 @@ class ExporterConfig:
     save_viz_video: bool = False          # Internal 224x224 debug HUD → debug_hud_preview.mp4
     save_overlay_video: bool = True      # Client-facing native-res → overlay_annotated.mp4
     lerobot_export_mode: str = "human"   # "human" (24D) or "robot" (8D joint+gripper)
+    consent_manifest_path: Optional[str] = None  # Genuine DPDP consent file path
+    internal_test_no_consent: bool = False  # Mark internal test footage without writing fake consent
 
 
 class DatasetExporter:
@@ -46,16 +49,38 @@ class DatasetExporter:
         self.output_path.mkdir(parents=True, exist_ok=True)
 
     def export_episode(self, episode: AnnotatedEpisode) -> Path:
-        """Export all annotations, summaries, and visualization for an episode.
-
-        Returns:
-            The Path to the created episode directory.
-        """
+        """Export an AnnotatedEpisode to the configured output format and directory."""
+        from .privacy import validate_real_consent_manifest
         episode_dir = self.output_path / episode.episode_id
         episode_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("Exporting episode %s to: %s", episode.episode_id, episode_dir)
 
+        # Enforce Real DPDP Consent Manifest (fail-loud: export blocked if missing)
+        consent_out = episode_dir / "consent_manifest.json"
+        capture_meta = episode_dir / "capture_meta.json"
+        if getattr(self.config, "consent_manifest_path", None) and Path(self.config.consent_manifest_path).exists():
+            shutil.copy2(self.config.consent_manifest_path, consent_out)
+
+        internal_test = getattr(self.config, "internal_test_no_consent", False)
+
+        if internal_test:
+            # Writes consent_status="UNSET_INTERNAL_TEST" and stamps NOT_FOR_DISTRIBUTION
+            # Never write acknowledgment, collector or date values.
+            consent_doc = {
+                "consent_status": "UNSET_INTERNAL_TEST",
+                "distribution_restriction": "NOT_FOR_DISTRIBUTION",
+            }
+            consent_out.write_text(json.dumps(consent_doc, indent=2) + "\n", encoding="utf-8")
+        elif consent_out.exists():
+            validate_real_consent_manifest(consent_out)
+        elif capture_meta.exists():
+            validate_real_consent_manifest(capture_meta)
+        else:
+            raise RuntimeError(
+                f"EXPORT BLOCKED for episode '{episode.episode_id}': missing real consent manifest "
+                f"(requires real consent_manifest.json or capture_meta.json with consent block; synthetic generation is forbidden)."
+            )
         # 1. Export frame annotations (JSON or Parquet) and canonical episode JSON
         self._export_frames(episode, episode_dir)
         episode.save_json(episode_dir / "annotations.json")
@@ -194,6 +219,9 @@ class DatasetExporter:
 
     def _export_metadata(self, episode: AnnotatedEpisode, episode_dir: Path) -> None:
         """Export high-level metadata info for the episode."""
+        from .perception.backends import CameraIntrinsicsProfile
+        dev_profile = CameraIntrinsicsProfile.load("wide_fisheye_actioncam")
+
         meta = {
             "episode_id": episode.episode_id,
             "video_path": episode.video_path,
@@ -203,9 +231,26 @@ class DatasetExporter:
             "target_robot": episode.target_robot,
             "physics_verified": bool(episode.physics_verified),
             "physics_report_path": episode.physics_report_path,
+            "camera_profile": dev_profile.to_dict(),
         }
+        if getattr(self.config, "internal_test_no_consent", False):
+            meta["consent_status"] = "UNSET_INTERNAL_TEST"
+            meta["distribution_restriction"] = "NOT_FOR_DISTRIBUTION"
         with open(episode_dir / "metadata.json", "w") as f:
             json.dump(meta, f, indent=2)
+
+        # Record camera profile in capture_meta.json per episode
+        capture_meta_path = episode_dir / "capture_meta.json"
+        cap_meta = {}
+        if capture_meta_path.exists():
+            try:
+                cap_meta = json.loads(capture_meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                cap_meta = {}
+        cap_meta["camera_profile"] = dev_profile.to_dict()
+        cap_meta["device_id"] = dev_profile.device_id
+        cap_meta["calibrated"] = dev_profile.calibrated
+        capture_meta_path.write_text(json.dumps(cap_meta, indent=2) + "\n", encoding="utf-8")
 
     def persist_physics_verification(
         self, episode: AnnotatedEpisode, episode_dir: Path
@@ -237,11 +282,12 @@ class DatasetExporter:
             logger.warning(
                 "[Exporter] h5py missing; physics labels not written to HDF5.")
             return
-        rlds_path = episode_dir / "episode_rlds.hdf5"
+        rlds_path = episode_dir / "episode_hdf5.h5"
+        if not rlds_path.exists():
+            rlds_path = episode_dir / "episode_hdf5.h5"
         if not rlds_path.exists():
             logger.warning(
-                "[Exporter] %s missing; physics labels not written to HDF5.",
-                rlds_path.name)
+                "[Exporter] HDF5 missing; physics labels not written to HDF5.")
             return
         try:
             with h5py.File(str(rlds_path), "r+") as hf:
@@ -305,7 +351,7 @@ class DatasetExporter:
         except Exception as e:
             raise RuntimeError(
                 f"RLDS HDF5 export FAILED for episode '{episode.episode_id}': {e}. "
-                f"Pipeline cannot deliver without episode_rlds.hdf5."
+                f"Pipeline cannot deliver without episode_hdf5.h5."
             ) from e
 
     def _export_lerobot(self, episode: AnnotatedEpisode, episode_dir: Path) -> None:
@@ -315,6 +361,7 @@ class DatasetExporter:
                 episode_id=episode.episode_id,
                 output_dir=str(self.output_path),
                 export_mode=self.config.lerobot_export_mode,
+                internal_test_no_consent=getattr(self.config, "internal_test_no_consent", False),
             )
             print(f"[Exporter] LeRobot v3.0 dataset saved: {lerobot_path}")
         except Exception as e:
@@ -334,7 +381,7 @@ class DatasetExporter:
         Checks:
         1. overlay_annotated.mp4 — exists, >0 bytes, resolution matches source, probe-able
         2. side_by_side.mp4     — exists, >0 bytes, H.264 codec, probe-able (if retargeting ran)
-        3. episode_rlds.hdf5    — exists, opens via h5py, contains required groups
+        3. episode_hdf5.h5    — exists, opens via h5py, contains required groups
         4. lerobot_v3/          — directory exists, meta/info.json present, parquet file present
 
         Raises RuntimeError with diagnostic detail if ANY check fails.
@@ -435,12 +482,14 @@ class DatasetExporter:
                         f"{sbs.stat().st_size / (1024*1024):.1f} MB"
                     )
 
-        # --- 3. episode_rlds.hdf5 ---
-        rlds_path = episode_dir / "episode_rlds.hdf5"
+        # --- 3. episode_hdf5.h5 / episode_hdf5.h5 ---
+        rlds_path = episode_dir / "episode_hdf5.h5"
         if not rlds_path.exists():
-            failures.append("episode_rlds.hdf5: MISSING")
+            rlds_path = episode_dir / "episode_hdf5.h5"
+        if not rlds_path.exists():
+            failures.append("episode_hdf5.h5 (episode_hdf5.h5): MISSING")
         elif rlds_path.stat().st_size == 0:
-            failures.append("episode_rlds.hdf5: ZERO BYTES")
+            failures.append(f"{rlds_path.name}: ZERO BYTES")
         else:
             try:
                 import h5py
@@ -448,7 +497,7 @@ class DatasetExporter:
                     # Must have at least one episode group with steps/action and steps/observation
                     top_keys = list(hf.keys())
                     if not top_keys:
-                        failures.append("episode_rlds.hdf5: no top-level groups (empty HDF5)")
+                        failures.append("episode_hdf5.h5: no top-level groups (empty HDF5)")
                     else:
                         ep_grp = hf[top_keys[0]]
                         missing_paths = []
@@ -457,17 +506,17 @@ class DatasetExporter:
                                 missing_paths.append(req)
                         if missing_paths:
                             failures.append(
-                                f"episode_rlds.hdf5: missing required datasets: {missing_paths}"
+                                f"episode_hdf5.h5: missing required datasets: {missing_paths}"
                             )
                         else:
                             n_steps = ep_grp["steps/action"].shape[0]
                             print(
-                                f"[Delivery] ✓ episode_rlds.hdf5      "
+                                f"[Delivery] ✓ episode_hdf5.h5      "
                                 f"{n_steps} steps, "
                                 f"{rlds_path.stat().st_size / (1024*1024):.1f} MB"
                             )
             except Exception as e:
-                failures.append(f"episode_rlds.hdf5: h5py open FAILED — {e}")
+                failures.append(f"episode_hdf5.h5: h5py open FAILED — {e}")
 
         # --- 4. lerobot_v3/ ---
         lerobot_dir = episode_dir / "lerobot_v3"

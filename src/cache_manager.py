@@ -1,5 +1,5 @@
-"""Deterministic disk caching for VLM responses and pipeline stages."""
 from __future__ import annotations
+"""Deterministic disk caching for VLM responses and pipeline stages."""
 
 import hashlib
 import json

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Grasp-to-gripper opening mapper.
 
 Task 4 of the retargeting pipeline: map GraspType (from grasp_classifier.py)
@@ -21,7 +22,6 @@ SIMPLIFICATION CAVEAT (stated explicitly per project requirement):
 All gripper limits (min/max opening) come from the URDF via RobotKinematics —
 nothing is hardcoded in the mapping logic.
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field

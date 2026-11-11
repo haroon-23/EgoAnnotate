@@ -27,7 +27,7 @@ VIDEO_KEY = "observation.images.ego"
 
 def _set_task_description(ep_dir: Path, episode_id: str, desc: str):
     """Rewrite the HDF5 task_description (the exporter's source of truth)."""
-    with h5py.File(ep_dir / "episode_rlds.hdf5", "r+") as f:
+    with h5py.File(ep_dir / "episode_hdf5.h5", "r+") as f:
         meta_grp = f[episode_id]["metadata"]
         del meta_grp["task_description"]
         meta_grp.create_dataset(

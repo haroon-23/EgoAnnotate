@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Gated physics verifier for exported episodes (Phase E, Stage 9b).
 
 Library version of the ``scripts/physics_replay.py`` protocol. Where the
@@ -26,7 +27,6 @@ sets the ``physics_verified`` label; the pipeline keeps all data either way.
 ``scripts/hero_clip.py`` reuses :func:`build_verification_scene`,
 :func:`replay_frame`, :func:`activate_weld` and :func:`deactivate_weld`.
 """
-from __future__ import annotations
 
 import json
 import logging
@@ -482,7 +482,7 @@ class EpisodeVerifier:
         """Verify one exported episode. Never raises for physics outcomes.
 
         Args:
-            hdf5_path: Exported ``episode_rlds.hdf5`` (exporter layout:
+            hdf5_path: Exported ``episode_hdf5.h5`` (exporter layout:
                 ``<ep>/steps/observation/{robot_joint_angles,
                 robot_gripper_opening_m, robot_reachable}``).
             episode_id: Episode group; defaults to the first group.

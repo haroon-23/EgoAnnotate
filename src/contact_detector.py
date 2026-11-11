@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Hand-object contact detection with real geometry and persistent identity tracking."""
 
-from __future__ import annotations
 
 import logging
 from collections import deque
@@ -142,7 +142,7 @@ class ContactDetector:
         best_in_contact = False
         best_proximity_conf = 0.0
 
-        best_score = -999.0
+        best_rank = -999.0
         for t_obj in tracked_objs:
             obj_id = t_obj["id"]
             bbox = t_obj["bbox"]
@@ -165,9 +165,9 @@ class ContactDetector:
                 )
                 cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
                 dist = float(np.hypot(cx - hand_kps[0][0], cy - hand_kps[0][1]))
-                score = tips_inside * 10.0 - dist
-                if score > best_score:
-                    best_score = score
+                candidate_rank = tips_inside * 10.0 - dist
+                if candidate_rank > best_rank:
+                    best_rank = candidate_rank
                     best_object_name = canon_name
                     best_in_contact = True
                     best_proximity_conf = 1.0
@@ -212,25 +212,27 @@ class ContactDetector:
             tips = hand.fingertip_positions()
             wrist = np.array([hand.x[0], hand.y[0], hand.z[0]], dtype=np.float64)
             mcp_mid = np.array([hand.x[9], hand.y[9], hand.z[9]], dtype=np.float64)
-            palm_scale = max(float(np.linalg.norm(mcp_mid[:2] - wrist[:2])), 0.04)
-            thumb_index_ratio = float(np.linalg.norm(tips[0, :2] - tips[1, :2])) / palm_scale
-            thumb_mid_ratio = float(np.linalg.norm(tips[0, :2] - tips[2, :2])) / palm_scale
-            # Only trigger kinematic pinch contact when objects with bbox are absent
-            has_any_bbox = any(o.bbox is not None for o in objects)
-            if (not has_any_bbox) and (thumb_index_ratio < 0.42 or thumb_mid_ratio < 0.42):
-                best_in_contact = True
-                best_object_name = next(
-                    (o.name for o in objects if o.name and o.name.lower() not in ("person", "hand", "arm", "unknown")),
-                    "manipulated_object",
-                )
-                best_fingers = np.array([
-                    True,
-                    thumb_index_ratio < 0.45,
-                    thumb_mid_ratio < 0.48,
-                    False,
-                    False,
-                ], dtype=bool)
-                best_proximity_conf = float(np.clip(1.0 - min(thumb_index_ratio, thumb_mid_ratio), 0.55, 0.85))
+            actual_palm = float(np.linalg.norm(mcp_mid[:2] - wrist[:2]))
+            if actual_palm >= 0.02:
+                palm_scale = max(actual_palm, 0.04)
+                thumb_index_ratio = float(np.linalg.norm(tips[0, :2] - tips[1, :2])) / palm_scale
+                thumb_mid_ratio = float(np.linalg.norm(tips[0, :2] - tips[2, :2])) / palm_scale
+                # Only trigger kinematic pinch contact when objects with bbox are absent
+                has_any_bbox = any(o.bbox is not None for o in objects)
+                if (not has_any_bbox) and (thumb_index_ratio < 0.42 or thumb_mid_ratio < 0.42):
+                    best_in_contact = True
+                    best_object_name = next(
+                        (o.name for o in objects if o.name and o.name.lower() not in ("person", "hand", "arm", "unknown")),
+                        "manipulated_object",
+                    )
+                    best_fingers = np.array([
+                        True,
+                        thumb_index_ratio < 0.45,
+                        thumb_mid_ratio < 0.48,
+                        False,
+                        False,
+                    ], dtype=bool)
+                    best_proximity_conf = float(np.clip(1.0 - min(thumb_index_ratio, thumb_mid_ratio), 0.55, 0.85))
 
         # Temporal smoothing
         raw_conf = best_proximity_conf * depth_consistency if best_in_contact else 0.0

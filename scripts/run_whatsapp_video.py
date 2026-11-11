@@ -46,7 +46,7 @@ def main():
         logger.error("Strict delivery verification FAILED with exit code %d", res.returncode)
         sys.exit(res.returncode)
     else:
-        logger.info("ALL CHECKS PASSED SUCCESSFULLY FOR whatsapp_video.mp4!")
+        logger.info("Delivery verification passed successfully for whatsapp_video.mp4!")
 
 if __name__ == "__main__":
     main()

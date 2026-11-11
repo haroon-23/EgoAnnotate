@@ -1,5 +1,5 @@
-"""Phase 1 tests: Fail-loud behavior, no 5-finger fallback, fixed-anchor metric scaling, camera motion, caching."""
 from __future__ import annotations
+"""Phase 1 tests: Fail-loud behavior, no 5-finger fallback, fixed-anchor metric scaling, camera motion, caching."""
 
 from pathlib import Path
 import sys

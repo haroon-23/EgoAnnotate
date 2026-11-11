@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """CLI entry point for the ego_annotate_vla_pipeline.
 
@@ -5,7 +6,6 @@ Allows executing the annotation pipeline on single or multiple egocentric video 
 using configuration specifications.
 """
 
-from __future__ import annotations
 
 import argparse
 import glob
@@ -195,12 +195,47 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--consent-manifest",
+        type=str,
+        default=None,
+        help="Path to verified, genuine DPDP consent manifest JSON required for export",
+    )
+    parser.add_argument(
+        "--require-vlm",
+        action="store_true",
+        help="Fail closed if VLM API narration fails instead of falling back to template captions",
+    )
+    parser.add_argument(
+        "--no-vlm",
+        action="store_true",
+        help="Run 100%% offline using deterministic kinematic segment captions (caption_source='template')",
+    )
+    parser.add_argument(
+        "--device-id",
+        type=str,
+        default="generic_smartphone",
+        help="Camera intrinsics profile under configs/devices/<device_id>.yaml",
+    )
+    parser.add_argument(
+        "--urdf",
+        type=str,
+        default=None,
+        help="Optional path to custom robot URDF for UniversalRobotProfile retargeting",
+    )
+    parser.add_argument(
         "--merge-lerobot",
         action="store_true",
         default=False,
         help="After LeRobot export, merge all per-episode lerobot_v3 exports into "
              "one training dataset (uses the merge: section of the config). "
              "Standalone merge is also available via scripts/merge_lerobot.py.",
+    )
+    parser.add_argument(
+        "--internal-test-no-consent",
+        action="store_true",
+        default=False,
+        help="Mark unconsented internal research/test videos: writes consent_status='UNSET_INTERNAL_TEST' "
+             "and stamps 'NOT_FOR_DISTRIBUTION' in info.json and manifest.json without writing fake metadata.",
     )
 
     args = parser.parse_args()
@@ -257,6 +292,14 @@ def main() -> None:
     # Initialize and run pipeline
     try:
         pipeline = EgoAnnotatePipeline(config_path=args.config)
+        if getattr(args, "device_id", None):
+            pipeline.config.setdefault("camera", {})["device_id"] = args.device_id
+        if getattr(args, "internal_test_no_consent", False):
+            pipeline.config.setdefault("pipeline", {})["internal_test_no_consent"] = True
+            pipeline.config["internal_test_no_consent"] = True
+            pipeline.dataset_exporter.config.internal_test_no_consent = True
+        if getattr(args, "consent_manifest", None):
+            pipeline.dataset_exporter.config.consent_manifest_path = args.consent_manifest
         if getattr(args, "allow_partial", False):
             pipeline.config.setdefault("pipeline", {})["allow_partial"] = True
         successful_episodes = pipeline.process_videos(video_paths)
@@ -302,14 +345,14 @@ def main() -> None:
                 if args.export_lerobot != "":
                     print(f"  - Exporting specific episode '{args.export_lerobot}' to LeRobot...")
                     try:
-                        export_to_lerobot(args.export_lerobot, output_dir, export_mode=export_mode)
+                        export_to_lerobot(args.export_lerobot, output_dir, export_mode=export_mode, internal_test_no_consent=getattr(args, "internal_test_no_consent", False))
                     except Exception as e:
                         print(f"Error exporting LeRobot for '{args.export_lerobot}': {e}", file=sys.stderr)
                 else:
                     for ep in successful_episodes:
                         print(f"  - Exporting episode '{ep.episode_id}' to LeRobot...")
                         try:
-                            lerobot_path = export_to_lerobot(ep.episode_id, output_dir, export_mode=export_mode)
+                            lerobot_path = export_to_lerobot(ep.episode_id, output_dir, export_mode=export_mode, internal_test_no_consent=getattr(args, "internal_test_no_consent", False))
                             print(f"    Saved: {lerobot_path.relative_to(output_dir)}")
                         except Exception as e:
                             print(f"Error exporting LeRobot for '{ep.episode_id}': {e}", file=sys.stderr)

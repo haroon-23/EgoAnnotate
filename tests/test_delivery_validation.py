@@ -5,7 +5,7 @@ Verifies that validate_delivery() correctly:
 - Fails for missing overlay files
 - Fails for resolution mismatches (the exact bug this fix addresses)
 - Fails for zero-byte files
-- Fails for missing episode_rlds.hdf5  (NEW: all-4-deliverable enforcement)
+- Fails for missing episode_hdf5.h5  (NEW: all-4-deliverable enforcement)
 - Fails for missing side_by_side.mp4  (NEW: when retargeting data is present)
 - Fails for missing lerobot_v3/       (NEW: all-4-deliverable enforcement)
 """
@@ -106,7 +106,7 @@ class TestDeliveryValidation(unittest.TestCase):
 
         # Also need HDF5 and lerobot_v3 for full validation to pass
         import h5py, json, pandas as pd
-        rlds_path = episode_dir / "episode_rlds.hdf5"
+        rlds_path = episode_dir / "episode_hdf5.h5"
         with h5py.File(rlds_path, "w") as hf:
             ep = hf.create_group("ep_no_source")
             steps = ep.create_group("steps")
@@ -153,10 +153,10 @@ class TestDeliveryValidation(unittest.TestCase):
         _create_test_video(episode_dir / "overlay_annotated.mp4", 640, 480, num_frames=10)
 
     def _make_valid_rlds(self, episode_dir: Path) -> None:
-        """Helper: create a minimal valid episode_rlds.hdf5."""
+        """Helper: create a minimal valid episode_hdf5.h5."""
         import h5py
         ep_id = episode_dir.name
-        rlds_path = episode_dir / "episode_rlds.hdf5"
+        rlds_path = episode_dir / "episode_hdf5.h5"
         with h5py.File(rlds_path, "w") as hf:
             ep = hf.create_group(ep_id)
             steps = ep.create_group("steps")
@@ -181,7 +181,7 @@ class TestDeliveryValidation(unittest.TestCase):
         )
 
     def test_validate_delivery_fails_missing_rlds(self):
-        """Missing episode_rlds.hdf5 must raise RuntimeError."""
+        """Missing episode_hdf5.h5 must raise RuntimeError."""
         episode_dir = self.output_dir / "ep_no_rlds"
         episode_dir.mkdir(parents=True)
         source_path = self.output_dir / "source_rlds.mp4"
@@ -191,7 +191,7 @@ class TestDeliveryValidation(unittest.TestCase):
 
         with self.assertRaises(RuntimeError) as ctx:
             self.exporter.validate_delivery(episode_dir, str(source_path))
-        self.assertIn("episode_rlds.hdf5", str(ctx.exception))
+        self.assertIn("episode_hdf5.h5", str(ctx.exception))
         self.assertIn("MISSING", str(ctx.exception))
 
     def test_validate_delivery_fails_missing_side_by_side(self):

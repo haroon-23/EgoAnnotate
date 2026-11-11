@@ -1,3 +1,4 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """L0 validation for a LeRobot v3 export root (see src/lerobot_exporter.py).
 
@@ -24,7 +25,6 @@ Usage:
 Exit code 0 = all checks pass, 1 = one or more failures.
 """
 
-from __future__ import annotations
 
 import json
 import sys

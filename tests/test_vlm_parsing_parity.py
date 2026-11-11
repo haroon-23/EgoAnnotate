@@ -150,6 +150,7 @@ def test_segment_labeler_gemini_vs_local_shape_identical():
     assert gemini_out == local_out == {
         "action": "grasp",
         "description": "grasping the red cup",
+        "caption_source": "vlm",
     }
 
 

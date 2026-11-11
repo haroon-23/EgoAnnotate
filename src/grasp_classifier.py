@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Grasp type classification from hand landmarks.
 
 Classifies the type of grasp (precision pinch, power wrap, hook, open, or unknown)
 based on hand geometric features such as finger curling and thumb-index distance.
 """
 
-from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field

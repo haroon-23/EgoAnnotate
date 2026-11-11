@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Back-compatibility shim for the OWL-ViT detector.
 
 The detector that historically lived here (misnamed ``GroundingDINODetector`` —
@@ -7,7 +8,6 @@ old import path, class name, config name, factory, and ``detect()`` signature
 working. New code should import from ``src.perception`` instead.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import List, Optional

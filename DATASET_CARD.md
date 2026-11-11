@@ -1,6 +1,6 @@
 # EgoAnnotate v1.0 Dataset Card & Schema Specification
 
-EgoAnnotate converts monocular first-person (egocentric) human manipulation videos into embodiment-agnostic human hand trajectories and retargeted robot joint trajectories exported in **LeRobot v3**, **RLDS HDF5**, **MCAP v0**, and **JSON**.
+EgoAnnotate converts monocular first-person (egocentric) human manipulation videos into embodiment-agnostic human hand trajectories and retargeted robot joint trajectories exported in **LeRobot v3**, **HDF5 (`episode_hdf5.h5`)**, **MCAP v0**, and **JSON**.
 
 ## 1. Coordinate Frames & Units
 
@@ -35,7 +35,7 @@ Each processed episode `data/output/<episode_id>/` contains:
 1. `annotations.json`: Complete episode metadata, per-frame annotations, temporal segments, camera motion, and retargeting metrics.
 2. `summary.json`: High-level quality and feasibility summary metrics.
 3. `manifest.json`: Atomic execution audit trail with exit code, stage runtimes, error log, and system telemetry.
-4. `episode_rlds.hdf5`: Standard RLDS dataset for VLA training.
+4. `episode_hdf5.h5`: Gzip-compressed HDF5 episode container (`episode_hdf5.h5`).
 5. `lerobot_v3/`: Hugging Face LeRobot dataset (`meta/info.json` + `data/chunk-*.parquet`).
 6. `episode.mcap`: Foxglove Studio / ROS2 compatible MCAP v0 stream separating `/human/*` from `/robot/*` channels.
 7. `overlay_annotated.mp4`: Full native-resolution video with 2D/3D tracking, grasp labels, contacts, and task overlay.

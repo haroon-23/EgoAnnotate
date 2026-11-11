@@ -1,3 +1,4 @@
+from __future__ import annotations
 """World-locked and object-centric trajectory solver for table-mounted arm robots.
 
 Solves the 3 domain gaps when retargeting egocentric human video to fixed-base arm robots:
@@ -8,7 +9,6 @@ Solves the 3 domain gaps when retargeting egocentric human video to fixed-base a
   3. Canonical Arm Grasp Approach Frame: Maps human palm orientation deltas onto the
      robot gripper's ergonomic tabletop approach frame (avoiding wrist singularities).
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
