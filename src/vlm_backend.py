@@ -1,15 +1,19 @@
-"""Dual VLM backend: Gemini API (production) + local SmolVLM (offline/dev).
-
-Phase D. Mirrors the Phase-C ``Detector2D`` pattern:
+"""VLM backends: Gemini, OpenAI-compatible HTTPS, local SmolVLM, or none.
 
   - :class:`VLMRequest` / :class:`VLMResponse` dataclasses
   - :class:`VLMBackend` protocol (``name``, ``is_available()``, ``generate()``)
   - :class:`GeminiBackend`: thin wrapper over :mod:`src.gemini_client`
-    (all google-genai SDK logic lives there — untouched)
-  - :class:`LocalVLMBackend`: SmolVLM-500M-Instruct via transformers,
-    CPU-only, lazy model load
-  - :func:`create_vlm_backend`: returns a working backend or ``None``;
-    never raises
+  - :class:`OpenAICompatibleBackend`: plain chat-completions over HTTPS; one
+    backend for NVIDIA's hosted API (integrate.api.nvidia.com), a self-hosted
+    vLLM/NIM server, or Ollama
+  - :class:`LocalVLMBackend`: SmolVLM via transformers, CPU, lazy load
+  - :class:`NullVLMBackend`: the ``none`` choice (template language only)
+  - :class:`VLMBudget` + :class:`ManagedBackend`: the single place that
+    enforces the per-episode request budget (retries included) and the
+    on-disk response cache
+  - :func:`select_backend` / :func:`create_managed_backend`: the factory for
+    ``vlm.backend: auto | gemini | openai_compatible | local | none``
+  - :func:`create_vlm_backend`: legacy factory, returns a backend or ``None``
 
 Plus the shared output-contract layer (:func:`parse_json_strict` with a
 one-shot repair re-prompt hook) and the video frame sampler used by the
@@ -25,15 +29,22 @@ Rules (same as Phase C):
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import logging
 import os
 import re
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 import cv2
 import numpy as np
@@ -70,9 +81,10 @@ except ImportError:
 
 @dataclass
 class VLMBackendConfig:
-    """Configuration for both VLM backends (mirrors ``configs/default.yaml``)."""
+    """Configuration for all VLM backends (mirrors the ``vlm:`` block of ``configs/default.yaml``)."""
 
-    backend: str = "gemini"  # "gemini" | "local"
+    # "auto" | "gemini" | "openai_compatible" | "local" | "none"
+    backend: str = "gemini"
     gemini_model: str = "gemini-2.5-flash"
     gemini_api_key: Optional[str] = None  # None -> GEMINI_API_KEY env var
     local_model: str = SMOLVLM_MODEL_ID
@@ -83,6 +95,61 @@ class VLMBackendConfig:
     video_frames: int = 8  # stills sampled to replace Gemini video upload
     timeout_s: float = 300.0  # local CPU inference is slow; fail loud, don't hang
     on_unavailable: str = "degrade"  # "degrade" = use per-stage fallbacks
+    # --- openai_compatible (NVIDIA hosted API, vLLM/NIM, Ollama) ---
+    base_url: str = ""  # e.g. https://integrate.api.nvidia.com/v1 or http://localhost:8000/v1
+    model: str = ""  # model id sent to the endpoint
+    api_key_env: str = "NVIDIA_API_KEY"  # env var NAME holding the key; "" = no auth
+    request_timeout_s: float = 60.0
+    max_retries: int = 2  # extra attempts on 429/5xx/network errors; each counts against the budget
+    json_mode: bool = False  # send response_format={"type":"json_object"} (not all servers accept it)
+    # --- cost control ---
+    max_requests_per_episode: int = 3
+    keyframes_per_request: int = 5
+    keyframe_max_side: int = 448
+    cache_enabled: bool = True
+    cache_path: str = "cache/vlm_cache.json"
+
+    @classmethod
+    def from_config(cls, config: Optional[dict]) -> "VLMBackendConfig":
+        """Build from a full pipeline config dict (reads ``vlm`` and ``gemini``).
+
+        Unlike the bare dataclass (legacy default ``gemini``), the config
+        default is ``auto`` so a machine without a key still runs.
+        """
+        config = config or {}
+        v = config.get("vlm") or {}
+        g = config.get("gemini") or {}
+        d = cls()
+
+        def pick(key: str):
+            val = v.get(key)
+            default = getattr(d, key)
+            return default if val is None else type(default)(val)
+
+        return cls(
+            backend=str(v.get("backend") or "auto"),
+            gemini_model=str(v.get("gemini_model") or g.get("model") or d.gemini_model),
+            gemini_api_key=v.get("gemini_api_key") or g.get("api_key"),
+            local_model=pick("local_model"),
+            local_weights=pick("local_weights"),
+            device=pick("device"),
+            max_new_tokens=pick("max_new_tokens"),
+            temperature=pick("temperature"),
+            video_frames=pick("video_frames"),
+            timeout_s=pick("timeout_s"),
+            on_unavailable=pick("on_unavailable"),
+            base_url=pick("base_url"),
+            model=pick("model"),
+            api_key_env=pick("api_key_env"),
+            request_timeout_s=pick("request_timeout_s"),
+            max_retries=pick("max_retries"),
+            json_mode=bool(v.get("json_mode", d.json_mode)),
+            max_requests_per_episode=pick("max_requests_per_episode"),
+            keyframes_per_request=pick("keyframes_per_request"),
+            keyframe_max_side=pick("keyframe_max_side"),
+            cache_enabled=bool(v.get("cache_enabled", d.cache_enabled)),
+            cache_path=pick("cache_path"),
+        )
 
 
 @dataclass
@@ -96,6 +163,9 @@ class VLMRequest:
     temperature: float = 0.1
     # Gemini-only hint: how long upload_video_file may poll for ACTIVE.
     video_upload_timeout_s: float = 30.0
+    # Called before every network attempt (retries included); raises to veto.
+    # Set by ManagedBackend; excluded from the cache key.
+    on_attempt: Optional[Callable[[], None]] = None
 
 
 @dataclass
@@ -103,8 +173,10 @@ class VLMResponse:
     """Raw model text; parsing stays in the calling stage."""
 
     text: str
-    backend: str  # "gemini" | "local"
+    backend: str  # "gemini" | "openai_compatible" | "local"
     latency_s: float
+    cached: bool = False
+    model: str = ""
 
 
 class VLMBackend(Protocol):
