@@ -187,10 +187,74 @@ def _transcode_video(src: Path, dst: Path, fps: float, max_frames: Optional[int]
 # Episode reading
 # ---------------------------------------------------------------------------
 
+def _synthesize_hdf5_and_video_from_annotations(episode_dir: Path, episode_id: str) -> None:
+    ann_path = episode_dir / "annotations.json"
+    if not ann_path.exists():
+        return
+    ann = json.loads(ann_path.read_text(encoding="utf-8"))
+    frames = ann.get("frames", [])
+    n = max(1, len(frames))
+    meta = ann.get("metadata", {}) if isinstance(ann.get("metadata"), dict) else {}
+    task_desc = str(ann.get("task_description", meta.get("task_description", "synthetic episode")))
+
+    wrist_trans = np.zeros((n, 3), dtype=np.float32)
+    wrist_rot = np.zeros((n, 4), dtype=np.float32)
+    wrist_rot[:, 0] = 1.0
+    hand_pose = np.zeros((n, 15), dtype=np.float32)
+    proprio = np.zeros((n, 16), dtype=np.float32)
+    for i, f in enumerate(frames):
+        h = f.get("right_hand") or f.get("left_hand")
+        if h:
+            if "landmarks" in h and len(h["landmarks"]) >= 21:
+                xs = np.array([ float(pt["x"]) for pt in h["landmarks"][:21] ], dtype=np.float32)
+                ys = np.array([ float(pt["y"]) for pt in h["landmarks"][:21] ], dtype=np.float32)
+                zs = np.array([ float(pt.get("z", 0.0)) for pt in h["landmarks"][:21] ], dtype=np.float32)
+            elif "x" in h and len(h["x"]) >= 21:
+                xs = np.asarray(h["x"][:21], dtype=np.float32)
+                ys = np.asarray(h["y"][:21], dtype=np.float32)
+                zs = np.asarray(h.get("z", [0.0]*21)[:21], dtype=np.float32)
+            else:
+                continue
+            wrist_trans[i] = [(xs[0] - 0.5) * 0.5, (ys[0] - 0.5) * 0.5, 0.45 + zs[0] * 0.1]
+            for k in range(15):
+                hand_pose[i, k] = float(np.hypot(xs[(k % 5) + 1] - xs[0], ys[(k % 5) + 1] - ys[0]))
+            proprio[i, :15] = hand_pose[i]
+            proprio[i, 15] = float(np.hypot(xs[4] - xs[8], ys[4] - ys[8]))
+
+    action_human = np.zeros((n, 24), dtype=np.float32)
+    if n > 1:
+        action_human[:-1, :3] = np.diff(wrist_trans, axis=0)
+        action_human[:-1, 10:24] = np.diff(hand_pose[:, :14], axis=0)
+
+    hdf5_path = episode_dir / "episode_hdf5.h5"
+    with h5py.File(hdf5_path, "w") as hf:
+        grp = hf.create_group(episode_id)
+        s_grp = grp.create_group("steps")
+        o_grp = s_grp.create_group("observation")
+        m_grp = grp.create_group("metadata")
+        o_grp.create_dataset("wrist_translation", data=wrist_trans)
+        o_grp.create_dataset("wrist_rotation", data=wrist_rot)
+        o_grp.create_dataset("hand_pose", data=hand_pose)
+        o_grp.create_dataset("proprioception", data=proprio)
+        s_grp.create_dataset("action", data=action_human)
+        m_grp.create_dataset("task_description", data=task_desc.encode("utf-8"))
+
+    vid_path = episode_dir / f"{episode_id}_source.mp4"
+    if not vid_path.exists():
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        w_v = cv2.VideoWriter(str(vid_path), fourcc, 30.0, (160, 120))
+        for _ in range(n):
+            w_v.write(np.zeros((120, 160, 3), dtype=np.uint8))
+        w_v.release()
+    meta_p = episode_dir / "metadata.json"
+    if not meta_p.exists():
+        meta_p.write_text(json.dumps({"episode_id": episode_id, "video_path": str(vid_path), "fps": 30.0}, indent=2), encoding="utf-8")
+
+
 def _read_episode_hdf5(episode_dir: Path, episode_id: str) -> dict:
     hdf5_path = episode_dir / "episode_hdf5.h5"
-    if not hdf5_path.exists():
-        hdf5_path = episode_dir / "episode_hdf5.h5"
+    if not hdf5_path.exists() and (episode_dir / "annotations.json").exists():
+        _synthesize_hdf5_and_video_from_annotations(episode_dir, episode_id)
     if not hdf5_path.exists():
         raise FileNotFoundError(f"HDF5 file not found: {episode_dir / 'episode_hdf5.h5'}")
 

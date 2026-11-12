@@ -1,0 +1,266 @@
+{
+  "whatsapp_video": {
+    "frames_30hz": 729,
+    "duration_s": 24.267,
+    "fps": 30.0,
+    "objects": [
+      "Tabletop Desktop Items",
+      "Router & Power Adapter"
+    ],
+    "touched_frames": 218,
+    "segments_count": 21,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "reach",
+      "transport"
+    ],
+    "active_ratio_pct": 72.6,
+    "fast_spectral_smoothness_pct": 94.15,
+    "fast_zero_sparsity_pct": 82.49,
+    "egoscale_quality_score": 0.8871,
+    "flora_rubric_score_5": 4.79,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 308.7
+  },
+  "test_10s": {
+    "frames_30hz": 300,
+    "duration_s": 9.967,
+    "fps": 30.0,
+    "objects": [
+      "Light Blue Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 135,
+    "segments_count": 9,
+    "segment_primitives": [
+      "manipulate",
+      "reach",
+      "transport"
+    ],
+    "active_ratio_pct": 72.0,
+    "fast_spectral_smoothness_pct": 97.3,
+    "fast_zero_sparsity_pct": 78.41,
+    "egoscale_quality_score": 0.931,
+    "flora_rubric_score_5": 4.95,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 183.1
+  },
+  "my_video": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "White Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 1054,
+    "segments_count": 64,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "reach",
+      "transport"
+    ],
+    "active_ratio_pct": 49.8,
+    "fast_spectral_smoothness_pct": 90.66,
+    "fast_zero_sparsity_pct": 54.44,
+    "egoscale_quality_score": 0.7604,
+    "flora_rubric_score_5": 4.63,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 3854.4
+  },
+  "client_video": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "White Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 645,
+    "segments_count": 25,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "transport"
+    ],
+    "active_ratio_pct": 53.6,
+    "fast_spectral_smoothness_pct": 84.84,
+    "fast_zero_sparsity_pct": 46.96,
+    "egoscale_quality_score": 0.7385,
+    "flora_rubric_score_5": 4.6,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1820.5
+  },
+  "new_video": {
+    "frames_30hz": 6378,
+    "duration_s": 212.567,
+    "fps": 30.0,
+    "objects": [
+      "Textured Fabric Piece",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 675,
+    "segments_count": 29,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "transport"
+    ],
+    "active_ratio_pct": 44.1,
+    "fast_spectral_smoothness_pct": 85.49,
+    "fast_zero_sparsity_pct": 59.28,
+    "egoscale_quality_score": 0.7153,
+    "flora_rubric_score_5": 4.58,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1950.9
+  },
+  "whatsapp_video_063602": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "White Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 192,
+    "segments_count": 6,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "transport"
+    ],
+    "active_ratio_pct": 20.2,
+    "fast_spectral_smoothness_pct": 83.28,
+    "fast_zero_sparsity_pct": 75.12,
+    "egoscale_quality_score": 0.6416,
+    "flora_rubric_score_5": 4.52,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1208.1
+  },
+  "whatsapp_video_063622": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "Light Blue Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 401,
+    "segments_count": 25,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "reach",
+      "transport"
+    ],
+    "active_ratio_pct": 43.2,
+    "fast_spectral_smoothness_pct": 88.35,
+    "fast_zero_sparsity_pct": 60.46,
+    "egoscale_quality_score": 0.7305,
+    "flora_rubric_score_5": 4.48,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1125.1
+  },
+  "whatsapp_video_063639": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "White Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 821,
+    "segments_count": 32,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "transport"
+    ],
+    "active_ratio_pct": 42.1,
+    "fast_spectral_smoothness_pct": 88.5,
+    "fast_zero_sparsity_pct": 60.96,
+    "egoscale_quality_score": 0.7263,
+    "flora_rubric_score_5": 4.6,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1064.2
+  },
+  "whatsapp_video_063658": {
+    "frames_30hz": 5400,
+    "duration_s": 179.967,
+    "fps": 30.0,
+    "objects": [
+      "White Garment Fabric",
+      "Sewing Machine Presser Foot"
+    ],
+    "touched_frames": 1466,
+    "segments_count": 73,
+    "segment_primitives": [
+      "idle",
+      "manipulate",
+      "transport"
+    ],
+    "active_ratio_pct": 58.3,
+    "fast_spectral_smoothness_pct": 89.72,
+    "fast_zero_sparsity_pct": 51.12,
+    "egoscale_quality_score": 0.7814,
+    "flora_rubric_score_5": 4.66,
+    "embodiment_readiness": {
+      "franka_panda": 100.0,
+      "unitree_g1_upper": 100.0,
+      "unitree_h1_upper": 100.0,
+      "allegro_hand_right": 100.0
+    },
+    "delivery_passed": true,
+    "elapsed_s": 1136.4
+  }
+}

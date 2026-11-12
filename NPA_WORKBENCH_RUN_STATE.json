@@ -1,0 +1,27 @@
+{
+  "npa_cli_version": "npa 0.1.0",
+  "workflow_name": "ego-annotate-wam-production-flywheel",
+  "execution_status": "COMPLETED_ALL_3_WAVES",
+  "wave_1_shared_contract_verified_episodes": "9 / 9",
+  "wave_2_safetensors_and_cosmos3_sidecars_generated": 9,
+  "wave_3_lancedb_table_uri": "data/output/merged_lerobot_v3/meta/lancedb_workbench",
+  "wave_3_live_knn_similarity_top3": [
+    {
+      "episode_id": "client_video",
+      "distance": 0.0,
+      "policy_influence_score": 0.9877
+    },
+    {
+      "episode_id": "whatsapp_video_063658",
+      "distance": 0.017,
+      "policy_influence_score": 0.9861
+    },
+    {
+      "episode_id": "whatsapp_video_063639",
+      "distance": 0.0198,
+      "policy_influence_score": 0.9938
+    }
+  ],
+  "npa_workflow_yaml": "configs/nebius/npa_workbench_pipeline.yaml",
+  "elapsed_s": 5.45
+}

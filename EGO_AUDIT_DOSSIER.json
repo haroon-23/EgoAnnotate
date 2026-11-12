@@ -24,53 +24,53 @@
   },
   "episodes": {
     "client_video": {
-      "num_frames": 300,
-      "num_segments": 8,
+      "num_frames": 1800,
+      "num_segments": 71,
       "tracked_objects": [
-        "Light Blue Fabric",
-        "Sewing Machine Foot"
+        "Light Blue Fabric"
       ],
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 300,
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
       "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
-          "precision_pinch": 102,
-          "open": 7
+          "precision_pinch": 910,
+          "open": 25,
+          "unknown": 1
         },
         "right_grasp_distribution": {
-          "precision_pinch": 36,
-          "open": 10
+          "precision_pinch": 636,
+          "open": 38
         },
-        "left_contact_frames": 108,
-        "right_contact_frames": 42,
-        "total_frames": 300,
-        "ratio_left_contact": 0.36,
-        "ratio_right_contact": 0.14,
-        "tracking_loss_pct": 89.33333333333333,
-        "tracking_loss_pct_active": 81.60919540229885,
+        "left_contact_frames": 669,
+        "right_contact_frames": 481,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.37166666666666665,
+        "ratio_right_contact": 0.26722222222222225,
+        "tracking_loss_pct": 83.05555555555556,
+        "tracking_loss_pct_active": 81.57099697885197,
         "tracking_rescued_pct": 0.0,
-        "tracking_interpolated_pct": 9.666666666666666,
-        "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 84.54454882670257,
+        "tracking_interpolated_pct": 53.333333333333336,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
         "flora_evaluation": {
           "outcome_reward": 1.0,
-          "mean_process_reward": 0.8199,
-          "peak_process_reward": 0.9599,
-          "overall_rubric_score_5": 4.3,
+          "mean_process_reward": 0.775,
+          "peak_process_reward": 0.9991,
+          "overall_rubric_score_5": 4.85,
           "rubric_scores": {
             "task_completion": 5.0,
             "grasp_stability": 5.0,
-            "hand_visibility": 3.52,
-            "camera_stability": 3.01,
+            "hand_visibility": 4.31,
+            "camera_stability": 5.0,
             "kinematic_smoothness": 4.95
           }
         }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
-        "unitree_g1_upper": 100.0,
-        "unitree_h1_upper": 98.8,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 94.4,
         "allegro_hand_right": 100.0
       },
       "universal_embodiments": {
@@ -79,21 +79,21 @@
           "dof": 9,
           "hardware_score": 100.0,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 1.662
+          "mean_ik_residual_mm": 1.946
         },
         "unitree_g1_upper": {
           "kind": "humanoid",
           "dof": 29,
-          "hardware_score": 100.0,
+          "hardware_score": 99.8,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 4.188
+          "mean_ik_residual_mm": 4.388
         },
         "unitree_h1_upper": {
           "kind": "humanoid",
           "dof": 19,
-          "hardware_score": 98.8,
+          "hardware_score": 94.4,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 18.477
+          "mean_ik_residual_mm": 30.921
         },
         "allegro_hand_right": {
           "kind": "hand",
@@ -106,53 +106,54 @@
       "multi_embodiment_proof_video": "data/output/client_video/multi_embodiment_proof.mp4"
     },
     "my_video": {
-      "num_frames": 300,
-      "num_segments": 12,
+      "num_frames": 1800,
+      "num_segments": 75,
       "tracked_objects": [
-        "White Garment Fabric",
-        "Sewing Machine Head"
+        "White Garment Fabric"
       ],
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 300,
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
       "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
-          "open": 232,
-          "precision_pinch": 33
+          "open": 848,
+          "precision_pinch": 492,
+          "hook": 8
         },
         "right_grasp_distribution": {
-          "open": 223,
-          "precision_pinch": 33
+          "open": 1130,
+          "precision_pinch": 458,
+          "hook": 3
         },
-        "left_contact_frames": 258,
-        "right_contact_frames": 184,
-        "total_frames": 300,
-        "ratio_left_contact": 0.86,
-        "ratio_right_contact": 0.6133333333333333,
-        "tracking_loss_pct": 21.0,
-        "tracking_loss_pct_active": 21.0,
+        "left_contact_frames": 210,
+        "right_contact_frames": 776,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.11666666666666667,
+        "ratio_right_contact": 0.4311111111111111,
+        "tracking_loss_pct": 32.333333333333336,
+        "tracking_loss_pct_active": 32.333333333333336,
         "tracking_rescued_pct": 0.0,
-        "tracking_interpolated_pct": 18.666666666666668,
-        "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 45.37315922268366,
+        "tracking_interpolated_pct": 61.611111111111114,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
         "flora_evaluation": {
           "outcome_reward": 1.0,
-          "mean_process_reward": 0.7941,
-          "peak_process_reward": 0.9692,
-          "overall_rubric_score_5": 4.79,
+          "mean_process_reward": 0.7918,
+          "peak_process_reward": 1.0,
+          "overall_rubric_score_5": 4.97,
           "rubric_scores": {
             "task_completion": 5.0,
             "grasp_stability": 5.0,
-            "hand_visibility": 4.87,
-            "camera_stability": 4.13,
+            "hand_visibility": 4.89,
+            "camera_stability": 5.0,
             "kinematic_smoothness": 4.95
           }
         }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
-        "unitree_g1_upper": 100.0,
-        "unitree_h1_upper": 97.4,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 96.6,
         "allegro_hand_right": 100.0
       },
       "universal_embodiments": {
@@ -161,21 +162,21 @@
           "dof": 9,
           "hardware_score": 100.0,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 1.803
+          "mean_ik_residual_mm": 1.221
         },
         "unitree_g1_upper": {
           "kind": "humanoid",
           "dof": 29,
-          "hardware_score": 100.0,
+          "hardware_score": 99.8,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 2.126
+          "mean_ik_residual_mm": 2.897
         },
         "unitree_h1_upper": {
           "kind": "humanoid",
           "dof": 19,
-          "hardware_score": 97.4,
+          "hardware_score": 96.6,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 22.402
+          "mean_ik_residual_mm": 24.717
         },
         "allegro_hand_right": {
           "kind": "hand",
@@ -188,53 +189,56 @@
       "multi_embodiment_proof_video": "data/output/my_video/multi_embodiment_proof.mp4"
     },
     "new_video": {
-      "num_frames": 300,
-      "num_segments": 10,
+      "num_frames": 2126,
+      "num_segments": 89,
       "tracked_objects": [
         "Textile Workpiece"
       ],
-      "frames_with_bbox": 300,
-      "frames_with_segmentation_mask": 300,
+      "frames_with_bbox": 2126,
+      "frames_with_segmentation_mask": 2126,
       "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
-          "open": 216,
-          "precision_pinch": 5,
-          "hook": 6
+          "open": 804,
+          "hook": 47,
+          "precision_pinch": 154,
+          "power_wrap": 1
         },
         "right_grasp_distribution": {
-          "open": 173,
-          "precision_pinch": 8
+          "open": 1077,
+          "hook": 20,
+          "power_wrap": 3,
+          "precision_pinch": 49
         },
-        "left_contact_frames": 154,
-        "right_contact_frames": 143,
-        "total_frames": 300,
-        "ratio_left_contact": 0.5133333333333333,
-        "ratio_right_contact": 0.4766666666666667,
-        "tracking_loss_pct": 56.333333333333336,
-        "tracking_loss_pct_active": 56.187290969899664,
+        "left_contact_frames": 342,
+        "right_contact_frames": 685,
+        "total_frames": 2126,
+        "ratio_left_contact": 0.16086547507055504,
+        "ratio_right_contact": 0.3222013170272813,
+        "tracking_loss_pct": 68.53245531514581,
+        "tracking_loss_pct_active": 66.38190954773869,
         "tracking_rescued_pct": 0.0,
-        "tracking_interpolated_pct": 11.333333333333334,
-        "camera_motion_flag": true,
-        "camera_motion_px_per_sec": 18.597550713409813,
+        "tracking_interpolated_pct": 47.22483537158984,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
         "flora_evaluation": {
           "outcome_reward": 1.0,
-          "mean_process_reward": 0.736,
-          "peak_process_reward": 0.9729,
-          "overall_rubric_score_5": 4.93,
+          "mean_process_reward": 0.7972,
+          "peak_process_reward": 0.9989,
+          "overall_rubric_score_5": 4.84,
           "rubric_scores": {
             "task_completion": 5.0,
             "grasp_stability": 5.0,
-            "hand_visibility": 4.81,
-            "camera_stability": 4.9,
+            "hand_visibility": 4.25,
+            "camera_stability": 5.0,
             "kinematic_smoothness": 4.95
           }
         }
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
-        "unitree_g1_upper": 100.0,
-        "unitree_h1_upper": 99.2,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 99.4,
         "allegro_hand_right": 100.0
       },
       "universal_embodiments": {
@@ -243,21 +247,21 @@
           "dof": 9,
           "hardware_score": 100.0,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 2.948
+          "mean_ik_residual_mm": 1.757
         },
         "unitree_g1_upper": {
           "kind": "humanoid",
           "dof": 29,
-          "hardware_score": 100.0,
+          "hardware_score": 99.8,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 6.19
+          "mean_ik_residual_mm": 3.532
         },
         "unitree_h1_upper": {
           "kind": "humanoid",
           "dof": 19,
-          "hardware_score": 99.2,
+          "hardware_score": 99.4,
           "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
-          "mean_ik_residual_mm": 17.26
+          "mean_ik_residual_mm": 16.729
         },
         "allegro_hand_right": {
           "kind": "hand",
@@ -273,8 +277,8 @@
       "num_frames": 300,
       "num_segments": 14,
       "tracked_objects": [
-        "White Fabric",
-        "Sewing Machine Presser Foot"
+        "Sewing Machine Presser Foot",
+        "White Fabric"
       ],
       "frames_with_bbox": 300,
       "frames_with_segmentation_mask": 300,
@@ -288,11 +292,11 @@
           "open": 215,
           "precision_pinch": 41
         },
-        "left_contact_frames": 244,
-        "right_contact_frames": 131,
+        "left_contact_frames": 243,
+        "right_contact_frames": 121,
         "total_frames": 300,
-        "ratio_left_contact": 0.8133333333333334,
-        "ratio_right_contact": 0.43666666666666665,
+        "ratio_left_contact": 0.81,
+        "ratio_right_contact": 0.4033333333333333,
         "tracking_loss_pct": 25.333333333333332,
         "tracking_loss_pct_active": 25.333333333333332,
         "tracking_rescued_pct": 0.0,
@@ -301,7 +305,7 @@
         "camera_motion_px_per_sec": 45.794207390082086,
         "flora_evaluation": {
           "outcome_reward": 1.0,
-          "mean_process_reward": 0.7988,
+          "mean_process_reward": 0.7848,
           "peak_process_reward": 0.9712,
           "overall_rubric_score_5": 4.79,
           "rubric_scores": {
@@ -353,51 +357,53 @@
     },
     "whatsapp_video": {
       "num_frames": 729,
-      "num_segments": 14,
+      "num_segments": 17,
       "tracked_objects": [
-        "Router & Cables",
-        "Computer Mouse",
-        "Lotion Bottle",
         "Cigarette Pack & Lighter",
+        "Computer Mouse",
         "Earbud Case",
-        "Keyfob"
+        "Keyfob",
+        "Lotion Bottle",
+        "Router & Cables"
       ],
       "frames_with_bbox": 729,
       "frames_with_segmentation_mask": 729,
       "debug_hud_preview_removed": true,
       "summary": {
         "left_grasp_distribution": {
-          "None": 248,
-          "open": 337,
-          "precision_pinch": 132,
-          "hook": 12
+          "None": 191,
+          "open": 228,
+          "hook": 241,
+          "precision_pinch": 65,
+          "power_wrap": 4
         },
         "right_grasp_distribution": {
-          "None": 258,
-          "open": 284,
-          "precision_pinch": 113,
-          "hook": 74
+          "None": 184,
+          "open": 409,
+          "precision_pinch": 88,
+          "hook": 45,
+          "power_wrap": 3
         },
-        "left_contact_frames": 476,
-        "right_contact_frames": 467,
+        "left_contact_frames": 536,
+        "right_contact_frames": 451,
         "total_frames": 729,
-        "ratio_left_contact": 0.6529492455418381,
-        "ratio_right_contact": 0.6406035665294925,
-        "tracking_loss_pct": 43.62139917695473,
-        "tracking_loss_pct_active": 30.574324324324323,
+        "ratio_left_contact": 0.7352537722908093,
+        "ratio_right_contact": 0.6186556927297668,
+        "tracking_loss_pct": 26.886145404663925,
+        "tracking_loss_pct_active": 10.570469798657719,
         "tracking_rescued_pct": 0.0,
         "tracking_interpolated_pct": 0.0,
         "camera_motion_flag": false,
         "camera_motion_px_per_sec": 0.0,
         "flora_evaluation": {
           "outcome_reward": 1.0,
-          "mean_process_reward": 0.6283,
-          "peak_process_reward": 0.9877,
-          "overall_rubric_score_5": 4.86,
+          "mean_process_reward": 0.6279,
+          "peak_process_reward": 0.9974,
+          "overall_rubric_score_5": 4.87,
           "rubric_scores": {
             "task_completion": 5.0,
             "grasp_stability": 5.0,
-            "hand_visibility": 4.36,
+            "hand_visibility": 4.39,
             "camera_stability": 5.0,
             "kinematic_smoothness": 4.95
           }
@@ -405,8 +411,8 @@
       },
       "hardware_readiness": {
         "franka_panda": 100.0,
-        "unitree_g1_upper": 98.0,
-        "unitree_h1_upper": 99.3,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 99.7,
         "allegro_hand_right": 100.0
       },
       "universal_embodiments": {
@@ -420,8 +426,8 @@
         "unitree_g1_upper": {
           "kind": "humanoid",
           "dof": 29,
-          "hardware_score": 75.0,
-          "verdict": "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT",
+          "hardware_score": 99.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
           "mean_ik_residual_mm": 2.27
         },
         "unitree_h1_upper": {
@@ -440,6 +446,341 @@
         }
       },
       "multi_embodiment_proof_video": "data/output/whatsapp_video/multi_embodiment_proof.mp4"
+    },
+    "whatsapp_video_063602": {
+      "num_frames": 1800,
+      "num_segments": 15,
+      "tracked_objects": [
+        "Sewing Machine Presser Foot",
+        "White Garment Fabric"
+      ],
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
+      "debug_hud_preview_removed": true,
+      "summary": {
+        "left_grasp_distribution": {
+          "precision_pinch": 191,
+          "open": 20,
+          "unknown": 1
+        },
+        "right_grasp_distribution": {
+          "precision_pinch": 280,
+          "open": 60,
+          "unknown": 2
+        },
+        "left_contact_frames": 99,
+        "right_contact_frames": 128,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.055,
+        "ratio_right_contact": 0.07111111111111111,
+        "tracking_loss_pct": 97.88888888888889,
+        "tracking_loss_pct_active": 96.76320272572401,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 20.77777777777778,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.9114,
+          "peak_process_reward": 0.9894,
+          "overall_rubric_score_5": 4.57,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 4.67,
+            "hand_visibility": 3.22,
+            "camera_stability": 5.0,
+            "kinematic_smoothness": 4.95
+          }
+        }
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 100.0,
+        "allegro_hand_right": 100.0
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.06
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 99.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 5.189
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 9.306
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/whatsapp_video_063602/multi_embodiment_proof.mp4"
+    },
+    "whatsapp_video_063622": {
+      "num_frames": 1800,
+      "num_segments": 26,
+      "tracked_objects": [
+        "Blue Garment Fabric",
+        "Sewing Machine Presser Foot"
+      ],
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
+      "debug_hud_preview_removed": true,
+      "summary": {
+        "left_grasp_distribution": {
+          "precision_pinch": 983,
+          "open": 142
+        },
+        "right_grasp_distribution": {
+          "precision_pinch": 239,
+          "open": 79,
+          "unknown": 1
+        },
+        "left_contact_frames": 286,
+        "right_contact_frames": 48,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.15888888888888889,
+        "ratio_right_contact": 0.02666666666666667,
+        "tracking_loss_pct": 87.5,
+        "tracking_loss_pct_active": 84.76641841570752,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 47.611111111111114,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.857,
+          "peak_process_reward": 0.9936,
+          "overall_rubric_score_5": 4.66,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 4.17,
+            "hand_visibility": 4.19,
+            "camera_stability": 5.0,
+            "kinematic_smoothness": 4.95
+          }
+        }
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 100.0,
+        "allegro_hand_right": 100.0
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.426
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 99.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 4.187
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 10.942
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/whatsapp_video_063622/multi_embodiment_proof.mp4"
+    },
+    "whatsapp_video_063639": {
+      "num_frames": 1800,
+      "num_segments": 25,
+      "tracked_objects": [
+        "Sewing Machine Presser Foot",
+        "Textured Fabric Piece"
+      ],
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
+      "debug_hud_preview_removed": true,
+      "summary": {
+        "left_grasp_distribution": {
+          "precision_pinch": 1066,
+          "open": 228,
+          "hook": 4
+        },
+        "right_grasp_distribution": {
+          "precision_pinch": 1032,
+          "open": 497,
+          "hook": 21
+        },
+        "left_contact_frames": 826,
+        "right_contact_frames": 768,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.4588888888888889,
+        "ratio_right_contact": 0.4266666666666667,
+        "tracking_loss_pct": 31.72222222222222,
+        "tracking_loss_pct_active": 28.670922809053977,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 61.333333333333336,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.8832,
+          "peak_process_reward": 0.9993,
+          "overall_rubric_score_5": 4.94,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.75,
+            "camera_stability": 5.0,
+            "kinematic_smoothness": 4.95
+          }
+        }
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 100.0,
+        "allegro_hand_right": 100.0
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 1.425
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 99.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 3.142
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 8.516
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/whatsapp_video_063639/multi_embodiment_proof.mp4"
+    },
+    "whatsapp_video_063658": {
+      "num_frames": 1800,
+      "num_segments": 37,
+      "tracked_objects": [
+        "Sewing Machine Presser Foot",
+        "White Garment Fabric"
+      ],
+      "frames_with_bbox": 1800,
+      "frames_with_segmentation_mask": 1800,
+      "debug_hud_preview_removed": true,
+      "summary": {
+        "left_grasp_distribution": {
+          "precision_pinch": 854,
+          "open": 481,
+          "hook": 29
+        },
+        "right_grasp_distribution": {
+          "open": 390,
+          "precision_pinch": 1073,
+          "hook": 7
+        },
+        "left_contact_frames": 554,
+        "right_contact_frames": 717,
+        "total_frames": 1800,
+        "ratio_left_contact": 0.30777777777777776,
+        "ratio_right_contact": 0.3983333333333333,
+        "tracking_loss_pct": 29.22222222222222,
+        "tracking_loss_pct_active": 25.800815375655212,
+        "tracking_rescued_pct": 0.0,
+        "tracking_interpolated_pct": 64.94444444444444,
+        "camera_motion_flag": false,
+        "camera_motion_px_per_sec": 0.0,
+        "flora_evaluation": {
+          "outcome_reward": 1.0,
+          "mean_process_reward": 0.8797,
+          "peak_process_reward": 0.9954,
+          "overall_rubric_score_5": 4.92,
+          "rubric_scores": {
+            "task_completion": 5.0,
+            "grasp_stability": 5.0,
+            "hand_visibility": 4.67,
+            "camera_stability": 5.0,
+            "kinematic_smoothness": 4.95
+          }
+        }
+      },
+      "hardware_readiness": {
+        "franka_panda": 100.0,
+        "unitree_g1_upper": 99.8,
+        "unitree_h1_upper": 100.0,
+        "allegro_hand_right": 100.0
+      },
+      "universal_embodiments": {
+        "franka_panda": {
+          "kind": "arm",
+          "dof": 9,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 2.099
+        },
+        "unitree_g1_upper": {
+          "kind": "humanoid",
+          "dof": 29,
+          "hardware_score": 99.8,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 4.778
+        },
+        "unitree_h1_upper": {
+          "kind": "humanoid",
+          "dof": 19,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 10.093
+        },
+        "allegro_hand_right": {
+          "kind": "hand",
+          "dof": 16,
+          "hardware_score": 100.0,
+          "verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+          "mean_ik_residual_mm": 0.0
+        }
+      },
+      "multi_embodiment_proof_video": "data/output/whatsapp_video_063658/multi_embodiment_proof.mp4"
     }
   },
   "merged_lerobot": {

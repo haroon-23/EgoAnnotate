@@ -1,0 +1,20 @@
+{
+  "clip": "data/raw_videos/test_10s.mp4",
+  "frames": 300,
+  "video_duration_s": 10.0,
+  "stage_wall_clock_seconds": {
+    "1_video_decode_and_privacy_blur_s": 17.729,
+    "2_camera_frame_24d_state_action_s": 0.302,
+    "3_kinematic_retargeting_and_fk_audit_s": 3.736,
+    "4_lerobot_v3_and_hdf5_export_s": 1.592
+  },
+  "total_cpu_seconds": 23.359,
+  "cpu_seconds_per_video_second": 2.336,
+  "peak_rss_memory_mb": 292.64,
+  "unit_economics_per_verified_hour": {
+    "cpu_rate_usd_per_hr": 0.16,
+    "gpu_rate_usd_per_hr": 1.2,
+    "projected_cpu_cost_usd_per_video_hour": 0.3738,
+    "projected_gpu_cost_usd_per_video_hour": 0.6228
+  }
+}

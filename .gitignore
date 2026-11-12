@@ -72,3 +72,6 @@ test_H264.mp4
 test_avc1.mp4
 models/
 !.env.example
+
+audit_pack*/
+audit_pack*.zip

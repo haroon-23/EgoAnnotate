@@ -1,0 +1,247 @@
+{
+  "whatsapp_video_063602": {
+    "episode_id": "whatsapp_video_063602",
+    "video_path": "data/raw_videos/whatsapp_video_063602.mp4",
+    "annotated": {
+      "frames": 1800,
+      "duration_s": 179.9,
+      "coverage_pct": 100.0,
+      "right_hand_pct": 10.2,
+      "left_hand_pct": 6.3,
+      "contact_frames": 2,
+      "num_segments": 1,
+      "objects_tracked": [
+        "workspace_item_center",
+        "workspace_item_left",
+        "workspace_item_right"
+      ]
+    },
+    "flora_evaluation": {
+      "outcome_reward": 1.0,
+      "mean_process_reward": 0.5733,
+      "peak_process_reward": 0.9975,
+      "overall_rubric_score_5": 3.91,
+      "rubric_scores": {
+        "task_completion": 3.5,
+        "grasp_stability": 3.23,
+        "hand_visibility": 2.88,
+        "camera_stability": 5.0,
+        "kinematic_smoothness": 4.95
+      }
+    },
+    "embodiments": {
+      "franka_panda": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 8.67,
+        "mean_ik_residual_mm": 0.905,
+        "joint_limit_events": 0
+      },
+      "unitree_g1_upper": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 10.17,
+        "mean_ik_residual_mm": 1.092,
+        "joint_limit_events": 0
+      },
+      "unitree_h1_upper": {
+        "readiness_score": 99.9,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 10.17,
+        "mean_ik_residual_mm": 15.168,
+        "joint_limit_events": 0
+      },
+      "allegro_hand_right": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 10.17,
+        "mean_ik_residual_mm": 0.0,
+        "joint_limit_events": 0
+      }
+    },
+    "delivery_validation_passed": true
+  },
+  "whatsapp_video_063622": {
+    "episode_id": "whatsapp_video_063622",
+    "video_path": "data/raw_videos/whatsapp_video_063622.mp4",
+    "annotated": {
+      "frames": 1800,
+      "duration_s": 179.9,
+      "coverage_pct": 100.0,
+      "right_hand_pct": 10.8,
+      "left_hand_pct": 37.7,
+      "contact_frames": 5,
+      "num_segments": 3,
+      "objects_tracked": [
+        "workspace_item_left"
+      ]
+    },
+    "flora_evaluation": {
+      "outcome_reward": 1.0,
+      "mean_process_reward": 0.4523,
+      "peak_process_reward": 0.9936,
+      "overall_rubric_score_5": 4.35,
+      "rubric_scores": {
+        "task_completion": 5.0,
+        "grasp_stability": 3.22,
+        "hand_visibility": 3.58,
+        "camera_stability": 5.0,
+        "kinematic_smoothness": 4.95
+      }
+    },
+    "embodiments": {
+      "franka_panda": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 6.06,
+        "mean_ik_residual_mm": 1.921,
+        "joint_limit_events": 0
+      },
+      "unitree_g1_upper": {
+        "readiness_score": 99.8,
+        "hardware_verdict": "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT",
+        "reachable_pct": 9.5,
+        "mean_ik_residual_mm": 7.942,
+        "joint_limit_events": 0
+      },
+      "unitree_h1_upper": {
+        "readiness_score": 95.5,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 10.83,
+        "mean_ik_residual_mm": 27.719,
+        "joint_limit_events": 0
+      },
+      "allegro_hand_right": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 10.83,
+        "mean_ik_residual_mm": 0.0,
+        "joint_limit_events": 0
+      }
+    },
+    "delivery_validation_passed": true
+  },
+  "whatsapp_video_063639": {
+    "episode_id": "whatsapp_video_063639",
+    "video_path": "data/raw_videos/whatsapp_video_063639.mp4",
+    "annotated": {
+      "frames": 1800,
+      "duration_s": 179.9,
+      "coverage_pct": 100.0,
+      "right_hand_pct": 75.2,
+      "left_hand_pct": 67.1,
+      "contact_frames": 31,
+      "num_segments": 9,
+      "objects_tracked": [
+        "workspace_item_right",
+        "workspace_item_center",
+        "workspace_item_left"
+      ]
+    },
+    "flora_evaluation": {
+      "outcome_reward": 1.0,
+      "mean_process_reward": 0.9366,
+      "peak_process_reward": 0.9998,
+      "overall_rubric_score_5": 4.57,
+      "rubric_scores": {
+        "task_completion": 5.0,
+        "grasp_stability": 3.27,
+        "hand_visibility": 4.62,
+        "camera_stability": 5.0,
+        "kinematic_smoothness": 4.95
+      }
+    },
+    "embodiments": {
+      "franka_panda": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 67.06,
+        "mean_ik_residual_mm": 1.489,
+        "joint_limit_events": 0
+      },
+      "unitree_g1_upper": {
+        "readiness_score": 99.8,
+        "hardware_verdict": "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT",
+        "reachable_pct": 39.56,
+        "mean_ik_residual_mm": 3.96,
+        "joint_limit_events": 0
+      },
+      "unitree_h1_upper": {
+        "readiness_score": 99.5,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 75.17,
+        "mean_ik_residual_mm": 16.511,
+        "joint_limit_events": 0
+      },
+      "allegro_hand_right": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 75.17,
+        "mean_ik_residual_mm": 0.0,
+        "joint_limit_events": 0
+      }
+    },
+    "delivery_validation_passed": true
+  },
+  "whatsapp_video_063658": {
+    "episode_id": "whatsapp_video_063658",
+    "video_path": "data/raw_videos/whatsapp_video_063658.mp4",
+    "annotated": {
+      "frames": 1800,
+      "duration_s": 179.9,
+      "coverage_pct": 100.0,
+      "right_hand_pct": 66.3,
+      "left_hand_pct": 57.6,
+      "contact_frames": 468,
+      "num_segments": 93,
+      "objects_tracked": [
+        "workspace_item_left",
+        "workspace_item_right"
+      ]
+    },
+    "flora_evaluation": {
+      "outcome_reward": 1.0,
+      "mean_process_reward": 0.8461,
+      "peak_process_reward": 0.9998,
+      "overall_rubric_score_5": 4.76,
+      "rubric_scores": {
+        "task_completion": 5.0,
+        "grasp_stability": 4.38,
+        "hand_visibility": 4.48,
+        "camera_stability": 5.0,
+        "kinematic_smoothness": 4.95
+      }
+    },
+    "embodiments": {
+      "franka_panda": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 49.06,
+        "mean_ik_residual_mm": 2.233,
+        "joint_limit_events": 0
+      },
+      "unitree_g1_upper": {
+        "readiness_score": 99.8,
+        "hardware_verdict": "SAFE_FOR_SIM_AND_LOW_GAIN_REAL_ROLLOUT",
+        "reachable_pct": 64.89,
+        "mean_ik_residual_mm": 2.771,
+        "joint_limit_events": 0
+      },
+      "unitree_h1_upper": {
+        "readiness_score": 96.5,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 66.28,
+        "mean_ik_residual_mm": 24.936,
+        "joint_limit_events": 0
+      },
+      "allegro_hand_right": {
+        "readiness_score": 100.0,
+        "hardware_verdict": "PRODUCTION_READY_FOR_SIM_AND_REAL_IMPEDANCE_CONTROL",
+        "reachable_pct": 66.28,
+        "mean_ik_residual_mm": 0.0,
+        "joint_limit_events": 0
+      }
+    },
+    "delivery_validation_passed": true
+  }
+}
