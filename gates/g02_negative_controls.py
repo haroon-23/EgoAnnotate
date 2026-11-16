@@ -146,6 +146,12 @@ def _evaluate_negative_case(mode: str, tmp_root: Path) -> Dict[str, Any]:
                     results["falsely_accepted_by"].append(
                         f"lerobot_exporter[static_hands]: non-zero action variance ({act_var:.6e}) on completely static hands"
                     )
+            elif mode == "random_noise":
+                results["checks_run"] += 1
+                if len(df) != 60 or not has_valid_col:
+                    results["falsely_accepted_by"].append(
+                        "lerobot_exporter[random_noise]: failed to export 60 rows with observation.hand_valid"
+                    )
     except Exception as exc:
         results["exporter_note"] = str(exc)
 
