@@ -76,3 +76,9 @@ models/
 audit_pack*/
 audit_pack*.zip
 third_party/
+
+# Local test videos & runtime caches
+data/sample_raw/
+.ego_cache/
+*.db
+*.rrd
