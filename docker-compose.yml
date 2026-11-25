@@ -1,0 +1,32 @@
+services:
+  egoannotate-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: egoannotate:v3-cpu
+    volumes:
+      - ./data:/app/data
+      - ./.ego_cache:/app/.ego_cache
+    command: ["worker", "--host", "0.0.0.0", "--port", "8080", "--db", "/app/data/jobs.db"]
+    ports:
+      - "8080:8080"
+
+  egoannotate-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: egoannotate:v3-cuda
+    profiles: ["gpu"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./data:/app/data
+      - ./.ego_cache:/app/.ego_cache
+    command: ["worker", "--host", "0.0.0.0", "--port", "8080", "--db", "/app/data/jobs.db"]
+    ports:
+      - "8080:8080"

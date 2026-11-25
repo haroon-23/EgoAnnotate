@@ -357,7 +357,7 @@ def export_parquet_and_json_sidecar(
     pq.write_table(table, pq_path)
 
     ir_json_path = pq_dir / "episode_ir.json"
-    ir_json_path.write_text(ir.model_dump_json(indent=2), encoding="utf-8")
+    ir_json_path.write_text(ir.model_dump_json(), encoding="utf-8")
     return {"parquet": str(pq_path), "ir_json": str(ir_json_path)}
 
 
