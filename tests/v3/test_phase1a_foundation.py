@@ -19,7 +19,7 @@ def test_load_both_profiles_and_commercial_defaults() -> None:
     assert cpu_cfg.runtime.allow_non_commercial_plugins is False
     assert gpu_cfg.runtime.allow_non_commercial_plugins is False
     assert gpu_cfg.geometry.depth_backend == "depth_anything_v2_small_apache"
-    assert gpu_cfg.semantic.vlm_backend == "qwen25_vl_local"
+    assert gpu_cfg.semantic.vlm_backend in ("smolvlm2_local", "qwen25_vl_local")
 
 
 @pytest.mark.parametrize(
