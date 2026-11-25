@@ -32,3 +32,13 @@
 ## 3. Verification Scope: CPU-Verified vs. Kaggle/Production CUDA GPU-Pending
 - **CPU-Verified Locally (`cpu_smoke.yaml`):** Full 5400-frame streaming I/O, MediaPipe Hands + Pose, OpenCV ROI object tracking, 6-DoF Essential-Matrix VO + pure-rotation fallback + ORB loop-closure, Feix grasp/behavior taxonomy, RGB + hardware tactile, geometrically grounded hierarchical semantics, 10D quality gating, 5-embodiment 7-DoF URDF/MJCF retargeting, LeRobot v3 + GR00T `modality.json` + RLDS + HDF5 + Parquet/JSON export, privacy blur/audio-strip gate, PyTorch policy training, SQLite/FastAPI worker, HTML/3D/overlay QA.
 - **CUDA GPU-Pending (`gpu_prod.yaml` — Ready for Kaggle GPU pass):** Live CUDA weights execution of `Grounding DINO` (Apache-2.0), `SAM 2.1` (Apache-2.0), `Depth-Anything-V2-Small` (Apache-2.0), `DPVO` (MIT) / `DROID-SLAM` (BSD-3-Clause), and `Qwen2.5-VL-7B` / `SmolVLM2-2.2B` (Apache-2.0). Config wiring, license checks, Docker CUDA image, and model manifest downloader are verified; live CUDA benchmark awaits Kaggle GPU run.
+
+## 4. Kaggle Tesla T4 Live CUDA Certification (`gpu_prod.yaml`, 5400 Frames)
+- **Hardware:** NVIDIA Tesla T4 (15 GiB VRAM, `fp16`), Python 3.11.18, PyTorch 2.15 + Transformers 5.24.1.
+- **Full-Video Coverage & Quality:** `5400 / 5400` frames (`180.0s`), Quality **`0.9519 (PASS)`**, Privacy **`864` frames blurred / `0` unblurred faces / `audio_stripped=True`**.
+- **Live CUDA Models (`stage2b_gpu_enrichment_s = 86.19s`):**
+  - `IDEA-Research/grounding-dino-base` (Apache-2.0): `120` keyframes in `53.02s`
+  - `depth-anything/Depth-Anything-V2-Small-hf` (Apache-2.0): `120` keyframes in `5.85s`, `median_depth_mean = 2.5174`
+  - `HuggingFaceTB/SmolVLM2-2.2B-Instruct` (Apache-2.0): `16` segments captioned in `22.95s` (e.g., `"Right hand grasp green shirt."`, `"right hand manipulating green fabric."`, `"Place a green shirt on a table."`, `"right hand pick up yellow measuring tape."`)
+- **6-Embodiment Retargeting:** `franka_panda=0.972 (6.52 mm)`, `dual_arm_franka=0.972 (6.77 mm)`, `unitree_g1_upper=0.916 (10.12 mm)`, `unitree_h1_upper=0.919 (9.40 mm)`, `allegro_hand_right=0.848`, `teleop_glove=0.876`.
+- **Policy Training (`LeRobot v3`, 12 epochs):** `5392` samples, loss `0.264037 -> 0.256493` (`loss_decreased=True`, `finite_predictions=True`).
