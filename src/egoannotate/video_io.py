@@ -178,12 +178,16 @@ def estimate_camera_intrinsics(
 
 
 def compute_frame_image_quality(bgr: np.ndarray) -> tuple[float, float]:
-    """Return (sharpness_laplacian_var, mean_luma) on a downsampled grayscale frame."""
+    """Return (directional_sharpness_var, mean_luma) catching both isotropic defocus and head-pan motion blur."""
     h, w = bgr.shape[:2]
-    scale = min(1.0, 320.0 / max(w, 1))
+    scale = min(1.0, 480.0 / max(w, 1))
     small = cv2.resize(bgr, (max(16, int(w * scale)), max(16, int(h * scale))), interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    kx = np.array([[1.0, -2.0, 1.0]], dtype=np.float64)
+    ky = kx.T
+    dxx = cv2.filter2D(gray, cv2.CV_64F, kx)
+    dyy = cv2.filter2D(gray, cv2.CV_64F, ky)
+    sharpness = 2.0 * min(float(dxx.var()), float(dyy.var()))
     mean_luma = float(gray.mean())
     return sharpness, mean_luma
 
