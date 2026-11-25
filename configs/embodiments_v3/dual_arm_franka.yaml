@@ -1,0 +1,21 @@
+name: dual_arm_franka
+embodiment_class: dual_arm_gripper
+urdf_path: configs/embodiments_v3/urdfs/franka_panda_7dof.urdf
+bimanual_min_sep_m: 0.08
+arms:
+  - side: left
+    ee_link: panda_hand_tcp
+    workspace_center_m: [0.44, 0.18, 0.42]
+    workspace_scale: 0.60
+    table_z_m: 0.05
+    max_joint_vel_radps: 2.2
+  - side: right
+    ee_link: panda_hand_tcp
+    workspace_center_m: [0.44, -0.18, 0.42]
+    workspace_scale: 0.60
+    table_z_m: 0.05
+    max_joint_vel_radps: 2.2
+gripper:
+  dof: 2
+  min_opening_m: 0.0
+  max_opening_m: 0.08

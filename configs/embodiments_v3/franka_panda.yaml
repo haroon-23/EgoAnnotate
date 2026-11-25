@@ -1,0 +1,14 @@
+name: franka_panda
+embodiment_class: single_arm_gripper
+urdf_path: configs/embodiments_v3/urdfs/franka_panda_7dof.urdf
+arms:
+  - side: right
+    ee_link: panda_hand_tcp
+    workspace_center_m: [0.46, 0.0, 0.42]
+    workspace_scale: 0.65
+    table_z_m: 0.05
+    max_joint_vel_radps: 2.2
+gripper:
+  dof: 1
+  min_opening_m: 0.0
+  max_opening_m: 0.08

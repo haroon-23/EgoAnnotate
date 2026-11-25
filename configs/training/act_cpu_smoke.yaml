@@ -1,0 +1,9 @@
+policy: act_chunking_mlp
+dataset_format: lerobot_v3
+chunk_size: 8
+batch_size: 64
+epochs: 8
+learning_rate: 0.002
+hidden_dim: 128
+device: cpu
+seed: 42

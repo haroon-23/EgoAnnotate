@@ -82,3 +82,4 @@ data/sample_raw/
 .ego_cache/
 *.db
 *.rrd
+data/v3_certified_full_run/

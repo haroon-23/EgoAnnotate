@@ -75,7 +75,7 @@ retargeting:
     - unitree_g1_upper
     - allegro_hand_right
     - teleop_glove
-  embodiment_config_dir: configs/embodiments
+  embodiment_config_dir: configs/embodiments_v3
   enforce_joint_limits: true
   enforce_table_clearance: true
   table_z_margin_m: 0.01
