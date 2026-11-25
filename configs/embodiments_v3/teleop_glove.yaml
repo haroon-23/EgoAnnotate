@@ -1,0 +1,9 @@
+name: teleop_glove
+embodiment_class: glove_teleop
+urdf_path: null
+arms: []
+teleop_glove:
+  sides: [left, right]
+  emit_wrist_se3: true
+  emit_finger_curls_5d: true
+  emit_tactile_feedback_6d: true

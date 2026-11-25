@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<robot name="unitree_h1_dual_7dof">
+  <link name="torso_link"/>
+  <link name="left_s1"/><link name="left_s2"/><link name="left_s3"/>
+  <link name="left_elbow"/><link name="left_w1"/><link name="left_w2"/><link name="left_w3"/>
+  <link name="left_hand_tcp"/>
+
+  <joint name="left_shoulder_pitch" type="revolute">
+    <parent link="torso_link"/><child link="left_s1"/>
+    <origin xyz="0.0 0.22 0.36" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.8" upper="2.0" effort="50" velocity="3.0"/>
+  </joint>
+  <joint name="left_shoulder_roll" type="revolute">
+    <parent link="left_s1"/><child link="left_s2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.6" upper="2.4" effort="50" velocity="3.0"/>
+  </joint>
+  <joint name="left_shoulder_yaw" type="revolute">
+    <parent link="left_s2"/><child link="left_s3"/>
+    <origin xyz="0 0 -0.30" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-2.4" upper="2.4" effort="35" velocity="3.0"/>
+  </joint>
+  <joint name="left_elbow_pitch" type="revolute">
+    <parent link="left_s3"/><child link="left_elbow"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.4" upper="-0.1" effort="35" velocity="3.0"/>
+  </joint>
+  <joint name="left_wrist_roll" type="revolute">
+    <parent link="left_elbow"/><child link="left_w1"/>
+    <origin xyz="0 0 -0.28" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-2.4" upper="2.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="left_wrist_pitch" type="revolute">
+    <parent link="left_w1"/><child link="left_w2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-1.4" upper="1.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="left_wrist_yaw" type="revolute">
+    <parent link="left_w2"/><child link="left_w3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-1.4" upper="1.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="left_tcp_fixed" type="fixed">
+    <parent link="left_w3"/><child link="left_hand_tcp"/>
+    <origin xyz="0 0 -0.09" rpy="0 0 0"/>
+  </joint>
+
+  <link name="right_s1"/><link name="right_s2"/><link name="right_s3"/>
+  <link name="right_elbow"/><link name="right_w1"/><link name="right_w2"/><link name="right_w3"/>
+  <link name="right_hand_tcp"/>
+
+  <joint name="right_shoulder_pitch" type="revolute">
+    <parent link="torso_link"/><child link="right_s1"/>
+    <origin xyz="0.0 -0.22 0.36" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.8" upper="2.0" effort="50" velocity="3.0"/>
+  </joint>
+  <joint name="right_shoulder_roll" type="revolute">
+    <parent link="right_s1"/><child link="right_s2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-2.4" upper="0.6" effort="50" velocity="3.0"/>
+  </joint>
+  <joint name="right_shoulder_yaw" type="revolute">
+    <parent link="right_s2"/><child link="right_s3"/>
+    <origin xyz="0 0 -0.30" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-2.4" upper="2.4" effort="35" velocity="3.0"/>
+  </joint>
+  <joint name="right_elbow_pitch" type="revolute">
+    <parent link="right_s3"/><child link="right_elbow"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.4" upper="-0.1" effort="35" velocity="3.0"/>
+  </joint>
+  <joint name="right_wrist_roll" type="revolute">
+    <parent link="right_elbow"/><child link="right_w1"/>
+    <origin xyz="0 0 -0.28" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-2.4" upper="2.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="right_wrist_pitch" type="revolute">
+    <parent link="right_w1"/><child link="right_w2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-1.4" upper="1.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="right_wrist_yaw" type="revolute">
+    <parent link="right_w2"/><child link="right_w3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-1.4" upper="1.4" effort="18" velocity="3.5"/>
+  </joint>
+  <joint name="right_tcp_fixed" type="fixed">
+    <parent link="right_w3"/><child link="right_hand_tcp"/>
+    <origin xyz="0 0 -0.09" rpy="0 0 0"/>
+  </joint>
+</robot>

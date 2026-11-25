@@ -1,0 +1,9 @@
+name: allegro_hand_right
+embodiment_class: dexterous_hand
+urdf_path: urdfs/allegro_hand_right.urdf
+arms: []
+dexterous_hand:
+  sides: [right]
+  joints_per_hand: 16
+  lower_rad: -0.25
+  upper_rad: 1.65

@@ -1,0 +1,22 @@
+name: unitree_g1_upper
+embodiment_class: humanoid_dexterous
+urdf_path: configs/embodiments_v3/urdfs/unitree_g1_dual_7dof.urdf
+bimanual_min_sep_m: 0.10
+arms:
+  - side: left
+    ee_link: left_hand_tcp
+    workspace_center_m: [0.30, 0.18, 0.12]
+    workspace_scale: 0.55
+    table_z_m: -0.25
+    max_joint_vel_radps: 2.8
+  - side: right
+    ee_link: right_hand_tcp
+    workspace_center_m: [0.30, -0.18, 0.12]
+    workspace_scale: 0.55
+    table_z_m: -0.25
+    max_joint_vel_radps: 2.8
+dexterous_hand:
+  sides: [left, right]
+  joints_per_hand: 10
+  lower_rad: 0.0
+  upper_rad: 1.55

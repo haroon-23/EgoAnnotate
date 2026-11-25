@@ -1,0 +1,36 @@
+name: EgoAnnotate v3 Commercial CI
+'on':
+  push:
+    branches:
+    - main
+    - feat/commercial-v3
+  pull_request: null
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - '3.10'
+        - '3.11'
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install system libraries (FFmpeg + OpenGL/GLib)
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install package and dev dependencies
+      run: 'python -m pip install --upgrade pip
+
+        pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+        pip install -e ".[dev]"'
+    - name: Ruff lint
+      run: ruff check --target-version py310 src/egoannotate scripts/download_models.py tests/test_no_fakes.py tests/v3
+    - name: Mypy static type check
+      run: mypy --ignore-missing-imports src/egoannotate scripts/download_models.py
+    - name: Anti-fake & commercial license firewall + v3 test suite
+      run: pytest -q tests/test_no_fakes.py tests/v3

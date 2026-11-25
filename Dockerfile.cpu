@@ -1,0 +1,20 @@
+FROM python:3.10-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE LICENSES.md THIRD_PARTY_NOTICES.md ./
+COPY configs ./configs
+COPY src/egoannotate ./src/egoannotate
+COPY scripts/download_models.py ./scripts/download_models.py
+
+RUN pip install --upgrade pip && pip install .
+
+ENTRYPOINT ["egoannotate"]
+CMD ["audit-licenses"]

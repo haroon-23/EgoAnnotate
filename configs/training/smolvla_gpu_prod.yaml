@@ -1,0 +1,10 @@
+policy: smolvla_450m
+pretrained_vlm: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+dataset_format: lerobot_v3
+action_chunk_size: 50
+batch_size: 32
+steps: 50000
+learning_rate: 0.0001
+mixed_precision: bf16
+device: cuda
+license: Apache-2.0

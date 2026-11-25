@@ -1,0 +1,28 @@
+# Phase 0 Baseline & Gap Analysis (`EgoAnnotate` v2.1 -> v3 Commercial)
+
+## 1. Current Repository Baseline (Audited Directly on Disk)
+- **Commit audited:** `3a2553e` (`v2.1-safe-checkpoint`)
+- **Existing tests collected:** 430 pytest tests across 56 test files.
+- **Working real assets to preserve and integrate:**
+  - MediaPipe 21-keypoint hand tracking (`src/hand_tracker.py`) + egocentric wearer filter (`src/perception/egocentric_hand_filter.py`).
+  - Camera-frame 24-D state/action computation (`src/perception/backends.py`, `src/action_computer.py`).
+  - Franka Panda 7-DoF IK + PyBullet FK audit + MuJoCo dynamic replay (`src/retargeting/`, `urdfs/`).
+  - LeRobot v3 (`lerobot 0.4.4`) Parquet/MP4 exporter (`src/lerobot_exporter.py`), HDF5 exporter (`src/dataset_exporter.py`), RLDS exporter (`src/rlds_exporter.py`), MCAP exporter (`src/mcap_exporter.py`).
+  - Minimal `TinyACTPolicy` PyTorch training module (`src/training/act_policy.py`).
+  - 21 verification gates (`gates/g01`–`g21`).
+
+## 2. Critical Gaps vs. Commercial Specification
+
+| Area | Current State in `v2.1` | Gap / Violation | v3 Remediation |
+| :--- | :--- | :--- | :--- |
+| **Zero Paid APIs** | `src/gemini_client.py`, `action_segmenter.py`, `language_generator.py`, `object_detector.py`, `vlm_backend.py` require `GEMINI_API_KEY` (`google-genai`). | Violates $0 software cost & no-paid-API commercial requirement. | Remove paid APIs from default pipeline; use local Apache-2.0 VLMs (`SmolVLM2` / `Qwen2.5-VL`) + geometrically grounded fallback. |
+| **Commercial License Firewall** | `src/perception/unidepth_estimator.py` and `depth.py` wire UniDepth (`CC-BY-NC-4.0`); `datatypes.py` / `rlds_exporter.py` reference MANO (research-only). | Blocks legal commercial licensing/leasing. | Replace defaults with Apache-2.0/MIT/BSD models only (`Depth-Anything-V2-Small`, `SAM 2.1`, `Grounding DINO`, `MediaPipe`, `DPVO`/`OpenCV VO`); isolate non-commercial plugins OFF by default with explicit warnings. |
+| **Hands & Upper Body** | 21-joint MediaPipe hands exist; no upper-body/arm/forearm pose extraction; no unified open-vocab object+hand mask tracker. | Missing arm/forearm kinematics and clean open-vocab manipulated-object mask tracking. | Add MediaPipe Pose Landmarker (Apache-2.0) upper-body/arm extractor + modular mask/object tracker (`SAM 2.1` + `Grounding DINO` GPU, optical-flow/grabcut ROI CPU). |
+| **6-DoF World Geometry & Metric Scale** | `README.md` explicitly marks 6-DoF SLAM as `NOT VERIFIED`; `camera_motion.py` uses 2D planar KLT homography only; no distortion auto-estimation or chunked loop-closure. | Cannot register hands & objects in a single gravity-aligned metric world frame. | Implement true 6-DoF Essential-Matrix/PnP VO + keyframe chunk stitching + gravity alignment + multi-cue metric scale fusion (depth prior + anthropometric palm prior) with explicit uncertainty; wire `DPVO`/`DROID-SLAM` for CUDA GPUs. |
+| **Behavior Understanding** | Basic contact + pinch/wrap grasp + VLM/signal segmentation. | Lacks Feix/GRASP taxonomy, bimanual coordination labels, object state-change tracking, attention/gaze proxy, affordances, workspace bounds, and scene graph. | Implement full documented atomic action & Feix grasp taxonomy, 2D/3D contact, bimanual coordination, object state transitions, gaze/affordance/scene-graph extractors with confidences. |
+| **Tactile Signals** | Not implemented. | Missing derived RGB tactile proxies AND real tactile sensor ingestion. | Build honest `tactile` module emitting `source="derived_rgb_proxy"` (contact zone, aperture force proxy, slip/impact proxy, compliance prior + uncertainty) and `source="hardware_sensor"` CSV/HDF5 time-synced ingestion. |
+| **Hierarchical VLA Language** | Flat captions with Gemini dependency; `language_generator.py` has placeholder fallback. | Needs local VLM grounded against geometry with `task -> subtask -> atomic_action` + VLA paraphrases. | Implement local VLM + geometric-verification grounding layer emitting LeRobot-compatible `plan`, `subtask`, `atomic_action`, and `task_aug` paraphrases. |
+| **Data Quality Scoring** | Simple pass/fail thresholds in `configs/quality.yaml`. | Missing calibrated multi-dimension score (blur, lighting, SLAM stability, scale confidence, occlusion, task coverage, semantic agreement) per segment & video. | Build 10-dimension `QualityScorer` with per-segment & episode scores, gating verdicts, and calibration checks. |
+| **Retargeting Generality** | Franka works; G1/H1/Allegro marked `EXPERIMENTAL`; missing dual-arm gripper & glove/teleop config-only onboarding. | Adding new robots requires custom adapter code in `embodiment_registry.py`. | Build pure config-driven URDF/MJCF retargeter supporting humanoid+dexterous, single/dual arm+gripper, standalone dexterous hand, and glove/teleop via YAML alone. |
+| **Production Scalability & Ops** | Single-process CLI scripts; no job queue, no REST worker, no checksum model manager, no 3D viewer export, no HTML run report, no GitHub Actions CI. | Not deployable as a scalable commercial customer service. | Add `egoannotate` CLI + Python API + SQLite/FastAPI batch worker, CPU/CUDA Dockerfiles, checksum model manager, HTML QA report + 3D HTML/glTF scene export, and CI. |
+| **Repo Hygiene** | Committed `audit_frames/` JPEGs, ~45 one-off scripts in `scripts/`, stray root JSON reports, duplicate `privacy.py` and `embodiment_registry.py`, `Dummy`/`placeholder`/`TODO` hits in `src/`. | Fails commercial packaging and repo cleanliness standards. | Consolidate into clean `src/egoannotate/` package, archive/remove dead scripts & binaries in Phase 5, enforce `tests/test_no_fakes.py`. |

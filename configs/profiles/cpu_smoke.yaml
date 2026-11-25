@@ -1,0 +1,100 @@
+runtime:
+  profile: cpu_smoke
+  device: cpu
+  mixed_precision: fp32
+  num_workers: 2
+  chunk_size_frames: 240
+  chunk_overlap_frames: 10
+  target_fps: 30.0
+  process_full_video: true
+  cache_dir: .ego_cache
+  offline_mode: false
+  allow_non_commercial_plugins: false
+
+perception:
+  hand_backend: mediapipe_hands
+  body_backend: mediapipe_pose
+  detector_backend: opencv_motion_roi
+  segmenter_backend: opencv_roi_mask
+  hand_min_detection_conf: 0.35
+  hand_min_tracking_conf: 0.45
+  max_num_hands: 2
+  enable_upper_body: true
+  body_sample_stride: 3
+  smoothing_method: one_euro
+  one_euro_min_cutoff: 1.5
+  one_euro_beta: 0.05
+
+geometry:
+  vo_backend: opencv_essential_vo
+  depth_backend: none
+  auto_estimate_intrinsics: true
+  estimate_distortion: true
+  assumed_palm_width_m: 0.085
+  gravity_align: true
+  loop_closure_enabled: true
+  vo_max_features: 450
+  vo_resize_width: 480
+  depth_sample_stride: 10
+
+behavior:
+  min_segment_duration_s: 0.35
+  merge_gap_s: 0.25
+  contact_proximity_m: 0.09
+  grasp_pinch_aperture_m: 0.045
+  grasp_power_aperture_m: 0.11
+  compute_scene_graph: true
+  compute_affordances: true
+
+tactile:
+  enable_rgb_proxies: true
+  external_tactile_path: null
+  slip_velocity_threshold_mps: 0.12
+  impact_accel_threshold_mps2: 4.5
+
+semantic:
+  vlm_backend: geometric_grounded
+  model_id: HuggingFaceTB/SmolVLM2-2.2B-Instruct
+  max_keyframes_per_segment: 3
+  generate_paraphrases: true
+  verify_against_geometry: true
+
+quality:
+  min_overall_score: 0.60
+  warn_overall_score: 0.78
+  min_hand_visibility: 0.25
+  min_sharpness_laplacian: 20.0
+  min_exposure_luma: 25.0
+  max_exposure_luma: 235.0
+
+retargeting:
+  enabled: true
+  embodiments:
+    - franka_panda
+    - dual_arm_franka
+    - unitree_g1_upper
+    - allegro_hand_right
+    - teleop_glove
+  embodiment_config_dir: configs/embodiments_v3
+  enforce_joint_limits: true
+  enforce_table_clearance: true
+  table_z_margin_m: 0.01
+  smoothness_window: 7
+
+export:
+  formats:
+    - lerobot_v3
+    - rlds
+    - hdf5
+    - parquet_json
+  include_groot_modality_json: true
+  video_crf: 25
+  render_qa_overlay: true
+  export_3d_viewer: true
+  generate_html_report: true
+
+privacy:
+  enable_face_blur: true
+  strip_audio: true
+  verify_zero_unblurred_faces: true
+  blur_sigma: 28.0
