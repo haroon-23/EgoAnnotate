@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import cv2
@@ -52,18 +53,22 @@ class GroundingDINOGPUDetector:
         with torch.no_grad():
             outputs = self.model(**inputs)
         target_sizes = torch.tensor([pil_img.size[::-1]], device=self.device)
-        results = self.processor.post_process_grounded_object_detection(
-            outputs,
-            inputs.input_ids,
-            box_threshold=self.box_threshold,
-            text_threshold=0.25,
-            target_sizes=target_sizes,
-        )
+
+        post_fn = self.processor.post_process_grounded_object_detection
+        sig_params = inspect.signature(post_fn).parameters
+        kwargs: dict[str, Any] = {"text_threshold": 0.25, "target_sizes": target_sizes}
+        if "threshold" in sig_params:
+            kwargs["threshold"] = self.box_threshold
+        else:
+            kwargs["box_threshold"] = self.box_threshold
+
+        results = post_fn(outputs, inputs.input_ids, **kwargs)
         out: list[dict[str, Any]] = []
         if not results:
             return out
         res0 = results[0]
-        for box, score, label in zip(res0["boxes"], res0["scores"], res0["labels"]):
+        label_key = "text_labels" if "text_labels" in res0 else "labels"
+        for box, score, label in zip(res0["boxes"], res0["scores"], res0[label_key]):
             b = [round(float(v), 2) for v in box.detach().cpu().tolist()]
             out.append({"bbox_xyxy": b, "score": round(float(score.item()), 4), "label": str(label)})
         return out
@@ -107,7 +112,7 @@ class LocalOpenSourceVLMAnnotator:
         self,
         model_id: str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
         device: str = "cuda",
-        mixed_precision: str = "bf16",
+        mixed_precision: str = "fp16",
     ) -> None:
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
@@ -124,19 +129,21 @@ class LocalOpenSourceVLMAnnotator:
     def describe_segment_keyframes(self, keyframes_bgr: list[np.ndarray], verb_hint: str) -> str:
         if not keyframes_bgr:
             return ""
-        pil_imgs = [Image.fromarray(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)) for fr in keyframes_bgr[:4]]
+        pil_imgs = [Image.fromarray(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)) for fr in keyframes_bgr[:2]]
         prompt = (
-            f"Describe the egocentric hand-object manipulation in one concise robotics instruction "
-            f"(kinematic verb hint: {verb_hint}). Mention the acting hand and manipulated object."
+            f"Describe this first-person hand manipulation in one short sentence for a robot "
+            f"(kinematic action: {verb_hint}). Name the hand and object."
         )
         content: list[dict[str, Any]] = [{"type": "image"} for _ in pil_imgs]
         content.append({"type": "text", "text": prompt})
         messages = [{"role": "user", "content": content}]
-        text_in = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        text_in = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.processor(text=text_in, images=pil_imgs, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            gen_ids = self.model.generate(**inputs, max_new_tokens=48, do_sample=False)
-        decoded = self.processor.batch_decode(gen_ids, skip_special_tokens=True)
+            gen_ids = self.model.generate(**inputs, max_new_tokens=40, do_sample=False)
+        prompt_len = int(inputs["input_ids"].shape[-1])
+        new_tokens = gen_ids[:, prompt_len:]
+        decoded = self.processor.batch_decode(new_tokens, skip_special_tokens=True)
         if not decoded:
             return ""
-        return str(decoded[0]).strip().splitlines()[-1].strip()
+        return str(decoded[0]).strip().splitlines()[0].strip()

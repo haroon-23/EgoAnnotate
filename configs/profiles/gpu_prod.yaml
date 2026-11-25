@@ -1,7 +1,7 @@
 runtime:
   profile: gpu_prod
   device: cuda
-  mixed_precision: bf16
+  mixed_precision: fp16
   num_workers: 8
   chunk_size_frames: 600
   chunk_overlap_frames: 20
@@ -53,8 +53,8 @@ tactile:
   impact_accel_threshold_mps2: 4.5
 
 semantic:
-  vlm_backend: qwen25_vl_local
-  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+  vlm_backend: smolvlm2_local
+  model_id: HuggingFaceTB/SmolVLM2-2.2B-Instruct
   max_keyframes_per_segment: 6
   generate_paraphrases: true
   verify_against_geometry: true

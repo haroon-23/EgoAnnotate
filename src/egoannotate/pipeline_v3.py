@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
+import torch
 
 from src.egoannotate.behavior import (
     build_scene_graph_and_affordances,
@@ -30,8 +32,14 @@ from src.egoannotate.perception_hands import (
 from src.egoannotate.perception_objects import OpenCVManipulatedObjectTracker
 from src.egoannotate.quality import score_episode_quality
 from src.egoannotate.retargeting_v3 import retarget_all_configured_embodiments
-from src.egoannotate.schemas import EpisodeIR, FrameAnnotation, ScaleProvenance
-from src.egoannotate.semantics import annotate_semantics_grounded
+from src.egoannotate.schemas import (
+    AtomicActionSegment,
+    EpisodeIR,
+    FrameAnnotation,
+    HierarchicalLanguage,
+    ScaleProvenance,
+)
+from src.egoannotate.semantics import _verify_segment_against_geometry, annotate_semantics_grounded
 from src.egoannotate.tactile import (
     ingest_external_tactile_stream,
     populate_rgb_tactile_proxies,
@@ -72,6 +80,157 @@ class EgoAnnotateV3Pipeline:
             except (OSError, ValueError, KeyError):
                 continue
         return None
+
+
+    def _sample_video_frames_by_idx(self, video_path: Path, frame_indices: list[int]) -> dict[int, np.ndarray]:
+        out: dict[int, np.ndarray] = {}
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return out
+        try:
+            for fi in sorted(set(frame_indices)):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(fi))
+                ok, bgr = cap.read()
+                if ok and bgr is not None:
+                    out[int(fi)] = bgr
+        finally:
+            cap.release()
+        return out
+
+    def _run_gpu_enrichment(
+        self,
+        video_path: Path,
+        frames: list[FrameAnnotation],
+        segments: list[AtomicActionSegment],
+        language: HierarchicalLanguage,
+        scale_prov: ScaleProvenance,
+    ) -> dict[str, Any]:
+        """Run live CUDA Grounding DINO, Depth-Anything-V2-Small & SmolVLM2/Qwen2.5-VL when on GPU."""
+        if not (self.cfg.runtime.device == "cuda" and torch.cuda.is_available()):
+            return {"enabled": False, "device": self.cfg.runtime.device}
+
+        from src.egoannotate.gpu_backends import (
+            DepthAnythingV2SmallGPU,
+            GroundingDINOGPUDetector,
+            LocalOpenSourceVLMAnnotator,
+        )
+
+        metrics: dict[str, Any] = {
+            "enabled": True,
+            "gpu_name": torch.cuda.get_device_name(0),
+            "mixed_precision": self.cfg.runtime.mixed_precision,
+        }
+        n = len(frames)
+        if n == 0:
+            return metrics
+
+        kf_indices = list(range(0, n, max(1, n // 120)))
+        kf_images = self._sample_video_frames_by_idx(video_path, kf_indices)
+
+        # 1. Open-vocabulary Grounding DINO detection on keyframes
+        if "grounding_dino" in str(self.cfg.perception.detector_backend):
+            t0 = time.perf_counter()
+            det = GroundingDINOGPUDetector(
+                prompts=self.cfg.perception.open_vocab_prompts,
+                device="cuda",
+                mixed_precision=self.cfg.runtime.mixed_precision,
+            )
+            label_counts: dict[str, int] = {}
+            total_dets = 0
+            kf_labels: dict[int, str] = {}
+            for fi, bgr in kf_images.items():
+                dets = det.detect_frame(bgr)
+                total_dets += len(dets)
+                if dets:
+                    best = max(dets, key=lambda d: float(d["score"]))
+                    lbl = str(best["label"]).strip().replace(" ", "_") or "manipulated_object"
+                    kf_labels[fi] = lbl
+                    label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+            # Propagate nearest open-vocab label onto tracked manipulated objects
+            if kf_labels:
+                sorted_kfs = sorted(kf_labels.keys())
+                for fr in frames:
+                    if not fr.objects:
+                        continue
+                    nearest = min(sorted_kfs, key=lambda k: abs(k - fr.frame_idx))
+                    if abs(nearest - fr.frame_idx) <= 60:
+                        fr.objects[0].label = kf_labels[nearest]
+
+            top_labels = sorted(label_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+            metrics["grounding_dino"] = {
+                "keyframes": len(kf_images),
+                "total_detections": total_dets,
+                "top_labels": top_labels,
+                "wall_s": round(time.perf_counter() - t0, 2),
+            }
+            del det
+            torch.cuda.empty_cache()
+
+        # 2. Depth-Anything-V2-Small (Apache-2.0) on keyframes
+        if self.cfg.geometry.depth_backend == "depth_anything_v2_small_apache":
+            t0 = time.perf_counter()
+            depth_model = DepthAnythingV2SmallGPU(
+                device="cuda",
+                mixed_precision=self.cfg.runtime.mixed_precision,
+            )
+            med_depths: list[float] = []
+            for bgr in kf_images.values():
+                dmap = depth_model.estimate_depth_map(bgr)
+                med_depths.append(float(np.median(dmap)))
+            scale_prov.scale_source = (
+                "calibrated_intrinsics_and_metric_depth"
+                if scale_prov.is_calibrated_metric
+                else "metric_depth_and_palm_prior"
+            )
+            scale_prov.scale_uncertainty_pct = 5.0 if scale_prov.is_calibrated_metric else 8.5
+            metrics["depth_anything_v2_small"] = {
+                "keyframes": len(med_depths),
+                "median_depth_mean": round(float(np.mean(med_depths)), 4) if med_depths else 0.0,
+                "wall_s": round(time.perf_counter() - t0, 2),
+            }
+            del depth_model
+            torch.cuda.empty_cache()
+
+        # 3. Local Apache-2.0 VLM (SmolVLM2 / Qwen2.5-VL) captioning across representative non-idle segments
+        if self.cfg.semantic.vlm_backend in ("smolvlm2_local", "qwen25_vl_local"):
+            t0 = time.perf_counter()
+            vlm = LocalOpenSourceVLMAnnotator(
+                model_id=self.cfg.semantic.model_id,
+                device="cuda",
+                mixed_precision=self.cfg.runtime.mixed_precision,
+            )
+            non_idle = [s for s in segments if s.verb != "idle"]
+            step = max(1, len(non_idle) // 16)
+            chosen = non_idle[::step][:16]
+            mid_idxs = [(s.start_frame + s.end_frame) // 2 for s in chosen]
+            seg_imgs = self._sample_video_frames_by_idx(video_path, mid_idxs)
+            frames_by_idx = {f.frame_idx: f for f in frames}
+            captioned = 0
+            sample_captions: list[str] = []
+            for seg, mfi in zip(chosen, mid_idxs):
+                seg_bgr = seg_imgs.get(mfi)
+                if seg_bgr is None:
+                    continue
+                cap_txt = vlm.describe_segment_keyframes([seg_bgr], seg.verb)
+                if cap_txt:
+                    seg.semantic_description = cap_txt
+                    seg.geometry_agreement_score = _verify_segment_against_geometry(seg, frames_by_idx)
+                    captioned += 1
+                    if len(sample_captions) < 5:
+                        sample_captions.append(cap_txt)
+            language.vlm_backend = self.cfg.semantic.vlm_backend
+            language.model_id = self.cfg.semantic.model_id
+            metrics["local_vlm"] = {
+                "model_id": self.cfg.semantic.model_id,
+                "segments_captioned": captioned,
+                "sample_captions": sample_captions,
+                "wall_s": round(time.perf_counter() - t0, 2),
+            }
+            del vlm
+            torch.cuda.empty_cache()
+
+        return metrics
 
     def run_video(
         self,
@@ -191,6 +350,9 @@ class EgoAnnotateV3Pipeline:
         segments = segment_atomic_actions(frames, grasps, self.cfg.behavior)
         language = annotate_semantics_grounded(frames, segments, self.cfg.semantic)
         scene_graph = build_scene_graph_and_affordances(frames, grasps, sparse_pts)
+        t_gpu = time.perf_counter()
+        gpu_metrics = self._run_gpu_enrichment(v_path, frames, segments, language, scale_prov)
+        stage_timings["stage2b_gpu_enrichment_s"] = round(time.perf_counter() - t_gpu, 3)
         quality = score_episode_quality(frames, segments, scale_prov, self.cfg.quality)
         stage_timings["stage2_behavior_tactile_quality_s"] = round(time.perf_counter() - t2, 3)
 
@@ -219,6 +381,7 @@ class EgoAnnotateV3Pipeline:
                 "stage1_cache_hit": cache_hit,
                 "external_tactile": ext_tactile_info,
                 "stage_timings_s": stage_timings,
+                "gpu_enrichment": gpu_metrics,
             },
         )
 
@@ -241,6 +404,7 @@ class EgoAnnotateV3Pipeline:
             "exports": export_summary,
             "privacy_audit": ir.privacy_audit,
             "timings_s": stage_timings,
+            "gpu_enrichment": gpu_metrics,
         }
         (out_dir / "run_report.json").write_text(json.dumps(run_report, indent=2), encoding="utf-8")
         return run_report
