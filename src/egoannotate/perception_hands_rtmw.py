@@ -34,10 +34,22 @@ FINGERTIP_IDXS = (4, 8, 12, 16, 20)
 
 
 def _load_rtmw_wholebody_locked(device: str) -> Any:
-    """Serialize rtmlib checkpoint downloads across GPU workers and cache ONNX session."""
+    """Serialize rtmlib checkpoint downloads across GPU workers and enforce CUDA ORT on GPU."""
     cache_key = ("rtmw_wholebody", "balanced", device, "onnxruntime")
     if _cache_enabled() and cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key][0]
+
+    import onnxruntime as ort
+
+    if device == "cuda":
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+        providers = ort.get_available_providers()
+        if "CUDAExecutionProvider" not in providers:
+            raise RuntimeError(
+                f"CUDAExecutionProvider missing in onnxruntime (available={providers}); "
+                "refusing slow CPU RTMW fallback."
+            )
 
     from rtmlib import Wholebody
 

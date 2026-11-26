@@ -607,6 +607,13 @@ class EgoAnnotateV3Pipeline:
                         if body is not None:
                             kwargs["upper_body"] = body
                         frames.append(FrameAnnotation(**kwargs))
+                        if len(frames) % 1000 == 0:
+                            elapsed_s1 = max(time.perf_counter() - t1, 1e-3)
+                            print(
+                                f"[{ep_id}] Stage 1: {len(frames)}/{expected_total} frames "
+                                f"({len(frames) / elapsed_s1:.1f} fps, hand={hand_backend_used})",
+                                flush=True,
+                            )
             finally:
                 if rtmw_tracker is not None:
                     rtmw_tracker.close()
