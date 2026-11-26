@@ -6,13 +6,15 @@ runtime:
   chunk_size_frames: 600
   chunk_overlap_frames: 20
   target_fps: 30.0
+  normalize_fps_cfr: true
+  use_nvdec: true
   process_full_video: true
   cache_dir: .ego_cache
   offline_mode: false
   allow_non_commercial_plugins: false
 
 perception:
-  hand_backend: mediapipe_hands
+  hand_backend: rtmw_133_apache
   body_backend: mediapipe_pose
   detector_backend: grounding_dino_apache
   segmenter_backend: sam21_apache
@@ -24,6 +26,7 @@ perception:
   smoothing_method: one_euro
   one_euro_min_cutoff: 1.8
   one_euro_beta: 0.06
+  gpu_batch_size: 16
   open_vocab_prompts:
     - tool
     - scissors
@@ -52,7 +55,8 @@ perception:
 
 geometry:
   vo_backend: dpvo_mit
-  depth_backend: depth_anything_v2_small_apache
+  depth_backend: moge2_mit
+  depth_provenance: auto
   auto_estimate_intrinsics: true
   estimate_distortion: true
   assumed_palm_width_m: 0.085
@@ -78,8 +82,9 @@ tactile:
   impact_accel_threshold_mps2: 4.5
 
 semantic:
-  vlm_backend: smolvlm2_local
-  model_id: HuggingFaceTB/SmolVLM2-2.2B-Instruct
+  vlm_backend: qwen3_vl_local
+  model_id: Qwen/Qwen3-VL-4B-Instruct
+  vllm_base_url: null
   max_keyframes_per_segment: 6
   generate_paraphrases: true
   verify_against_geometry: true
@@ -102,6 +107,8 @@ retargeting:
     - allegro_hand_right
     - teleop_glove
   embodiment_config_dir: configs/embodiments_v3
+  ik_backend: auto
+  clamp_workspace_reach: true
   enforce_joint_limits: true
   enforce_table_clearance: true
   table_z_margin_m: 0.01
@@ -114,6 +121,8 @@ export:
     - hdf5
     - parquet_json
   include_groot_modality_json: true
+  sharded_lerobot_v3: true
+  generate_dataset_card: true
   video_crf: 20
   render_qa_overlay: true
   export_3d_viewer: true
@@ -121,6 +130,9 @@ export:
 
 privacy:
   enable_face_blur: true
+  enable_ocr_blur: false
   strip_audio: true
   verify_zero_unblurred_faces: true
+  use_gpu_blur: true
+  use_nvenc: true
   blur_sigma: 28.0

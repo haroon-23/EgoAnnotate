@@ -1,4 +1,4 @@
-"""Unified commercial CLI (`egoannotate`) for single-video, batch queue, REST worker, QA, and model ops."""
+"""Unified commercial CLI (`egoannotate`) for single-video, multi-GPU batch, Ray, sharding & QA."""
 
 from __future__ import annotations
 
@@ -9,13 +9,19 @@ import sys
 from pathlib import Path
 
 from src.egoannotate.api import annotate_video, export_qa_artifacts, verify_policy_training
+from src.egoannotate.batch_orchestrator import MultiGPUBatchOrchestrator
+from src.egoannotate.lerobot_sharding import pack_sharded_lerobot_v3
 from src.egoannotate.observability import configure_json_logging
+from src.egoannotate.policy_gate import validate_lerobot_v3_dataset
 from src.egoannotate.queue_worker import JobQueueStore, create_worker_app
+from src.egoannotate.ray_pipeline import RayStreamingOrchestrator
 from src.egoannotate.registry import REGISTRY
 
 _PLUGIN_MODULES = (
     "src.egoannotate.geometry_world",
+    "src.egoannotate.gpu_backends_v4",
     "src.egoannotate.perception_hands",
+    "src.egoannotate.perception_hands_rtmw",
     "src.egoannotate.perception_objects",
     "src.egoannotate.semantics",
 )
@@ -24,7 +30,7 @@ _PLUGIN_MODULES = (
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="egoannotate",
-        description="EgoAnnotate v3: Commercial egocentric video to robot-ready VLA data pipeline.",
+        description="EgoAnnotate v4: Commercial egocentric video to robot-ready VLA data pipeline.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -45,6 +51,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--profile", default="auto")
     p_batch.add_argument("--workers", type=int, default=1)
     p_batch.add_argument("--enqueue-only", action="store_true")
+
+    p_bgpu = sub.add_parser(
+        "batch-gpu",
+        help="Run persistent multi-GPU worker pool with 6-state ledger, DLQ retry, and optional LeRobot v3 sharding.",
+    )
+    p_bgpu.add_argument("input_dir", type=Path)
+    p_bgpu.add_argument("--out", type=Path, required=True)
+    p_bgpu.add_argument("--profile", default="gpu_prod", choices=["auto", "cpu_smoke", "gpu_prod"])
+    p_bgpu.add_argument("--max-gpus", type=int, default=None)
+    p_bgpu.add_argument("--shard-lerobot", action="store_true")
+
+    p_ray = sub.add_parser(
+        "ray-batch",
+        help="Run 5-actor-pool Ray Data streaming batch (falls back to MultiGPUBatchOrchestrator).",
+    )
+    p_ray.add_argument("input_dir", type=Path)
+    p_ray.add_argument("--out", type=Path, required=True)
+    p_ray.add_argument("--profile", default="gpu_prod", choices=["auto", "cpu_smoke", "gpu_prod"])
+    p_ray.add_argument("--concurrency", type=int, default=2)
+    p_ray.add_argument("--no-shard", action="store_true")
+
+    p_shard = sub.add_parser(
+        "shard-lerobot",
+        help="Atomically pack verified episode outputs into a multi-episode sharded LeRobotDataset v3.0.",
+    )
+    p_shard.add_argument("runs_dir", type=Path)
+    p_shard.add_argument("--out", type=Path, required=True)
+    p_shard.add_argument("--max-frames-per-shard", type=int, default=50000)
+    p_shard.add_argument("--min-quality", type=float, default=0.0)
+    p_shard.add_argument("--skip-gate", action="store_true")
+    p_shard.add_argument("--ledger", type=Path, default=None)
+
+    p_val = sub.add_parser(
+        "validate-dataset",
+        help="Run Layer 7 policy-readiness gate on a single- or multi-episode LeRobot v3.0 dataset.",
+    )
+    p_val.add_argument("lerobot_dir", type=Path)
+    p_val.add_argument("--epochs", type=int, default=4)
+    p_val.add_argument("--no-smoke", action="store_true")
 
     p_worker = sub.add_parser("worker", help="Launch FastAPI REST worker service.")
     p_worker.add_argument("--db", type=Path, default=Path("egoannotate_jobs.db"))
@@ -91,6 +136,60 @@ def main(argv: list[str] | None = None) -> int:
         done = store.run_pending_batch(max_workers=args.workers)
         print(json.dumps({"processed": done}, indent=2))
         return 0
+
+    if args.command == "batch-gpu":
+        mp4s = sorted(args.input_dir.rglob("*.mp4"))
+        orch = MultiGPUBatchOrchestrator(
+            out_root=args.out,
+            profile=args.profile,
+            max_gpus=args.max_gpus,
+        )
+        summary = orch.run_videos(mp4s)
+        payload: dict[str, object] = {"episodes": summary}
+        if args.shard_lerobot:
+            ep_dirs = [args.out / v.stem for v in mp4s if (args.out / v.stem).exists()]
+            if ep_dirs:
+                payload["sharding"] = pack_sharded_lerobot_v3(
+                    ep_dirs,
+                    args.out / "lerobot_v3_sharded",
+                    run_validation_gate=True,
+                    ledger_path=orch.ledger.db_path,
+                )
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "ray-batch":
+        mp4s = sorted(args.input_dir.rglob("*.mp4"))
+        ray_orch = RayStreamingOrchestrator(
+            out_root=args.out,
+            profile=args.profile,
+            concurrency_per_stage=args.concurrency,
+        )
+        res = ray_orch.run_batch(mp4s, shard_lerobot=not args.no_shard)
+        print(json.dumps(res, indent=2))
+        return 0
+
+    if args.command == "shard-lerobot":
+        ep_dirs = sorted(p.parent for p in args.runs_dir.rglob("run_report.json"))
+        shard_res = pack_sharded_lerobot_v3(
+            ep_dirs,
+            args.out,
+            max_frames_per_shard=args.max_frames_per_shard,
+            min_quality_score=args.min_quality,
+            run_validation_gate=not args.skip_gate,
+            ledger_path=args.ledger,
+        )
+        print(json.dumps(shard_res, indent=2))
+        return 0
+
+    if args.command == "validate-dataset":
+        gate = validate_lerobot_v3_dataset(
+            args.lerobot_dir,
+            run_smoke_train=not args.no_smoke,
+            smoke_epochs=args.epochs,
+        )
+        print(json.dumps(gate, indent=2))
+        return 0 if gate["passed"] else 1
 
     if args.command == "worker":
         import uvicorn

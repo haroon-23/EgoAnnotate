@@ -81,6 +81,16 @@ class ManipulatedObjectState(BaseModel):
     in_hand: Literal["none", "left", "right", "both"] = "none"
     object_state: str = "stationary"
     state_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    role: Literal[
+        "held_object",
+        "target_object",
+        "tool",
+        "container",
+        "workpiece",
+        "unknown",
+    ] = "unknown"
+    mask_iou_with_hand: float = Field(default=0.0, ge=0.0, le=1.0)
+    mask_polygon_norm: list[list[float]] = Field(default_factory=list)
 
 
 class CameraWorldPose(BaseModel):
@@ -127,6 +137,10 @@ class FrameAnnotation(BaseModel):
     tactile_left: TactileHandChannel = Field(default_factory=TactileHandChannel)
     tactile_right: TactileHandChannel = Field(default_factory=TactileHandChannel)
     gaze_world_dir: list[float] = Field(default_factory=lambda: [1.0, 0.0, 0.0])
+    proprio_valid: bool = True
+    canonical_delta_action: list[float] = Field(default_factory=list)
+    contact_event_tags: list[str] = Field(default_factory=list)
+    depth_surface_normal_mean: list[float] = Field(default_factory=list)
 
 
 class GraspEvent(BaseModel):
@@ -172,6 +186,8 @@ class AtomicActionSegment(BaseModel):
     vla_paraphrases: list[str] = Field(default_factory=list)
     geometry_agreement_score: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    outcome_tag: Literal["success", "retry", "slip_recovery", "idle"] = "success"
+    subtask_id: int = 0
 
 
 class HierarchicalLanguage(BaseModel):
@@ -181,6 +197,10 @@ class HierarchicalLanguage(BaseModel):
     vlm_backend: str
     model_id: str
     grounding_verified: bool = True
+    environment_tag: str = "general_workspace"
+    domain_taxonomy: str = "general_manipulation"
+    operator_ehs_metadata: dict[str, Any] = Field(default_factory=dict)
+    discovered_objects: list[str] = Field(default_factory=list)
 
 
 class ScaleProvenance(BaseModel):
@@ -194,6 +214,12 @@ class ScaleProvenance(BaseModel):
     is_calibrated_metric: bool = False
     gravity_vector_cam0: list[float] = Field(default_factory=lambda: [0.0, 1.0, 0.0])
     table_plane_z_world_m: float | None = None
+    depth_provenance: Literal[
+        "estimated_metric_monocular",
+        "calibrated_stereo_imu",
+        "anthropometric_palm_prior",
+    ] = "anthropometric_palm_prior"
+    estimated_intrinsics_3x3: list[list[float]] = Field(default_factory=list)
 
 
 class SceneGraphSummary(BaseModel):

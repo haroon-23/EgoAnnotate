@@ -221,3 +221,27 @@ def build_smolvlm2_local(model_id: str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
 )
 def build_qwen25_vl_local(model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct") -> dict[str, str]:
     return {"model_id": model_id, "license": "Apache-2.0", "runtime": "transformers_local_cuda"}
+
+
+@register_backend(
+    stage="vlm",
+    name="qwen3_vl_local",
+    code_license="Apache-2.0",
+    weights_license="Apache-2.0",
+    requires_gpu=True,
+    notes="Local GPU Qwen/Qwen3-VL-4B-Instruct (Apache-2.0) for whole-video 3-level VLA annotation & grounding.",
+)
+def build_qwen3_vl_local(model_id: str = "Qwen/Qwen3-VL-4B-Instruct") -> dict[str, str]:
+    return {"model_id": model_id, "license": "Apache-2.0", "runtime": "transformers_local_cuda"}
+
+
+@register_backend(
+    stage="vlm",
+    name="qwen3_vl_vllm",
+    code_license="Apache-2.0",
+    weights_license="Apache-2.0",
+    requires_gpu=True,
+    notes="Self-hosted vLLM OpenAI-compatible Qwen3-VL server with continuous batching & prefix caching.",
+)
+def build_qwen3_vl_vllm(model_id: str = "Qwen/Qwen3-VL-4B-Instruct") -> dict[str, str]:
+    return {"model_id": model_id, "license": "Apache-2.0", "runtime": "vllm_self_hosted"}

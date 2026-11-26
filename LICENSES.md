@@ -36,3 +36,15 @@
 | **YOLO-World (Ultralytics)** | `GPL-3.0` / paid Ultralytics Enterprise license required for proprietary commercial use. | **Excluded** from default configs. |
 | **Meta SAM 3** | Custom Meta SAM License (AUP conditions). | **Excluded** from default configs; use Apache-2.0 `SAM 2.1`. |
 | **Google Gemini API (`google-genai`)** | Paid proprietary cloud API. | **Removed** from default pipeline (zero paid APIs, zero external telemetry). |
+
+## v4.0 Robot-Ready Foundation & High-Throughput Backends
+
+| Component | Model / Package | License | Commercial Use |
+| :--- | :--- | :--- | :---: |
+| Whole-body & gloved hands | `rtmlib` (`RTMW` 133-kpt ONNXRuntime-CUDA) | Apache-2.0 | Yes |
+| Metric depth, normals & intrinsics | `Ruicheng/moge-2-vitb-normal` (`MoGe-2`) | MIT | Yes |
+| Metric depth (alternative) | `depth-anything/DA3METRIC-LARGE` | Apache-2.0 | Yes |
+| Pixel masks & contact IoU | `facebook/sam2.1-hiera-small` | Apache-2.0 | Yes |
+| Full-video VLA segmentation & grounding | `Qwen/Qwen3-VL-4B-Instruct` (+ optional `vLLM`) | Apache-2.0 | Yes |
+| Optional OCR badge/text privacy blur | `rapidocr-onnxruntime` (`PP-OCRv3/v4`) | Apache-2.0 | Yes |
+| Distributed streaming engine | `ray[data]` | Apache-2.0 | Yes |
