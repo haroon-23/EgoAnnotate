@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import itertools
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
 from src.egoannotate.config import PerceptionConfig
+from src.egoannotate.gpu_backends import _MODEL_CACHE, _cache_enabled
 from src.egoannotate.perception_hands import (
     MediaPipeHandTracker,
     MediaPipeUpperBodyTracker,
@@ -29,6 +31,41 @@ from src.egoannotate.schemas import (
 COCO_WHOLEBODY_LEFT_HAND_SLICE = slice(91, 112)
 COCO_WHOLEBODY_RIGHT_HAND_SLICE = slice(112, 133)
 FINGERTIP_IDXS = (4, 8, 12, 16, 20)
+
+
+def _load_rtmw_wholebody_locked(device: str) -> Any:
+    """Serialize rtmlib checkpoint downloads across GPU workers and cache ONNX session."""
+    cache_key = ("rtmw_wholebody", "balanced", device, "onnxruntime")
+    if _cache_enabled() and cache_key in _MODEL_CACHE:
+        return _MODEL_CACHE[cache_key][0]
+
+    from rtmlib import Wholebody
+
+    lock_path = Path.home() / ".cache" / "rtmlib_download.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fcntl_mod: Any = None
+    try:
+        import fcntl as fcntl_mod
+    except ImportError:
+        fcntl_mod = None
+
+    with lock_path.open("a+", encoding="utf-8") as lock_fh:
+        if fcntl_mod is not None:
+            fcntl_mod.flock(lock_fh.fileno(), fcntl_mod.LOCK_EX)
+        try:
+            model = Wholebody(
+                to_openpose=False,
+                mode="balanced",
+                backend="onnxruntime",
+                device=device,
+            )
+        finally:
+            if fcntl_mod is not None:
+                fcntl_mod.flock(lock_fh.fileno(), fcntl_mod.LOCK_UN)
+
+    if _cache_enabled():
+        _MODEL_CACHE[cache_key] = (model, None)
+    return model
 
 
 def regularize_hand_bone_lengths(
@@ -136,15 +173,8 @@ class RTMWWholeBodyHandTracker:
         }
 
         try:
-            from rtmlib import Wholebody
-
-            self._rtm_wholebody = Wholebody(
-                to_openpose=False,
-                mode="balanced",
-                backend="onnxruntime",
-                device=self.device,
-            )
-        except (ImportError, RuntimeError, OSError, ValueError):
+            self._rtm_wholebody = _load_rtmw_wholebody_locked(self.device)
+        except (ImportError, RuntimeError, OSError, ValueError, NameError, AttributeError):
             self.backend_used = "mediapipe_fallback"
             self._mp_hands = MediaPipeHandTracker(
                 cfg,

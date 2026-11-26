@@ -1,4 +1,4 @@
-"""Multi-GPU persistent batch orchestrator with 6-state ledger and DLQ retry."""
+"""Multi-GPU persistent batch orchestrator with 6-state ledger, live logs, and deadlock-proof DLQ."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import hashlib
 import json
 import multiprocessing as mp
 import os
+import queue
 import sqlite3
 import time
 import traceback
@@ -24,6 +25,23 @@ LEDGER_STATES = (
     "VERIFIED",
     "SHARDED",
     "FAILED_DLQ",
+)
+
+_RECOVERABLE_WORKER_ERRORS = (
+    RuntimeError,
+    ValueError,
+    OSError,
+    KeyError,
+    IndexError,
+    TypeError,
+    MemoryError,
+    AssertionError,
+    ArithmeticError,
+    LookupError,
+    NameError,
+    AttributeError,
+    ImportError,
+    EOFError,
 )
 
 
@@ -215,6 +233,8 @@ def _summarize_report(vp: Path, rep: dict[str, Any], wall_s: float) -> dict[str,
         "file": vp.name,
         "frames": f"{rep['video']['processed_frames']}/{rep['video']['total_frames']}",
         "duration_s": rep["video"]["duration_s"],
+        "hand_backend": rep.get("hand_backend_used"),
+        "gloved_filled": rep.get("gloved_hand_dropouts_filled", 0),
         "quality_score": rep["quality"]["robot_readiness_score"],
         "verdict": rep["quality"]["verdict"],
         "flags": rep["quality"]["flags"],
@@ -255,104 +275,132 @@ def _gpu_worker_loop(
         overrides = {"runtime": {"device": "cpu"}}
     cfg = load_config(profile=profile, overrides=overrides)
     pipe = EgoAnnotateV3Pipeline(cfg=cfg)
+    reported_ids: set[str] = set()
 
-    for item in items:
-        vp = Path(item.video_path)
-        ep_out = Path(item.output_dir)
-        rep_file = ep_out / "run_report.json"
+    print(f"[{device_str}] Worker online with {len(items)} video(s)", flush=True)
+    try:
+        for idx, item in enumerate(items, start=1):
+            vp = Path(item.video_path)
+            ep_out = Path(item.output_dir)
+            rep_file = ep_out / "run_report.json"
 
-        existing = ledger.get(item.manifest_id)
-        if (
-            existing is not None
-            and existing.get("state") in ("VERIFIED", "SHARDED")
-            and rep_file.exists()
-        ):
-            rep = json.loads(rep_file.read_text(encoding="utf-8"))
-            summary = _summarize_report(vp, rep, float(existing.get("wall_s") or 0.0))
-            result_queue.put((item.episode_id, summary))
-            continue
-
-        completed = False
-        last_exc = ""
-        last_trace = ""
-        for attempt_idx, batch_scale in enumerate((1.0, 0.5), start=1):
-            os.environ["EGOANNOTATE_BATCH_SCALE"] = str(batch_scale)
-            ledger.transition(
-                item.manifest_id,
-                "PERCEPTION",
-                gpu_device=device_str,
-                batch_scale=batch_scale,
-                increment_attempts=True,
-            )
-            t0 = time.time()
-            try:
-                pipe.run_video(vp, ep_out, episode_id=item.episode_id, use_cache=True)
-                wall_s = time.time() - t0
+            existing = ledger.get(item.manifest_id)
+            if (
+                existing is not None
+                and existing.get("state") in ("VERIFIED", "SHARDED")
+                and rep_file.exists()
+            ):
                 rep = json.loads(rep_file.read_text(encoding="utf-8"))
-                q_score = float(rep["quality"]["robot_readiness_score"])
-                verdict = str(rep["quality"]["verdict"])
+                summary = _summarize_report(vp, rep, float(existing.get("wall_s") or 0.0))
+                print(
+                    f"[{device_str}] [{idx}/{len(items)}] RESUMED {item.episode_id}",
+                    flush=True,
+                )
+                result_queue.put((item.episode_id, summary))
+                reported_ids.add(item.episode_id)
+                continue
+
+            completed = False
+            last_exc = ""
+            last_trace = ""
+            for attempt_idx, batch_scale in enumerate((1.0, 0.5), start=1):
+                os.environ["EGOANNOTATE_BATCH_SCALE"] = str(batch_scale)
                 ledger.transition(
                     item.manifest_id,
-                    "VERIFIED",
+                    "PERCEPTION",
                     gpu_device=device_str,
                     batch_scale=batch_scale,
-                    quality_score=q_score,
-                    verdict=verdict,
-                    wall_s=wall_s,
-                    error_message=None,
+                    increment_attempts=True,
                 )
-                summary = _summarize_report(vp, rep, wall_s)
-                result_queue.put((item.episode_id, summary))
-                completed = True
-                break
-            except (
-                RuntimeError,
-                ValueError,
-                OSError,
-                KeyError,
-                IndexError,
-                TypeError,
-                MemoryError,
-                AssertionError,
-                ArithmeticError,
-                LookupError,
-            ) as exc:
-                last_exc = str(exc)
-                last_trace = traceback.format_exc()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if attempt_idx == 2:
+                print(
+                    f"[{device_str}] [{idx}/{len(items)}] START {item.episode_id} "
+                    f"(attempt {attempt_idx}/2, batch_scale={batch_scale})",
+                    flush=True,
+                )
+                t0 = time.time()
+                try:
+                    pipe.run_video(vp, ep_out, episode_id=item.episode_id, use_cache=True)
+                    wall_s = time.time() - t0
+                    rep = json.loads(rep_file.read_text(encoding="utf-8"))
+                    q_score = float(rep["quality"]["robot_readiness_score"])
+                    verdict = str(rep["quality"]["verdict"])
                     ledger.transition(
                         item.manifest_id,
-                        "FAILED_DLQ",
+                        "VERIFIED",
                         gpu_device=device_str,
                         batch_scale=batch_scale,
-                        error_message=last_exc,
+                        quality_score=q_score,
+                        verdict=verdict,
+                        wall_s=wall_s,
+                        error_message=None,
                     )
-                    dlq.record(
-                        manifest_id=item.manifest_id,
-                        episode_id=item.episode_id,
-                        video_path=vp,
-                        error=last_exc,
-                        trace_tail=last_trace,
-                        batch_scale=batch_scale,
+                    summary = _summarize_report(vp, rep, wall_s)
+                    print(
+                        f"[{device_str}] [{idx}/{len(items)}] DONE  {item.episode_id} | "
+                        f"score={q_score:.3f} ({verdict}) | hand={summary['hand_backend']} | "
+                        f"wall={wall_s:.1f}s",
+                        flush=True,
                     )
-        if not completed:
-            result_queue.put(
-                (
-                    item.episode_id,
-                    {
-                        "status": "FAILED_DLQ",
-                        "file": vp.name,
-                        "error": last_exc,
-                        "trace": last_trace[-600:],
-                    },
+                    result_queue.put((item.episode_id, summary))
+                    reported_ids.add(item.episode_id)
+                    completed = True
+                    break
+                except _RECOVERABLE_WORKER_ERRORS as exc:
+                    last_exc = f"{type(exc).__name__}: {exc}"
+                    last_trace = traceback.format_exc()
+                    print(
+                        f"[{device_str}] [{idx}/{len(items)}] ERROR {item.episode_id} "
+                        f"(attempt {attempt_idx}/2): {last_exc}",
+                        flush=True,
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if attempt_idx == 2:
+                        ledger.transition(
+                            item.manifest_id,
+                            "FAILED_DLQ",
+                            gpu_device=device_str,
+                            batch_scale=batch_scale,
+                            error_message=last_exc,
+                        )
+                        dlq.record(
+                            manifest_id=item.manifest_id,
+                            episode_id=item.episode_id,
+                            video_path=vp,
+                            error=last_exc,
+                            trace_tail=last_trace,
+                            batch_scale=batch_scale,
+                        )
+            if not completed:
+                result_queue.put(
+                    (
+                        item.episode_id,
+                        {
+                            "status": "FAILED_DLQ",
+                            "file": vp.name,
+                            "error": last_exc,
+                            "trace": last_trace[-600:],
+                        },
+                    )
                 )
-            )
+                reported_ids.add(item.episode_id)
+    finally:
+        for item in items:
+            if item.episode_id not in reported_ids:
+                result_queue.put(
+                    (
+                        item.episode_id,
+                        {
+                            "status": "FAILED_DLQ",
+                            "file": Path(item.video_path).name,
+                            "error": "Worker terminated before completing item",
+                        },
+                    )
+                )
 
 
 class MultiGPUBatchOrchestrator:
-    """Distribute videos across all GPUs with persistent models, ledger, and DLQ."""
+    """Distribute videos across all GPUs with persistent models, ledger, and deadlock-proof DLQ."""
 
     def __init__(
         self,
@@ -431,15 +479,45 @@ class MultiGPUBatchOrchestrator:
             expected = len(work_items)
             received = 0
             while received < expected:
-                ep_id, summary = result_q.get()
-                results[ep_id] = summary
-                received += 1
-                self.summary_path.write_text(
-                    json.dumps(dict(sorted(results.items())), indent=2),
-                    encoding="utf-8",
-                )
+                try:
+                    ep_id, summary = result_q.get(timeout=5.0)
+                    results[ep_id] = summary
+                    received += 1
+                    self.summary_path.write_text(
+                        json.dumps(dict(sorted(results.items())), indent=2),
+                        encoding="utf-8",
+                    )
+                except queue.Empty:
+                    if not any(p.is_alive() for p in procs):
+                        while True:
+                            try:
+                                ep_id, summary = result_q.get_nowait()
+                                results[ep_id] = summary
+                                received += 1
+                            except queue.Empty:
+                                break
+                        break
+
             for p in procs:
-                p.join()
+                p.join(timeout=10.0)
+
+            for item in work_items:
+                if item.episode_id not in results:
+                    msg = "Worker process exited unexpectedly before reporting result"
+                    self.ledger.transition(item.manifest_id, "FAILED_DLQ", error_message=msg)
+                    self.dlq.record(
+                        item.manifest_id,
+                        item.episode_id,
+                        Path(item.video_path),
+                        msg,
+                        msg,
+                        batch_scale=0.5,
+                    )
+                    results[item.episode_id] = {
+                        "status": "FAILED_DLQ",
+                        "file": Path(item.video_path).name,
+                        "error": msg,
+                    }
 
         ordered_results = dict(sorted(results.items()))
         self.summary_path.write_text(json.dumps(ordered_results, indent=2), encoding="utf-8")

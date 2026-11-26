@@ -113,3 +113,33 @@ def test_orchestrator_dlq_halved_batch_retry_and_clean_resume(
     good_calls_after = len([1 for name, _ in calls if name == "good.mp4"])
     assert res2["good"]["status"] == "OK"
     assert good_calls_after == good_calls_before
+
+
+def test_orchestrator_catches_unbound_local_error_without_deadlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vid = tmp_path / "race_clip.mp4"
+    vid.write_bytes(b"rtmlib-race-payload")
+
+    def _raise_unbound(
+        self: Any,
+        video_path: Path,
+        output_dir: Path,
+        *,
+        episode_id: str | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        _ = (self, video_path, output_dir, episode_id, use_cache)
+        raise UnboundLocalError("cannot access local variable 'cached_onnx'")
+
+    monkeypatch.setattr(
+        "src.egoannotate.pipeline_v3.EgoAnnotateV3Pipeline.run_video",
+        _raise_unbound,
+    )
+    out_root = tmp_path / "out_unbound"
+    orch = MultiGPUBatchOrchestrator(out_root=out_root, profile="cpu_smoke", max_gpus=1)
+    orch.devices = ["cpu"]
+    res = orch.run_videos([vid])
+    assert res["race_clip"]["status"] == "FAILED_DLQ"
+    assert "UnboundLocalError" in res["race_clip"]["error"]
