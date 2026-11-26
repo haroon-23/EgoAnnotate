@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import gc
+import inspect
 import json
 import re
 import urllib.error
@@ -25,6 +27,14 @@ from src.egoannotate.gpu_backends import (
 from src.egoannotate.registry import register_backend
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
+
+
+def is_constrained_vram_gpu(device: str) -> bool:
+    """Return True on <=22 GB GPUs (e.g., Tesla T4 15 GB) where large VLMs must not stay resident."""
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return False
+    total_gb = torch.cuda.get_device_properties(0).total_memory / (1024.0**3)
+    return total_gb < 22.0
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -115,7 +125,7 @@ def lift_box_to_3d_centroid(
 
 
 class MoGe2MetricDepthGPU:
-    """MIT-licensed MoGe-2 metric depth, surface normals & camera intrinsics runner."""
+    """MIT-licensed MoGe-2 metric depth, surface normals & intrinsics runner with safe fallback."""
 
     def __init__(
         self,
@@ -125,6 +135,7 @@ class MoGe2MetricDepthGPU:
     ) -> None:
         use_cuda = device == "cuda" and torch.cuda.is_available()
         self.device = device if use_cuda else "cpu"
+        self.mixed_precision = mixed_precision
         self.dtype = _resolve_torch_dtype(mixed_precision, self.device)
         self.model_id = model_id
         self.backend_used = "moge2_mit"
@@ -144,79 +155,26 @@ class MoGe2MetricDepthGPU:
             self._moge_model = model
             if _cache_enabled():
                 _MODEL_CACHE[cache_key] = (model, None)
-        except (ImportError, RuntimeError, OSError, ValueError):
+        except (ImportError, RuntimeError, OSError, ValueError, AttributeError, TypeError):
             self.backend_used = "depth_anything_v2_small_fallback"
             self._fallback_depth = DepthAnythingV2SmallGPU(
                 device=self.device,
                 mixed_precision=mixed_precision,
             )
 
-    def infer_batch(
+    def _infer_fallback(
         self,
         frames_bgr: list[np.ndarray],
-        batch_size: int = 8,
+        batch_size: int,
     ) -> list[dict[str, Any]]:
-        """Predict metric depth, surface normals, validity mask, and 3x3 intrinsics."""
-        if not frames_bgr:
-            return []
-        results: list[dict[str, Any]] = []
-        if self._moge_model is not None:
-            use_amp = self.device == "cuda" and self.dtype != torch.float32
-            for bgr in frames_bgr:
-                h, w = bgr.shape[:2]
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                inp = (
-                    torch.from_numpy(rgb)
-                    .permute(2, 0, 1)
-                    .to(device=self.device, dtype=torch.float32)
-                )
-                with (
-                    torch.inference_mode(),
-                    torch.amp.autocast("cuda", dtype=self.dtype, enabled=use_amp),
-                ):
-                    out = self._moge_model.infer(inp)
-                depth_np = out["depth"].detach().float().cpu().numpy().astype(np.float32)
-                mask_np = (
-                    out["mask"].detach().cpu().numpy().astype(bool)
-                    if "mask" in out
-                    else np.isfinite(depth_np)
-                )
-                k_norm = out["intrinsics"].detach().float().cpu().numpy().astype(np.float32)
-                k_px = np.array(
-                    [
-                        [float(k_norm[0, 0]) * w, 0.0, float(k_norm[0, 2]) * w],
-                        [0.0, float(k_norm[1, 1]) * h, float(k_norm[1, 2]) * h],
-                        [0.0, 0.0, 1.0],
-                    ],
-                    dtype=np.float32,
-                )
-                if "normal" in out and out["normal"] is not None:
-                    normal_np = out["normal"].detach().float().cpu().numpy().astype(np.float32)
-                else:
-                    normal_np = _compute_normals_from_depth(depth_np, k_px)
-                valid_vals = depth_np[mask_np & np.isfinite(depth_np) & (depth_np > 0.05)]
-                med = float(np.median(valid_vals)) if valid_vals.size > 0 else 1.0
-                mean_n = (
-                    normal_np[mask_np].mean(axis=0).tolist()
-                    if np.any(mask_np)
-                    else [0.0, 0.0, 1.0]
-                )
-                results.append(
-                    {
-                        "depth_m": depth_np,
-                        "normal_map": normal_np,
-                        "valid_mask": mask_np,
-                        "intrinsics_3x3": k_px,
-                        "median_depth_m": round(med, 4),
-                        "mean_normal": [round(float(v), 4) for v in mean_n],
-                        "is_metric": True,
-                        "backend": self.backend_used,
-                    }
-                )
-            return results
-
-        assert self._fallback_depth is not None
+        if self._fallback_depth is None:
+            self._fallback_depth = DepthAnythingV2SmallGPU(
+                device=self.device,
+                mixed_precision=self.mixed_precision,
+            )
+        self.backend_used = "depth_anything_v2_small_fallback"
         dmaps = self._fallback_depth.estimate_depth_batch(frames_bgr, batch_size=batch_size)
+        results: list[dict[str, Any]] = []
         for bgr, dmap in zip(frames_bgr, dmaps):
             h, w = bgr.shape[:2]
             f_px = 0.85 * float(max(h, w))
@@ -241,6 +199,81 @@ class MoGe2MetricDepthGPU:
                 }
             )
         return results
+
+    def infer_batch(
+        self,
+        frames_bgr: list[np.ndarray],
+        batch_size: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Predict metric depth, surface normals, validity mask, and 3x3 intrinsics."""
+        if not frames_bgr:
+            return []
+        results: list[dict[str, Any]] = []
+        if self._moge_model is not None:
+            use_amp = self.device == "cuda" and self.dtype != torch.float32
+            try:
+                for bgr in frames_bgr:
+                    h, w = bgr.shape[:2]
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    inp = (
+                        torch.from_numpy(rgb)
+                        .permute(2, 0, 1)
+                        .to(device=self.device, dtype=torch.float32)
+                    )
+                    with (
+                        torch.inference_mode(),
+                        torch.amp.autocast("cuda", dtype=self.dtype, enabled=use_amp),
+                    ):
+                        out = self._moge_model.infer(inp)
+                    depth_np = out["depth"].detach().float().cpu().numpy().astype(np.float32)
+                    mask_np = (
+                        out["mask"].detach().cpu().numpy().astype(bool)
+                        if "mask" in out
+                        else np.isfinite(depth_np)
+                    )
+                    k_norm = out["intrinsics"].detach().float().cpu().numpy().astype(np.float32)
+                    k_px = np.array(
+                        [
+                            [float(k_norm[0, 0]) * w, 0.0, float(k_norm[0, 2]) * w],
+                            [0.0, float(k_norm[1, 1]) * h, float(k_norm[1, 2]) * h],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        dtype=np.float32,
+                    )
+                    if "normal" in out and out["normal"] is not None:
+                        normal_np = out["normal"].detach().float().cpu().numpy().astype(np.float32)
+                    else:
+                        normal_np = _compute_normals_from_depth(depth_np, k_px)
+                    valid_vals = depth_np[mask_np & np.isfinite(depth_np) & (depth_np > 0.05)]
+                    med = float(np.median(valid_vals)) if valid_vals.size > 0 else 1.0
+                    mean_n = (
+                        normal_np[mask_np].mean(axis=0).tolist()
+                        if np.any(mask_np)
+                        else [0.0, 0.0, 1.0]
+                    )
+                    results.append(
+                        {
+                            "depth_m": depth_np,
+                            "normal_map": normal_np,
+                            "valid_mask": mask_np,
+                            "intrinsics_3x3": k_px,
+                            "median_depth_m": round(med, 4),
+                            "mean_normal": [round(float(v), 4) for v in mean_n],
+                            "is_metric": True,
+                            "backend": self.backend_used,
+                        }
+                    )
+                return results
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError) as exc:
+                print(
+                    f"[MoGe-2] Runtime fallback to Depth-Anything-V2-Small: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                self._moge_model = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        return self._infer_fallback(frames_bgr, batch_size=batch_size)
 
 
 class DA3MetricLargeGPU:
@@ -414,38 +447,49 @@ class SAM21MaskPropagatorGPU:
             return []
 
         if self.available and self.processor is not None and self.model is not None:
-            pil_img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-            inputs = _move_inputs(
-                self.processor(
+            try:
+                pil_img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                raw_inputs = self.processor(
                     images=pil_img,
                     input_boxes=[boxes_xyxy],
                     return_tensors="pt",
-                ),
-                self.device,
-            )
-            use_amp = self.device == "cuda" and self.dtype != torch.float32
-            with (
-                torch.inference_mode(),
-                torch.amp.autocast("cuda", dtype=self.dtype, enabled=use_amp),
-            ):
-                outputs = self.model(**inputs)
-            masks_t = self.processor.post_process_masks(
-                outputs.pred_masks.cpu(),
-                inputs["original_sizes"],
-            )[0]
-            out_masks: list[dict[str, Any]] = []
-            for idx in range(len(boxes_xyxy)):
-                m_arr = masks_t[idx, 0].numpy() > 0.0
-                area_frac = float(np.mean(m_arr))
-                out_masks.append(
-                    {
-                        "mask": m_arr,
-                        "area_frac": round(area_frac, 5),
-                        "polygon_norm": _mask_to_norm_polygon(m_arr),
-                        "backend": "sam21_apache",
-                    }
                 )
-            return out_masks
+                orig_sizes = raw_inputs["original_sizes"]
+                if isinstance(orig_sizes, torch.Tensor):
+                    orig_sizes_cpu = orig_sizes.detach().cpu().tolist()
+                else:
+                    orig_sizes_cpu = orig_sizes
+                inputs = _move_inputs(raw_inputs, self.device)
+                use_amp = self.device == "cuda" and self.dtype != torch.float32
+                with (
+                    torch.inference_mode(),
+                    torch.amp.autocast("cuda", dtype=self.dtype, enabled=use_amp),
+                ):
+                    outputs = self.model(**inputs)
+                pred_masks_f32 = outputs.pred_masks.detach().float().cpu()
+                masks_t = self.processor.post_process_masks(
+                    pred_masks_f32,
+                    orig_sizes_cpu,
+                )[0]
+                out_masks: list[dict[str, Any]] = []
+                for idx in range(len(boxes_xyxy)):
+                    m_slice = masks_t[idx, 0] if masks_t.ndim >= 4 else masks_t[idx]
+                    m_arr = m_slice.detach().cpu().numpy() > 0.0
+                    area_frac = float(np.mean(m_arr))
+                    out_masks.append(
+                        {
+                            "mask": m_arr,
+                            "area_frac": round(area_frac, 5),
+                            "polygon_norm": _mask_to_norm_polygon(m_arr),
+                            "backend": "sam21_apache",
+                        }
+                    )
+                return out_masks
+            except (RuntimeError, ValueError, TypeError, AttributeError, IndexError) as exc:
+                print(
+                    f"[SAM2.1] Fallback to box mask: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
         fallback_out: list[dict[str, Any]] = []
         for box in boxes_xyxy:
@@ -473,7 +517,7 @@ class SAM21MaskPropagatorGPU:
 
 
 class Qwen3VLFastAnnotator:
-    """Apache-2.0 Qwen3-VL annotator supporting both local transformers and self-hosted vLLM."""
+    """Apache-2.0 Qwen3-VL annotator supporting local transformers (T4 VRAM-safe) and self-hosted vLLM."""
 
     def __init__(
         self,
@@ -491,22 +535,38 @@ class Qwen3VLFastAnnotator:
         self.dtype = _resolve_torch_dtype(mixed_precision, self.device)
         self.processor: Any | None = None
         self.model: Any | None = None
+        self._ephemeral_vram = is_constrained_vram_gpu(self.device)
 
         if self.vllm_base_url is None:
             from transformers import AutoModelForImageTextToText, AutoProcessor
 
             cache_key = ("qwen3_vl", model_id, self.device, str(self.dtype))
-            if _cache_enabled() and cache_key in _MODEL_CACHE:
+            if (not self._ephemeral_vram) and _cache_enabled() and cache_key in _MODEL_CACHE:
                 self.processor, self.model = _MODEL_CACHE[cache_key]
             else:
                 self.processor = AutoProcessor.from_pretrained(model_id)
+                load_sig = inspect.signature(AutoModelForImageTextToText.from_pretrained).parameters
+                dtype_kw = "dtype" if "dtype" in load_sig else "torch_dtype"
                 self.model = AutoModelForImageTextToText.from_pretrained(
                     model_id,
-                    dtype=self.dtype,
+                    **{dtype_kw: self.dtype},
                 ).to(self.device)
                 self.model.eval()
-                if _cache_enabled() and isinstance(self.model, torch.nn.Module):
+                if (
+                    (not self._ephemeral_vram)
+                    and _cache_enabled()
+                    and isinstance(self.model, torch.nn.Module)
+                ):
                     _MODEL_CACHE[cache_key] = (self.processor, self.model)
+
+    def release_vram(self) -> None:
+        """Unload large VLM weights from GPU/RAM on constrained GPUs (e.g., 15 GB T4)."""
+        if self._ephemeral_vram and self.model is not None:
+            del self.model
+            self.model = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _generate_vllm(
         self,
@@ -557,7 +617,8 @@ class Qwen3VLFastAnnotator:
         prompt: str,
         max_new_tokens: int = 256,
     ) -> str:
-        assert self.processor is not None and self.model is not None
+        if self.processor is None or self.model is None:
+            return ""
         pil_imgs: list[Image.Image] = []
         for fr in frames_bgr:
             h, w = fr.shape[:2]
@@ -571,25 +632,31 @@ class Qwen3VLFastAnnotator:
         content: list[dict[str, Any]] = [{"type": "image"} for _ in pil_imgs]
         content.append({"type": "text", "text": prompt})
         messages = [{"role": "user", "content": content}]
-        text_in = self.processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        raw_inputs = self.processor(text=text_in, images=pil_imgs, return_tensors="pt")
-        inputs = _move_inputs(raw_inputs, self.device, float_dtype=self.dtype)
-        with torch.inference_mode():
-            gen_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=int(max_new_tokens),
-                do_sample=False,
+        try:
+            text_in = self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
             )
-        prompt_len = int(inputs["input_ids"].shape[-1])
-        decoded = self.processor.batch_decode(
-            gen_ids[:, prompt_len:],
-            skip_special_tokens=True,
-        )
-        return str(decoded[0]).strip() if decoded else ""
+            raw_inputs = self.processor(text=text_in, images=pil_imgs, return_tensors="pt")
+            inputs = _move_inputs(raw_inputs, self.device, float_dtype=self.dtype)
+            with torch.inference_mode():
+                gen_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=int(max_new_tokens),
+                    do_sample=False,
+                )
+            prompt_len = int(inputs["input_ids"].shape[-1])
+            decoded = self.processor.batch_decode(
+                gen_ids[:, prompt_len:],
+                skip_special_tokens=True,
+            )
+            return str(decoded[0]).strip() if decoded else ""
+        except (RuntimeError, ValueError, TypeError, AttributeError) as exc:
+            print(f"[Qwen3-VL] Generation skipped: {type(exc).__name__}: {exc}", flush=True)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return ""
 
     def generate(
         self,
@@ -617,7 +684,7 @@ class Qwen3VLFastAnnotator:
             '"bbox_1000": [x1, y1, x2, y2]}]}. '
             "Never mention a robot or camera in task_goal."
         )
-        raw = self.generate(sample, prompt, max_new_tokens=320)
+        raw = self.generate(sample, prompt, max_new_tokens=280)
         parsed = _extract_json_object(raw)
         objects_raw = parsed.get("objects", [])
         clean_objs: list[dict[str, Any]] = []

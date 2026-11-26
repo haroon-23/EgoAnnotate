@@ -380,7 +380,7 @@ def export_sanitized_mp4(
         target_fps is not None
         and target_fps > 1.0
         and src_fps > 1.0
-        and abs(src_fps - float(target_fps)) / float(target_fps) > 0.02
+        and abs(src_fps - float(target_fps)) / float(target_fps) > 0.002
     )
     out_fps = float(target_fps) if (do_resample and target_fps is not None) else src_fps
 
@@ -422,10 +422,10 @@ def export_sanitized_mp4(
 
             emit_count = 1
             if do_resample:
-                next_emit_t += 1.0 / out_fps
+                next_emit_t = (total_written + emit_count) / out_fps
                 while src_t - next_emit_t >= (0.5 / out_fps):
                     emit_count += 1
-                    next_emit_t += 1.0 / out_fps
+                    next_emit_t = (total_written + emit_count) / out_fps
 
             if face_det is not None:
                 if total_written % max(1, detect_stride) == 0:

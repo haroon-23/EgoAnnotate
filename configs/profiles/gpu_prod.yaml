@@ -3,8 +3,8 @@ runtime:
   device: cuda
   mixed_precision: fp16
   num_workers: 8
-  chunk_size_frames: 600
-  chunk_overlap_frames: 20
+  chunk_size_frames: 150
+  chunk_overlap_frames: 10
   target_fps: 30.0
   normalize_fps_cfr: true
   use_nvdec: true

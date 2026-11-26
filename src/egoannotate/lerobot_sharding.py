@@ -85,6 +85,7 @@ def pack_sharded_lerobot_v3(
     shard_videos: list[Path] = []
     shard_frames = 0
     shard_video_cursor_s = 0.0
+    shard_video_spec: tuple[int, int, int] | None = None
     global_frame_cursor = 0
     base_info: dict[str, Any] | None = None
 
@@ -98,7 +99,7 @@ def pack_sharded_lerobot_v3(
     per_episode_stats: list[dict[str, Any]] = []
 
     def _flush_shard() -> None:
-        nonlocal shard_idx, shard_tables, shard_videos, shard_frames, shard_video_cursor_s
+        nonlocal shard_idx, shard_tables, shard_videos, shard_frames, shard_video_cursor_s, shard_video_spec
         if not shard_tables:
             return
         combined = pa.concat_tables(shard_tables, promote_options="default")
@@ -109,6 +110,7 @@ def pack_sharded_lerobot_v3(
         shard_videos = []
         shard_frames = 0
         shard_video_cursor_s = 0.0
+        shard_video_spec = None
 
     try:
         for ep_dir in sorted(episode_dirs):
@@ -141,8 +143,18 @@ def pack_sharded_lerobot_v3(
                 skipped.append({"dir": str(ep_dir), "reason": "empty_episode"})
                 continue
 
-            if shard_frames > 0 and (shard_frames + ep_len) > max_frames_per_shard:
+            cur_spec = (
+                int(rep.get("video", {}).get("width", 0)),
+                int(rep.get("video", {}).get("height", 0)),
+                round(float(rep.get("video", {}).get("processing_fps", 30.0))),
+            )
+            if shard_frames > 0 and (
+                (shard_frames + ep_len) > max_frames_per_shard
+                or (shard_video_spec is not None and cur_spec != shard_video_spec)
+            ):
                 _flush_shard()
+            if shard_video_spec is None:
+                shard_video_spec = cur_spec
 
             ep_idx = len(episode_rows)
             tasks_pq_src = lr_dir / "meta" / "tasks.parquet"

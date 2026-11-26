@@ -226,7 +226,7 @@ class VideoStreamReader:
             and target_fps is not None
             and float(target_fps) > 1.0
             and self.source_fps > 1.0
-            and abs(self.source_fps - float(target_fps)) / float(target_fps) > 0.02
+            and abs(self.source_fps - float(target_fps)) / float(target_fps) > 0.002
         )
         self.processing_fps = (
             float(target_fps)

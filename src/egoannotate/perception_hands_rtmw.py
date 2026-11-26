@@ -75,9 +75,29 @@ def _load_rtmw_wholebody_locked(device: str) -> Any:
             if fcntl_mod is not None:
                 fcntl_mod.flock(lock_fh.fileno(), fcntl_mod.LOCK_UN)
 
+    if device == "cuda":
+        pose_provs = (
+            model.pose_model.session.get_providers()
+            if hasattr(model, "pose_model") and hasattr(model.pose_model, "session")
+            else []
+        )
+        if "CUDAExecutionProvider" not in pose_provs:
+            raise RuntimeError(
+                f"RTMW ONNX session silently fell back to CPU (providers={pose_provs})."
+            )
+
     if _cache_enabled():
         _MODEL_CACHE[cache_key] = (model, None)
     return model
+
+
+def release_rtmw_vram_session() -> None:
+    """Release cached RTMW ONNX CUDA sessions so large VLMs get full VRAM on <=22 GB GPUs."""
+    stale = [k for k in _MODEL_CACHE if k and k[0] == "rtmw_wholebody"]
+    for k in stale:
+        _MODEL_CACHE.pop(k, None)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def regularize_hand_bone_lengths(

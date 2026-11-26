@@ -33,6 +33,7 @@ from src.egoannotate.perception_hands import (
 from src.egoannotate.perception_hands_rtmw import (
     RTMWWholeBodyHandTracker,
     interpolate_gloved_hand_dropouts,
+    release_rtmw_vram_session,
 )
 from src.egoannotate.perception_objects import OpenCVManipulatedObjectTracker
 from src.egoannotate.quality import score_episode_quality
@@ -183,10 +184,15 @@ class EgoAnnotateV3Pipeline:
         dino_bs = max(1, round(min(8, self.cfg.perception.gpu_batch_size) * batch_scale))
         depth_bs = max(1, round(self.cfg.perception.gpu_batch_size * batch_scale))
 
-        # Pass 1: Qwen3-VL Scene Discovery + Dynamic Open-Vocab Object Inventory
+        from src.egoannotate.gpu_backends_v4 import is_constrained_vram_gpu
+
+        if cuda_ok and is_constrained_vram_gpu("cuda"):
+            release_rtmw_vram_session()
+
+        # Pass 1 + Pass 2 (back-to-back): Qwen3-VL Scene Discovery + Segment Captioning, then release VRAM on T4
         active_prompts = list(self.cfg.perception.open_vocab_prompts)
         discovered_roles: dict[str, str] = {}
-        qwen_annotator: Qwen3VLFastAnnotator | None = None
+        qwen_completed = False
         if self.cfg.semantic.vlm_backend in ("qwen3_vl_local", "qwen3_vl_vllm"):
             t0 = time.perf_counter()
             vllm_url = (
@@ -201,34 +207,74 @@ class EgoAnnotateV3Pipeline:
                 vllm_base_url=vllm_url,
                 vllm_api_key=self.cfg.semantic.vllm_api_key,
             )
-            stride_disc = max(1, len(kf_bgrs) // 4)
-            disc_frames = kf_bgrs[::stride_disc][:4]
-            scene_info = qwen_annotator.discover_scene_and_objects(disc_frames)
-            if scene_info.get("task_goal"):
-                language.task_goal = str(scene_info["task_goal"])
-            language.environment_tag = str(
-                scene_info.get("environment_tag") or language.environment_tag
-            )
-            language.domain_taxonomy = str(
-                scene_info.get("domain_taxonomy") or language.domain_taxonomy
-            )
-            language.operator_ehs_metadata = dict(scene_info.get("operator_ehs_metadata") or {})
-            disc_labels: list[str] = []
-            for obj in scene_info.get("objects", []):
-                lbl = str(obj["label"]).strip().lower()
-                if lbl and lbl not in disc_labels:
-                    disc_labels.append(lbl)
-                if lbl and lbl not in active_prompts:
-                    active_prompts.append(lbl)
-                if lbl:
-                    discovered_roles[lbl.replace(" ", "_")] = str(obj.get("role", "workpiece"))
-            language.discovered_objects = disc_labels
-            metrics["qwen3_scene_discovery"] = {
-                "environment_tag": language.environment_tag,
-                "domain_taxonomy": language.domain_taxonomy,
-                "discovered_objects": disc_labels,
-                "wall_s": round(time.perf_counter() - t0, 2),
-            }
+            try:
+                stride_disc = max(1, len(kf_bgrs) // 4)
+                disc_frames = kf_bgrs[::stride_disc][:4]
+                scene_info = qwen_annotator.discover_scene_and_objects(disc_frames)
+                if scene_info.get("task_goal"):
+                    language.task_goal = str(scene_info["task_goal"])
+                language.environment_tag = str(
+                    scene_info.get("environment_tag") or language.environment_tag
+                )
+                language.domain_taxonomy = str(
+                    scene_info.get("domain_taxonomy") or language.domain_taxonomy
+                )
+                language.operator_ehs_metadata = dict(
+                    scene_info.get("operator_ehs_metadata") or {}
+                )
+                disc_labels: list[str] = []
+                for obj in scene_info.get("objects", []):
+                    lbl = str(obj["label"]).strip().lower()
+                    if lbl and lbl not in disc_labels:
+                        disc_labels.append(lbl)
+                    if lbl and lbl not in active_prompts:
+                        active_prompts.append(lbl)
+                    if lbl:
+                        discovered_roles[lbl.replace(" ", "_")] = str(obj.get("role", "workpiece"))
+                language.discovered_objects = disc_labels
+                metrics["qwen3_scene_discovery"] = {
+                    "environment_tag": language.environment_tag,
+                    "domain_taxonomy": language.domain_taxonomy,
+                    "discovered_objects": disc_labels,
+                    "wall_s": round(time.perf_counter() - t0, 2),
+                }
+
+                t_cap = time.perf_counter()
+                non_idle = [s for s in segments if s.verb != "idle"]
+                step = max(1, len(non_idle) // 16)
+                chosen = non_idle[::step][:16]
+                mid_idxs = [(s.start_frame + s.end_frame) // 2 for s in chosen]
+                seg_imgs = self._sample_video_frames_by_idx(
+                    video_path,
+                    mid_idxs,
+                    fps_ratio=fps_ratio,
+                )
+                captioned = 0
+                sample_captions: list[str] = []
+                for seg, mfi in zip(chosen, mid_idxs):
+                    seg_bgr = seg_imgs.get(mfi)
+                    if seg_bgr is None:
+                        continue
+                    cap_txt = qwen_annotator.describe_segment_keyframes([seg_bgr], seg.verb)
+                    if cap_txt:
+                        seg.semantic_description = cap_txt
+                        seg.geometry_agreement_score = _verify_segment_against_geometry(
+                            seg, frames_by_idx
+                        )
+                        captioned += 1
+                        if len(sample_captions) < 5:
+                            sample_captions.append(cap_txt)
+                language.vlm_backend = self.cfg.semantic.vlm_backend
+                language.model_id = self.cfg.semantic.model_id
+                metrics["local_vlm"] = {
+                    "model_id": self.cfg.semantic.model_id,
+                    "segments_captioned": captioned,
+                    "sample_captions": sample_captions,
+                    "wall_s": round(time.perf_counter() - t_cap, 2),
+                }
+                qwen_completed = True
+            finally:
+                qwen_annotator.release_vram()
 
         # 1. Batched Grounding DINO Detection on Keyframes (with VLM-discovered prompts merged)
         kf_labels: dict[int, str] = {}
@@ -423,22 +469,16 @@ class EgoAnnotateV3Pipeline:
             metrics["metric_depth"] = depth_metric_entry
             metrics["depth_anything_v2_small"] = depth_metric_entry
 
-        # 4. Local/vLLM Apache-2.0 VLM Segment Captioning
-        if self.cfg.semantic.vlm_backend in (
+        # 4. Legacy Local Apache-2.0 VLM Segment Captioning (SmolVLM2 / Qwen2.5-VL)
+        if (not qwen_completed) and self.cfg.semantic.vlm_backend in (
             "smolvlm2_local",
             "qwen25_vl_local",
-            "qwen3_vl_local",
-            "qwen3_vl_vllm",
         ):
             t0 = time.perf_counter()
-            vlm_runner: Any = (
-                qwen_annotator
-                if qwen_annotator is not None
-                else LocalOpenSourceVLMAnnotator(
-                    model_id=self.cfg.semantic.model_id,
-                    device="cuda",
-                    mixed_precision=self.cfg.runtime.mixed_precision,
-                )
+            vlm_runner: Any = LocalOpenSourceVLMAnnotator(
+                model_id=self.cfg.semantic.model_id,
+                device="cuda",
+                mixed_precision=self.cfg.runtime.mixed_precision,
             )
             non_idle = [s for s in segments if s.verb != "idle"]
             step = max(1, len(non_idle) // 16)
@@ -450,7 +490,7 @@ class EgoAnnotateV3Pipeline:
                 fps_ratio=fps_ratio,
             )
             captioned = 0
-            sample_captions: list[str] = []
+            sample_captions = []
             for seg, mfi in zip(chosen, mid_idxs):
                 seg_bgr = seg_imgs.get(mfi)
                 if seg_bgr is None:
@@ -644,6 +684,7 @@ class EgoAnnotateV3Pipeline:
                     encoding="utf-8",
                 )
         stage_timings["stage1_perception_geometry_s"] = round(time.perf_counter() - t1, 3)
+        print(f"[{ep_id}] Stage 1 done: {len(frames)} frames in {stage_timings['stage1_perception_geometry_s']}s (hand={hand_backend_used})", flush=True)
 
         # Stage 2: Gaze, Tactile, Behavior, Semantics, GPU Enrichment, Canonical Contracts & Quality
         t2 = time.perf_counter()
@@ -723,6 +764,7 @@ class EgoAnnotateV3Pipeline:
         export_summary = export_all_formats(ir, retargeted, v_path, out_dir, self.cfg)
         stage_timings["stage4_export_s"] = round(time.perf_counter() - t4, 3)
         stage_timings["total_wall_s"] = round(time.perf_counter() - t_start, 3)
+        print(f"[{ep_id}] Timings: S1={stage_timings['stage1_perception_geometry_s']}s S2b_GPU={stage_timings['stage2b_gpu_enrichment_s']}s S3_IK={stage_timings['stage3_retargeting_s']}s S4_Export={stage_timings['stage4_export_s']}s Total={stage_timings['total_wall_s']}s", flush=True)
 
         run_report = {
             "episode_id": ep_id,
