@@ -558,9 +558,16 @@ class Qwen3VLFastAnnotator:
         max_new_tokens: int = 256,
     ) -> str:
         assert self.processor is not None and self.model is not None
-        pil_imgs = [
-            Image.fromarray(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)) for fr in frames_bgr
-        ]
+        pil_imgs: list[Image.Image] = []
+        for fr in frames_bgr:
+            h, w = fr.shape[:2]
+            scale = min(1.0, 512.0 / max(float(max(h, w)), 1.0))
+            resized = (
+                cv2.resize(fr, (max(1, round(w * scale)), max(1, round(h * scale))))
+                if scale < 0.99
+                else fr
+            )
+            pil_imgs.append(Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)))
         content: list[dict[str, Any]] = [{"type": "image"} for _ in pil_imgs]
         content.append({"type": "text", "text": prompt})
         messages = [{"role": "user", "content": content}]

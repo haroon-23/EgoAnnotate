@@ -18,6 +18,7 @@ from src.egoannotate.perception_hands import (
     compute_hand_rotation_cam,
     rotation_to_quat_and_rot6d,
 )
+from src.egoannotate.registry import register_backend
 from src.egoannotate.schemas import (
     CameraIntrinsicsModel,
     FrameAnnotation,
@@ -289,3 +290,19 @@ class RTMWWholeBodyHandTracker:
         lh, rh = self._mp_hands.process_frame(bgr, timestamp_s)
         body = self._mp_body.process_frame(bgr) if self._mp_body is not None else None
         return lh, rh, body
+
+
+@register_backend(
+    stage="hand_pose",
+    name="rtmw_133_apache",
+    code_license="Apache-2.0",
+    weights_license="Apache-2.0",
+    requires_gpu=True,
+    notes="GPU ONNXRuntime/TensorRT RTMW 133-kpt whole-body & gloved-hand tracker (MediaPipe fallback).",
+)
+def build_rtmw_133_apache(
+    cfg: PerceptionConfig,
+    intrinsics: CameraIntrinsicsModel,
+    assumed_palm_width_m: float = 0.085,
+) -> RTMWWholeBodyHandTracker:
+    return RTMWWholeBodyHandTracker(cfg, intrinsics, assumed_palm_width_m)
