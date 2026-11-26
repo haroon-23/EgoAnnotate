@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import inspect
 import os
 import re
@@ -52,6 +53,7 @@ def _cache_enabled() -> bool:
 def clear_gpu_model_cache() -> None:
     """Release cached GPU weights from memory between distinct jobs or tests."""
     _MODEL_CACHE.clear()
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -145,15 +147,20 @@ class GroundingDINOGPUDetector:
         if not frames_bgr:
             return []
         bs = max(1, int(batch_size))
+        if (
+            self.device.startswith("cuda")
+            and torch.cuda.is_available()
+            and torch.cuda.get_device_properties(0).total_memory < 22 * (1024**3)
+        ):
+            bs = min(bs, 2)
         use_amp = self.device == "cuda" and self.dtype != torch.float32
         post_fn = self.processor.post_process_grounded_object_detection
         sig_params = inspect.signature(post_fn).parameters
         all_out: list[list[dict[str, Any]]] = []
 
-        for start in range(0, len(frames_bgr), bs):
-            chunk = frames_bgr[start : start + bs]
+        def _run_chunk(sub_frames: list[np.ndarray]) -> list[list[dict[str, Any]]]:
             pil_imgs = [
-                Image.fromarray(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)) for fr in chunk
+                Image.fromarray(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)) for fr in sub_frames
             ]
             texts = [self.text_prompt] * len(pil_imgs)
             raw_inputs = self.processor(
@@ -168,7 +175,6 @@ class GroundingDINOGPUDetector:
                 torch.amp.autocast("cuda", dtype=self.dtype, enabled=use_amp),
             ):
                 outputs = self.model(**inputs)
-
             target_sizes = torch.tensor(
                 [img.size[::-1] for img in pil_imgs],
                 device=self.device,
@@ -181,8 +187,8 @@ class GroundingDINOGPUDetector:
                 kwargs["threshold"] = self.box_threshold
             else:
                 kwargs["box_threshold"] = self.box_threshold
-
             results = post_fn(outputs, inputs["input_ids"], **kwargs)
+            chunk_out: list[list[dict[str, Any]]] = []
             for idx in range(len(pil_imgs)):
                 frame_dets: list[dict[str, Any]] = []
                 if idx < len(results):
@@ -199,7 +205,20 @@ class GroundingDINOGPUDetector:
                                 "label": str(label),
                             }
                         )
-                all_out.append(frame_dets)
+                chunk_out.append(frame_dets)
+            del raw_inputs, inputs, outputs, target_sizes, results
+            return chunk_out
+
+        for start in range(0, len(frames_bgr), bs):
+            chunk = frames_bgr[start : start + bs]
+            try:
+                all_out.extend(_run_chunk(chunk))
+            except torch.cuda.OutOfMemoryError:
+                if len(chunk) == 1:
+                    raise
+                torch.cuda.empty_cache()
+                for single in chunk:
+                    all_out.extend(_run_chunk([single]))
         return all_out
 
     def detect_frame(self, bgr: np.ndarray) -> list[dict[str, Any]]:

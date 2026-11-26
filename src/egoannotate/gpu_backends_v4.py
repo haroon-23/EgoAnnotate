@@ -547,9 +547,12 @@ class Qwen3VLFastAnnotator:
                 self.processor = AutoProcessor.from_pretrained(model_id)
                 load_sig = inspect.signature(AutoModelForImageTextToText.from_pretrained).parameters
                 dtype_kw = "dtype" if "dtype" in load_sig else "torch_dtype"
+                extra_kw: dict[str, Any] = {dtype_kw: self.dtype}
+                if self.device.startswith("cuda"):
+                    extra_kw["low_cpu_mem_usage"] = True
                 self.model = AutoModelForImageTextToText.from_pretrained(
                     model_id,
-                    **{dtype_kw: self.dtype},
+                    **extra_kw,
                 ).to(self.device)
                 self.model.eval()
                 if (
@@ -651,7 +654,9 @@ class Qwen3VLFastAnnotator:
                 gen_ids[:, prompt_len:],
                 skip_special_tokens=True,
             )
-            return str(decoded[0]).strip() if decoded else ""
+            out_txt = str(decoded[0]).strip() if decoded else ""
+            del raw_inputs, inputs, gen_ids
+            return out_txt
         except (RuntimeError, ValueError, TypeError, AttributeError) as exc:
             print(f"[Qwen3-VL] Generation skipped: {type(exc).__name__}: {exc}", flush=True)
             if torch.cuda.is_available():

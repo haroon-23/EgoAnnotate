@@ -26,7 +26,7 @@ perception:
   smoothing_method: one_euro
   one_euro_min_cutoff: 1.8
   one_euro_beta: 0.06
-  gpu_batch_size: 16
+  gpu_batch_size: 8
   open_vocab_prompts:
     - tool
     - scissors

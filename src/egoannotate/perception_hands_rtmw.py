@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import itertools
 import math
 from pathlib import Path
@@ -31,6 +32,18 @@ from src.egoannotate.schemas import (
 COCO_WHOLEBODY_LEFT_HAND_SLICE = slice(91, 112)
 COCO_WHOLEBODY_RIGHT_HAND_SLICE = slice(112, 133)
 FINGERTIP_IDXS = (4, 8, 12, 16, 20)
+
+
+def _destroy_rtmw_model(model: Any) -> None:
+    """Explicitly destroy ONNXRuntime CUDA sessions so non-PyTorch GPU memory is returned."""
+    if model is None:
+        return
+    for attr in ("det_model", "pose_model"):
+        sub = getattr(model, attr, None)
+        if sub is not None and hasattr(sub, "session"):
+            sub.session = None
+        if hasattr(model, attr):
+            setattr(model, attr, None)
 
 
 def _load_rtmw_wholebody_locked(device: str) -> Any:
@@ -82,11 +95,17 @@ def _load_rtmw_wholebody_locked(device: str) -> Any:
             else []
         )
         if "CUDAExecutionProvider" not in pose_provs:
+            _destroy_rtmw_model(model)
             raise RuntimeError(
                 f"RTMW ONNX session silently fell back to CPU (providers={pose_provs})."
             )
 
-    if _cache_enabled():
+    constrained_gpu = (
+        device == "cuda"
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_properties(0).total_memory < 22 * (1024**3)
+    )
+    if _cache_enabled() and not constrained_gpu:
         _MODEL_CACHE[cache_key] = (model, None)
     return model
 
@@ -95,7 +114,10 @@ def release_rtmw_vram_session() -> None:
     """Release cached RTMW ONNX CUDA sessions so large VLMs get full VRAM on <=22 GB GPUs."""
     stale = [k for k in _MODEL_CACHE if k and k[0] == "rtmw_wholebody"]
     for k in stale:
-        _MODEL_CACHE.pop(k, None)
+        entry = _MODEL_CACHE.pop(k, None)
+        if entry is not None:
+            _destroy_rtmw_model(entry[0])
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -216,10 +238,18 @@ class RTMWWholeBodyHandTracker:
             self._mp_body = MediaPipeUpperBodyTracker() if cfg.enable_upper_body else None
 
     def close(self) -> None:
+        if self._rtm_wholebody is not None:
+            _destroy_rtmw_model(self._rtm_wholebody)
+            self._rtm_wholebody = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         if self._mp_hands is not None:
             self._mp_hands.close()
+            self._mp_hands = None
         if self._mp_body is not None:
             self._mp_body.close()
+            self._mp_body = None
 
     def _lift_hand_2d_to_state(
         self,
@@ -320,6 +350,15 @@ class RTMWWholeBodyHandTracker:
     ) -> tuple[HandState, HandState, UpperBodyState | None]:
         if self._rtm_wholebody is not None:
             kpts, scores = self._rtm_wholebody(bgr)
+            if (kpts is None or len(kpts) == 0) and hasattr(self._rtm_wholebody, "pose_model"):
+                h_im, w_im = bgr.shape[:2]
+                try:
+                    kpts, scores = self._rtm_wholebody.pose_model(
+                        bgr,
+                        bboxes=[[0, 0, w_im, h_im]],
+                    )
+                except (RuntimeError, ValueError, TypeError, IndexError, AttributeError):
+                    kpts, scores = [], []
             if kpts is None or len(kpts) == 0:
                 return (
                     HandState(handedness="left", detected=False),

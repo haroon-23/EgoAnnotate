@@ -184,10 +184,13 @@ class EgoAnnotateV3Pipeline:
         dino_bs = max(1, round(min(8, self.cfg.perception.gpu_batch_size) * batch_scale))
         depth_bs = max(1, round(self.cfg.perception.gpu_batch_size * batch_scale))
 
+        from src.egoannotate.gpu_backends import clear_gpu_model_cache
         from src.egoannotate.gpu_backends_v4 import is_constrained_vram_gpu
 
-        if cuda_ok and is_constrained_vram_gpu("cuda"):
+        constrained_vram = cuda_ok and is_constrained_vram_gpu("cuda")
+        if constrained_vram:
             release_rtmw_vram_session()
+            clear_gpu_model_cache()
 
         # Pass 1 + Pass 2 (back-to-back): Qwen3-VL Scene Discovery + Segment Captioning, then release VRAM on T4
         active_prompts = list(self.cfg.perception.open_vocab_prompts)
@@ -325,6 +328,9 @@ class EgoAnnotateV3Pipeline:
                 "top_labels": top_labels,
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
+            if constrained_vram:
+                del det
+                clear_gpu_model_cache()
 
         # 2. SAM 2.1 Pixel Masks + Hand-Object Mask IoU
         if cuda_ok and self.cfg.perception.segmenter_backend == "sam21_apache" and kf_boxes:
@@ -367,6 +373,9 @@ class EgoAnnotateV3Pipeline:
                 "keyframes_segmented": len(kf_mask_info),
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
+            if constrained_vram:
+                del sam21
+                clear_gpu_model_cache()
 
         # 3. Metric 3D Depth, Surface Normals, Intrinsics & 3D Object Centroid Lifting
         depth_backend = str(self.cfg.geometry.depth_backend)
@@ -513,6 +522,8 @@ class EgoAnnotateV3Pipeline:
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
 
+        if constrained_vram:
+            clear_gpu_model_cache()
         return metrics
 
     def run_video(
