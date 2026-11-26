@@ -1,7 +1,9 @@
-"""Fast (<2 min) full-stack CUDA pre-flight verifying all 5 GPU models, VRAM budget, sharding & Layer 7 gate."""
+"""Fast (<2.5 min) full-stack CUDA pre-flight verifying all 5 GPU models, VRAM budget, sharding & Layer 7 gate."""
 
 from __future__ import annotations
 
+import gc
+import json
 import os
 import tempfile
 import time
@@ -12,7 +14,7 @@ import numpy as np
 import torch
 
 from src.egoannotate.config import load_config
-from src.egoannotate.gpu_backends import GroundingDINOGPUDetector
+from src.egoannotate.gpu_backends import GroundingDINOGPUDetector, clear_gpu_model_cache
 from src.egoannotate.gpu_backends_v4 import (
     MoGe2MetricDepthGPU,
     Qwen3VLFastAnnotator,
@@ -33,6 +35,8 @@ def _peak_gb() -> float:
 
 
 def main() -> int:
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("EGOANNOTATE_CACHE_GPU_MODELS", "1")
     t_all = time.perf_counter()
     assert torch.cuda.is_available(), "CUDA GPU not available!"
     n_gpus = torch.cuda.device_count()
@@ -56,6 +60,7 @@ def main() -> int:
     fps = 10.0 / max(time.perf_counter() - t_fps, 1e-4)
     print(f"[PREFLIGHT] 1/6 RTMW CUDA OK | {fps:.1f} fps | init+bench={time.perf_counter()-t0:.1f}s", flush=True)
     assert fps >= 5.0, f"RTMW too slow ({fps:.1f} fps) - likely CPU fallback!"
+    del wb
     release_rtmw_vram_session()
 
     # 2. Qwen3-VL-4B-Instruct Pass 1 + Pass 2 + clean VRAM release
@@ -66,6 +71,8 @@ def main() -> int:
     cap = qwen.describe_segment_keyframes([frame], "grasp")
     q_peak = _peak_gb()
     qwen.release_vram()
+    del qwen
+    clear_gpu_model_cache()
     print(
         f"[PREFLIGHT] 2/6 Qwen3-VL OK | peak_vram={q_peak:.2f} GB | "
         f"goal='{scene['task_goal'][:50]}' | cap='{cap[:50]}' | {time.perf_counter()-t0:.1f}s",
@@ -73,11 +80,12 @@ def main() -> int:
     )
     assert q_peak < (total_vram - 0.8), f"Qwen3-VL peak VRAM too close to limit: {q_peak:.2f} GB"
 
-    # 3. Grounding DINO batched FP16
+    # 3. Grounding DINO batched FP16 (T4-capped batch_size=2)
     t0 = time.perf_counter()
     dino = GroundingDINOGPUDetector(prompts=["tool", "box", "cloth"], device="cuda", mixed_precision="fp16")
-    _ = dino.detect_batch([frame, frame], batch_size=2)
+    _ = dino.detect_batch([frame, frame, frame, frame], batch_size=8)
     print(f"[PREFLIGHT] 3/6 Grounding DINO OK | {time.perf_counter()-t0:.1f}s", flush=True)
+    del dino
 
     # 4. SAM 2.1 FP16 -> float32 CPU post_process_masks check
     t0 = time.perf_counter()
@@ -89,6 +97,7 @@ def main() -> int:
         f"area={masks[0]['area_frac']:.3f} | {time.perf_counter()-t0:.1f}s",
         flush=True,
     )
+    del sam
 
     # 5. MoGe-2 metric depth + normals + intrinsics
     t0 = time.perf_counter()
@@ -100,8 +109,12 @@ def main() -> int:
         f"metric={d_out[0]['is_metric']} | med={d_out[0]['median_depth_m']}m | {time.perf_counter()-t0:.1f}s",
         flush=True,
     )
+    del moge
+    clear_gpu_model_cache()
+    gc.collect()
 
-    # 6. Full end-to-end 30-frame pipeline + atomic sharding + Layer 7 gate
+    # 6. Full end-to-end 30-frame pipeline (including Qwen3-VL) + atomic sharding + Layer 7 gate
+    torch.cuda.reset_peak_memory_stats(0)
     t0 = time.perf_counter()
     with tempfile.TemporaryDirectory() as tmp:
         td = Path(tmp)
@@ -118,7 +131,6 @@ def main() -> int:
             profile="gpu_prod",
             overrides={
                 "runtime": {"cache_dir": str(td / "cache")},
-                "semantic": {"vlm_backend": "geometric_grounded"},
                 "export": {
                     "render_qa_overlay": False,
                     "export_3d_viewer": False,
@@ -132,13 +144,13 @@ def main() -> int:
         assert gate["passed"], f"Layer 7 gate failed on smoke clip: {gate['errors']}"
 
         rep["quality"]["verdict"] = "PASS"
-        (ep_out / "run_report.json").write_text(__import__("json").dumps(rep), encoding="utf-8")
+        (ep_out / "run_report.json").write_text(json.dumps(rep), encoding="utf-8")
         sh = pack_sharded_lerobot_v3([ep_out], td / "sharded", run_validation_gate=True)
         assert sh["total_episodes"] == 1 and sh["validation_gate"]["passed"]
 
     print(
-        f"[PREFLIGHT] 6/6 E2E Pipeline + Sharding + Layer 7 Gate PASSED | "
-        f"total_preflight={time.perf_counter()-t_all:.1f}s | pid={os.getpid()}",
+        f"[PREFLIGHT] 6/6 E2E Pipeline (all 5 models) + Sharding + Layer 7 Gate PASSED | "
+        f"e2e_peak_vram={_peak_gb():.2f} GB | total_preflight={time.perf_counter()-t_all:.1f}s | pid={os.getpid()}",
         flush=True,
     )
     return 0
