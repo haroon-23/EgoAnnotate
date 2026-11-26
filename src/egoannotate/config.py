@@ -37,6 +37,8 @@ class RuntimeConfig(BaseModel):
     chunk_size_frames: int = Field(default=300, ge=30, le=3600)
     chunk_overlap_frames: int = Field(default=15, ge=0, le=120)
     target_fps: float = Field(default=30.0, gt=1.0, le=120.0)
+    normalize_fps_cfr: bool = True
+    use_nvdec: bool = True
     process_full_video: bool = Field(
         default=True,
         description="Must remain True for full-length video certification (frames 0..N-1).",
@@ -59,6 +61,7 @@ class PerceptionConfig(BaseModel):
     smoothing_method: Literal["one_euro", "savgol", "none"] = "one_euro"
     one_euro_min_cutoff: float = Field(default=1.5, gt=0.0)
     one_euro_beta: float = Field(default=0.05, ge=0.0)
+    gpu_batch_size: int = Field(default=16, ge=1, le=128)
     open_vocab_prompts: list[str] = Field(
         default_factory=lambda: [
             "bottle",
@@ -79,6 +82,11 @@ class PerceptionConfig(BaseModel):
 class GeometryConfig(BaseModel):
     vo_backend: str = "opencv_essential_vo"
     depth_backend: str = "none"
+    depth_provenance: Literal[
+        "auto",
+        "estimated_metric_monocular",
+        "calibrated_stereo_imu",
+    ] = "auto"
     auto_estimate_intrinsics: bool = True
     estimate_distortion: bool = True
     assumed_palm_width_m: float = Field(default=0.085, gt=0.05, lt=0.12)
@@ -110,6 +118,8 @@ class TactileConfig(BaseModel):
 class SemanticConfig(BaseModel):
     vlm_backend: str = "geometric_grounded"
     model_id: str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+    vllm_base_url: str | None = None
+    vllm_api_key: str = "EMPTY"
     max_keyframes_per_segment: int = Field(default=4, ge=1, le=16)
     generate_paraphrases: bool = True
     verify_against_geometry: bool = True
@@ -136,13 +146,15 @@ class RetargetingConfig(BaseModel):
         ]
     )
     embodiment_config_dir: str = "configs/embodiments"
+    ik_backend: Literal["auto", "torch_batched", "pyroki", "scipy"] = "auto"
+    clamp_workspace_reach: bool = True
     enforce_joint_limits: bool = True
     enforce_table_clearance: bool = True
     table_z_margin_m: float = Field(default=0.01, ge=0.0, le=0.2)
     smoothness_window: int = Field(default=7, ge=3, le=31)
 
 
-ExportFormat = Literal["lerobot_v3", "rlds", "hdf5", "parquet_json"]
+ExportFormat = Literal["lerobot_v3", "rlds", "hdf5", "parquet_json", "mcap"]
 
 
 def _default_export_formats() -> list[ExportFormat]:
@@ -152,6 +164,8 @@ def _default_export_formats() -> list[ExportFormat]:
 class ExportConfig(BaseModel):
     formats: list[ExportFormat] = Field(default_factory=_default_export_formats)
     include_groot_modality_json: bool = True
+    sharded_lerobot_v3: bool = True
+    generate_dataset_card: bool = True
     video_crf: int = Field(default=24, ge=14, le=35)
     render_qa_overlay: bool = True
     export_3d_viewer: bool = True
@@ -160,8 +174,11 @@ class ExportConfig(BaseModel):
 
 class PrivacyConfig(BaseModel):
     enable_face_blur: bool = True
+    enable_ocr_blur: bool = False
     strip_audio: bool = True
     verify_zero_unblurred_faces: bool = True
+    use_gpu_blur: bool = True
+    use_nvenc: bool = True
     blur_sigma: float = Field(default=28.0, ge=5.0, le=80.0)
 
 

@@ -24,6 +24,31 @@ perception:
   smoothing_method: one_euro
   one_euro_min_cutoff: 1.8
   one_euro_beta: 0.06
+  open_vocab_prompts:
+    - tool
+    - scissors
+    - sewing machine
+    - fabric
+    - cloth
+    - shirt
+    - garment
+    - measuring tape
+    - pen
+    - trowel
+    - shovel
+    - concrete roller
+    - welding torch
+    - metal rod
+    - metal sheet
+    - metal tray
+    - metal press
+    - plastic bag
+    - plastic bin
+    - box
+    - container
+    - bottle
+    - cup
+    - work glove
 
 geometry:
   vo_backend: dpvo_mit

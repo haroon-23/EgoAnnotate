@@ -203,19 +203,36 @@ class VideoChunk:
 
 
 class VideoStreamReader:
-    """Bounded-memory full-video streaming reader (processes frames 0..N-1 completely)."""
+    """Bounded-memory full-video reader with optional CFR 30 Hz resampling and NVDEC decode."""
 
     def __init__(
         self,
         video_path: Path,
         calibration_yaml: Path | None = None,
         estimate_distortion: bool = True,
+        target_fps: float | None = None,
+        normalize_fps_cfr: bool = False,
+        use_nvdec: bool = True,
     ) -> None:
         self.video_path = Path(video_path)
         if not self.video_path.exists():
             raise FileNotFoundError(f"Video not found: {self.video_path}")
         self.probe = probe_video_ffprobe(self.video_path)
         self.sha256 = compute_file_sha256(self.video_path)
+        self.source_fps = float(self.probe["fps"])
+        self.use_nvdec = bool(use_nvdec)
+        self._resample = bool(
+            normalize_fps_cfr
+            and target_fps is not None
+            and float(target_fps) > 1.0
+            and self.source_fps > 1.0
+            and abs(self.source_fps - float(target_fps)) / float(target_fps) > 0.02
+        )
+        self.processing_fps = (
+            float(target_fps)
+            if (self._resample and target_fps is not None)
+            else self.source_fps
+        )
         self._sample_frames = self._read_evenly_spaced_samples(count=6)
         self.intrinsics = estimate_camera_intrinsics(
             width=int(self.probe["width"]),
@@ -241,43 +258,84 @@ class VideoStreamReader:
         return frames
 
     def build_metadata(self, processed_frames: int) -> VideoMetadata:
-        fps = float(self.probe["fps"])
+        src_fps = self.source_fps
+        proc_fps = self.processing_fps
         total_reported = int(self.probe["nb_frames"])
-        actual_total = max(processed_frames, total_reported)
+        if self._resample:
+            duration_src = float(self.probe["duration_s"])
+            expected_total = max(1, round(duration_src * proc_fps))
+        else:
+            expected_total = total_reported
+        actual_total = max(processed_frames, expected_total)
         return VideoMetadata(
             video_path=str(self.video_path),
             video_sha256=self.sha256,
             width=int(self.probe["width"]),
             height=int(self.probe["height"]),
-            source_fps=fps,
-            processing_fps=fps,
+            source_fps=src_fps,
+            processing_fps=proc_fps,
             total_frames=actual_total,
             processed_frames=processed_frames,
-            duration_s=float(processed_frames / max(fps, 1e-6)),
+            duration_s=float(processed_frames / max(proc_fps, 1e-6)),
             codec=str(self.probe["codec"]),
             has_audio_source=bool(self.probe["has_audio"]),
             vfr_detected=bool(self.probe["vfr_detected"]),
-            is_full_video_processed=(processed_frames >= max(1, total_reported - 2)),
+            is_full_video_processed=(processed_frames >= max(1, expected_total - 3)),
             intrinsics=self.intrinsics,
         )
 
-    def iter_frames(self) -> Iterator[tuple[int, float, np.ndarray]]:
-        """Yield (frame_idx, timestamp_s, bgr) sequentially across EVERY frame 0..N-1."""
+    def _iter_raw_frames(self) -> Iterator[np.ndarray]:
+        if self.use_nvdec:
+            try:
+                import torch
+                from torchcodec.decoders import VideoDecoder
+
+                if torch.cuda.is_available():
+                    dec = VideoDecoder(str(self.video_path), device="cuda")
+                    n_total = len(dec)
+                    for i in range(0, n_total, 32):
+                        batch = dec.get_frames_in_range(i, min(i + 32, n_total)).data
+                        batch_np = batch.permute(0, 2, 3, 1).detach().cpu().numpy()
+                        for rgb in batch_np:
+                            yield cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    return
+            except (ImportError, RuntimeError, ValueError, OSError):
+                pass
+
         cap = cv2.VideoCapture(str(self.video_path))
         if not cap.isOpened():
             raise RuntimeError(f"OpenCV could not open video: {self.video_path}")
-        fps = float(self.probe["fps"])
-        idx = 0
         try:
             while True:
                 ok, fr = cap.read()
                 if not ok or fr is None:
                     break
-                ts = idx / max(fps, 1e-6)
-                yield idx, ts, fr
-                idx += 1
+                yield fr
         finally:
             cap.release()
+
+    def iter_frames(self) -> Iterator[tuple[int, float, np.ndarray]]:
+        """Yield (frame_idx, timestamp_s, bgr) across full video at canonical processing_fps."""
+        src_fps = max(self.source_fps, 1e-6)
+        out_fps = max(self.processing_fps, 1e-6)
+        if not self._resample:
+            for idx, fr in enumerate(self._iter_raw_frames()):
+                yield idx, round(idx / out_fps, 9), fr
+            return
+
+        out_idx = 0
+        next_emit_t = 0.0
+        for src_idx, fr in enumerate(self._iter_raw_frames()):
+            src_t = src_idx / src_fps
+            if src_t + 1e-9 < next_emit_t:
+                continue
+            yield out_idx, round(out_idx / out_fps, 9), fr
+            out_idx += 1
+            next_emit_t = out_idx / out_fps
+            while src_t - next_emit_t >= (0.5 / out_fps):
+                yield out_idx, round(out_idx / out_fps, 9), fr
+                out_idx += 1
+                next_emit_t = out_idx / out_fps
 
     def iter_chunks(
         self,

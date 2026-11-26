@@ -14,6 +14,10 @@ from scipy.signal import savgol_filter
 from scipy.spatial.transform import Rotation
 
 from src.egoannotate.config import RetargetingConfig
+from src.egoannotate.ik_batched import (
+    clamp_targets_to_workspace,
+    solve_arm_trajectory_ik_batched,
+)
 from src.egoannotate.schemas import AtomicActionSegment, FrameAnnotation
 
 
@@ -246,13 +250,32 @@ def solve_arm_trajectory_ik(
     max_vel_radps: float,
     enforce_limits: bool = True,
     smooth_window: int = 7,
+    clamp_reach: bool = True,
+    ik_backend: str = "auto",
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    """Warm-started damped-least-squares analytic-Jacobian IK across all frames 0..N-1."""
+    """Vectorized GPU/CPU batched IK across frames 0..N-1 (with SciPy fallback)."""
     actuated = [j for j in chain if j.joint_type in ("revolute", "continuous", "prismatic")]
     n_frames = len(targets_base_m)
     dof = len(actuated)
     if dof == 0 or n_frames == 0:
-        return [], np.zeros((n_frames, 0), dtype=np.float32), np.zeros((n_frames, 3), dtype=np.float32), np.zeros(n_frames, dtype=np.float32)
+        return (
+            [],
+            np.zeros((n_frames, 0), dtype=np.float32),
+            np.zeros((n_frames, 3), dtype=np.float32),
+            np.zeros(n_frames, dtype=np.float32),
+        )
+    if ik_backend != "scipy":
+        q_b, ee_b, err_b, _ = solve_arm_trajectory_ik_batched(
+            chain=chain,
+            targets_base_m=targets_base_m,
+            dt_s=dt_s,
+            max_vel_radps=max_vel_radps,
+            enforce_limits=enforce_limits,
+            smooth_window=smooth_window,
+            clamp_reach=clamp_reach,
+            backend=ik_backend,
+        )
+        return [j.name for j in actuated], q_b, ee_b, err_b
 
     lows = np.array([j.lower for j in actuated], dtype=np.float64)
     highs = np.array([j.upper for j in actuated], dtype=np.float64)
@@ -472,6 +495,8 @@ def retarget_embodiment_from_yaml(
         ee_spec = str(arm_cfg.get("ee_link", "auto"))
         chain = _select_arm_chain(chains, ee_spec)
         targets = arm_targets_by_side[side]
+        if cfg.clamp_workspace_reach:
+            targets = clamp_targets_to_workspace(targets, chain)
         j_names, q_arm, ee_ach, err_mm = solve_arm_trajectory_ik(
             chain=chain,
             targets_base_m=targets,
@@ -479,6 +504,8 @@ def retarget_embodiment_from_yaml(
             max_vel_radps=float(arm_cfg.get("max_joint_vel_radps", 2.4)),
             enforce_limits=cfg.enforce_joint_limits,
             smooth_window=cfg.smoothness_window,
+            clamp_reach=cfg.clamp_workspace_reach,
+            ik_backend=cfg.ik_backend,
         )
         prefixed = [f"{side}_{jn}" for jn in j_names]
         all_joint_names.extend(prefixed)

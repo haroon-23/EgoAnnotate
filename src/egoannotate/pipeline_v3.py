@@ -127,7 +127,16 @@ class EgoAnnotateV3Pipeline:
         kf_indices = list(range(0, n, max(1, n // 120)))
         kf_images = self._sample_video_frames_by_idx(video_path, kf_indices)
 
-        # 1. Open-vocabulary Grounding DINO detection on keyframes
+        import os
+
+        batch_scale = max(0.25, float(os.environ.get("EGOANNOTATE_BATCH_SCALE", "1.0")))
+        dino_bs = max(1, round(min(8, self.cfg.perception.gpu_batch_size) * batch_scale))
+        depth_bs = max(1, round(self.cfg.perception.gpu_batch_size * batch_scale))
+        kf_items = sorted(kf_images.items(), key=lambda kv: kv[0])
+        kf_keys = [fi for fi, _ in kf_items]
+        kf_bgrs = [bgr for _, bgr in kf_items]
+
+        # 1. Batched Open-vocabulary Grounding DINO detection on keyframes (cached weights)
         if "grounding_dino" in str(self.cfg.perception.detector_backend):
             t0 = time.perf_counter()
             det = GroundingDINOGPUDetector(
@@ -138,8 +147,8 @@ class EgoAnnotateV3Pipeline:
             label_counts: dict[str, int] = {}
             total_dets = 0
             kf_labels: dict[int, str] = {}
-            for fi, bgr in kf_images.items():
-                dets = det.detect_frame(bgr)
+            batch_dets = det.detect_batch(kf_bgrs, batch_size=dino_bs)
+            for fi, dets in zip(kf_keys, batch_dets):
                 total_dets += len(dets)
                 if dets:
                     best = max(dets, key=lambda d: float(d["score"]))
@@ -147,7 +156,6 @@ class EgoAnnotateV3Pipeline:
                     kf_labels[fi] = lbl
                     label_counts[lbl] = label_counts.get(lbl, 0) + 1
 
-            # Propagate nearest open-vocab label onto tracked manipulated objects
             if kf_labels:
                 sorted_kfs = sorted(kf_labels.keys())
                 for fr in frames:
@@ -160,24 +168,21 @@ class EgoAnnotateV3Pipeline:
             top_labels = sorted(label_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
             metrics["grounding_dino"] = {
                 "keyframes": len(kf_images),
+                "batch_size": dino_bs,
                 "total_detections": total_dets,
                 "top_labels": top_labels,
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
-            del det
-            torch.cuda.empty_cache()
 
-        # 2. Depth-Anything-V2-Small (Apache-2.0) on keyframes
+        # 2. Batched Depth-Anything-V2-Small (Apache-2.0) on keyframes (cached weights)
         if self.cfg.geometry.depth_backend == "depth_anything_v2_small_apache":
             t0 = time.perf_counter()
             depth_model = DepthAnythingV2SmallGPU(
                 device="cuda",
                 mixed_precision=self.cfg.runtime.mixed_precision,
             )
-            med_depths: list[float] = []
-            for bgr in kf_images.values():
-                dmap = depth_model.estimate_depth_map(bgr)
-                med_depths.append(float(np.median(dmap)))
+            dmaps = depth_model.estimate_depth_batch(kf_bgrs, batch_size=depth_bs)
+            med_depths = [float(np.median(dmap)) for dmap in dmaps]
             scale_prov.scale_source = (
                 "calibrated_intrinsics_and_metric_depth"
                 if scale_prov.is_calibrated_metric
@@ -186,14 +191,13 @@ class EgoAnnotateV3Pipeline:
             scale_prov.scale_uncertainty_pct = 5.0 if scale_prov.is_calibrated_metric else 8.5
             metrics["depth_anything_v2_small"] = {
                 "keyframes": len(med_depths),
+                "batch_size": depth_bs,
                 "median_depth_mean": round(float(np.mean(med_depths)), 4) if med_depths else 0.0,
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
-            del depth_model
-            torch.cuda.empty_cache()
 
-        # 3. Local Apache-2.0 VLM (SmolVLM2 / Qwen2.5-VL) captioning across representative non-idle segments
-        if self.cfg.semantic.vlm_backend in ("smolvlm2_local", "qwen25_vl_local"):
+        # 3. Local Apache-2.0 VLM captioning across representative non-idle segments (cached weights)
+        if self.cfg.semantic.vlm_backend in ("smolvlm2_local", "qwen25_vl_local", "qwen3_vl_local"):
             t0 = time.perf_counter()
             vlm = LocalOpenSourceVLMAnnotator(
                 model_id=self.cfg.semantic.model_id,
@@ -215,7 +219,9 @@ class EgoAnnotateV3Pipeline:
                 cap_txt = vlm.describe_segment_keyframes([seg_bgr], seg.verb)
                 if cap_txt:
                     seg.semantic_description = cap_txt
-                    seg.geometry_agreement_score = _verify_segment_against_geometry(seg, frames_by_idx)
+                    seg.geometry_agreement_score = _verify_segment_against_geometry(
+                        seg, frames_by_idx
+                    )
                     captioned += 1
                     if len(sample_captions) < 5:
                         sample_captions.append(cap_txt)
@@ -227,8 +233,6 @@ class EgoAnnotateV3Pipeline:
                 "sample_captions": sample_captions,
                 "wall_s": round(time.perf_counter() - t0, 2),
             }
-            del vlm
-            torch.cuda.empty_cache()
 
         return metrics
 
